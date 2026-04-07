@@ -16,14 +16,14 @@ interface Props {
   onClose: () => void;
 }
 
-const CONNECTOR_TYPES = ['filesystem', 'paperless', 'telegram'];
+const CONNECTOR_TYPES = ['filesystem', 'paperless', 'telegram', 'imap'];
 
 const COMMON_FIELDS = [
   { key: 'sync_since_days', label: 'Sync History (days)', placeholder: 'e.g., 30 (empty = all history)' },
   { key: 'sync_since', label: 'Sync Since Date', placeholder: 'YYYY-MM-DD (overridden by days if set)' },
 ];
 
-const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: string }[]> = {
+const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: string; inputType?: string }[]> = {
   filesystem: [
     { key: 'root_path', label: 'Root Path', placeholder: '/data/files' },
     { key: 'patterns', label: 'File Patterns', placeholder: '*.txt,*.md' },
@@ -39,6 +39,14 @@ const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: s
     { key: 'api_hash', label: 'API Hash', placeholder: 'From my.telegram.org' },
     { key: 'phone', label: 'Phone Number', placeholder: '+1234567890' },
     { key: 'chat_filter', label: 'Chat Filter', placeholder: 'Chat names or IDs (comma-separated, empty = all)' },
+    ...COMMON_FIELDS,
+  ],
+  imap: [
+    { key: 'server', label: 'IMAP Server', placeholder: 'imap.mail.me.com' },
+    { key: 'port', label: 'Port', placeholder: '993' },
+    { key: 'username', label: 'Username', placeholder: 'user@icloud.com' },
+    { key: 'password', label: 'Password', placeholder: 'app-specific password', inputType: 'password' },
+    { key: 'folders', label: 'Folders', placeholder: 'INBOX (comma-separated)' },
     ...COMMON_FIELDS,
   ],
 };
@@ -325,7 +333,7 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
         <div key={field.key} className="cm-form-row">
           <label>{field.label}</label>
           <input
-            type="text"
+            type={field.inputType || 'text'}
             value={configValues[field.key] || ''}
             onChange={(e) => setConfigValues({ ...configValues, [field.key]: e.target.value })}
             placeholder={field.placeholder}

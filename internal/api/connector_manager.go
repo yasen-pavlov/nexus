@@ -242,12 +242,12 @@ func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (conn
 		return nil, fmt.Errorf("validation failed for %q: %w", cfg.Name, err)
 	}
 
-	// Inject extractor for filesystem connectors
-	if cfg.Type == "filesystem" && m.extractor != nil {
-		if fsConn, ok := conn.(interface {
+	// Inject extractor for connectors that support it (filesystem, imap)
+	if (cfg.Type == "filesystem" || cfg.Type == "imap") && m.extractor != nil {
+		if extConn, ok := conn.(interface {
 			SetExtractor(*extractor.Registry)
 		}); ok {
-			fsConn.SetExtractor(m.extractor)
+			extConn.SetExtractor(m.extractor)
 		}
 	}
 
