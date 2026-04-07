@@ -28,10 +28,14 @@ func (m *mockConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.Fe
 }
 
 func newTestHandler() *handler {
-	return &handler{
+	cm := &ConnectorManager{
 		connectors: map[string]connector.Connector{
 			"test-fs": &mockConnector{name: "test-fs", typ: "filesystem"},
 		},
+		log: zap.NewNop(),
+	}
+	return &handler{
+		cm:  cm,
 		log: zap.NewNop(),
 	}
 }
@@ -73,31 +77,6 @@ func TestSearchHandler_MissingQuery(t *testing.T) {
 	}
 	if resp.Error == "" {
 		t.Error("expected error message for missing query")
-	}
-}
-
-func TestListConnectorsHandler(t *testing.T) {
-	h := newTestHandler()
-	req := httptest.NewRequest(http.MethodGet, "/api/connectors", nil)
-	w := httptest.NewRecorder()
-
-	h.ListConnectors(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-
-	var resp APIResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	connectors, ok := resp.Data.([]any)
-	if !ok {
-		t.Fatalf("expected data to be array, got %T", resp.Data)
-	}
-	if len(connectors) != 1 {
-		t.Errorf("expected 1 connector, got %d", len(connectors))
 	}
 }
 

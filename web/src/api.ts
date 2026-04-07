@@ -31,9 +31,22 @@ export interface SyncReport {
   duration: number;
 }
 
-export interface ConnectorInfo {
-  name: string;
+export interface ConnectorConfig {
+  id: string;
   type: string;
+  name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateConnectorRequest {
+  type: string;
+  name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
 }
 
 interface APIResponse<T> {
@@ -59,6 +72,34 @@ export async function triggerSync(connector: string): Promise<SyncReport> {
   return fetchAPI<SyncReport>(`/api/sync/${connector}`, { method: 'POST' });
 }
 
-export async function listConnectors(): Promise<ConnectorInfo[]> {
-  return fetchAPI<ConnectorInfo[]>('/api/connectors');
+export async function listConnectors(): Promise<ConnectorConfig[]> {
+  return fetchAPI<ConnectorConfig[]>('/api/connectors/');
+}
+
+export async function getConnector(id: string): Promise<ConnectorConfig> {
+  return fetchAPI<ConnectorConfig>(`/api/connectors/${id}`);
+}
+
+export async function createConnector(req: CreateConnectorRequest): Promise<ConnectorConfig> {
+  return fetchAPI<ConnectorConfig>('/api/connectors/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function updateConnector(id: string, req: CreateConnectorRequest): Promise<ConnectorConfig> {
+  return fetchAPI<ConnectorConfig>(`/api/connectors/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteConnector(id: string): Promise<void> {
+  const res = await fetch(`/api/connectors/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json();
+    throw new Error(body.error || 'Delete failed');
+  }
 }

@@ -76,4 +76,18 @@ func TestSyncCursors(t *testing.T) {
 			t.Errorf("expected 100 items synced after update, got %d", got.ItemsSynced)
 		}
 	})
+
+	t.Run("delete cursor", func(t *testing.T) {
+		if err := st.DeleteSyncCursor(ctx, "test-fs"); err != nil {
+			t.Fatalf("delete failed: %v", err)
+		}
+
+		got, err := st.GetSyncCursor(ctx, "test-fs")
+		if err != nil {
+			t.Fatalf("get after delete failed: %v", err)
+		}
+		if got != nil {
+			t.Error("expected nil cursor after delete")
+		}
+	})
 }

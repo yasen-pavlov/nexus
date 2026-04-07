@@ -7,7 +7,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
-	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
@@ -16,7 +15,7 @@ import (
 func NewRouter(
 	store *store.Store,
 	pipeline *pipeline.Pipeline,
-	connectors map[string]connector.Connector,
+	cm *ConnectorManager,
 	log *zap.Logger,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -27,24 +26,31 @@ func NewRouter(
 	r.Use(chimw.Timeout(60 * time.Second))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173"},
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Content-Type"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
 
 	h := &handler{
-		store:      store,
-		pipeline:   pipeline,
-		connectors: connectors,
-		log:        log,
+		store:    store,
+		pipeline: pipeline,
+		cm:       cm,
+		log:      log,
 	}
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Get("/search", h.Search)
 		r.Post("/sync/{connector}", h.TriggerSync)
-		r.Get("/connectors", h.ListConnectors)
+
+		r.Route("/connectors", func(r chi.Router) {
+			r.Get("/", h.ListConnectors)
+			r.Post("/", h.CreateConnector)
+			r.Get("/{id}", h.GetConnector)
+			r.Put("/{id}", h.UpdateConnector)
+			r.Delete("/{id}", h.DeleteConnector)
+		})
 	})
 
 	// Serve static frontend files

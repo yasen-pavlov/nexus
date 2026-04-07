@@ -173,3 +173,209 @@ body {
 .result-path {
   font-family: monospace;
 }
+
+/* Connector Manager */
+
+.cm-settings-btn {
+  margin-left: auto;
+}
+
+.cm-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.cm-header h2 {
+  font-size: 1.5rem;
+  color: #f0f6fc;
+}
+
+.cm-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cm-btn {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #c9d1d9;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.cm-btn:hover:not(:disabled) {
+  background: #30363d;
+}
+
+.cm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cm-btn-primary {
+  background: #238636;
+  border-color: #238636;
+  color: #fff;
+}
+
+.cm-btn-primary:hover {
+  background: #2ea043;
+}
+
+.cm-btn-danger {
+  color: #f85149;
+}
+
+.cm-btn-danger:hover:not(:disabled) {
+  background: #da363322;
+}
+
+.cm-btn-sm {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.cm-empty {
+  text-align: center;
+  color: #8b949e;
+  padding: 3rem 1rem;
+}
+
+.cm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.cm-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+.cm-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.cm-card-name {
+  font-weight: 600;
+  color: #f0f6fc;
+  margin-right: 0.5rem;
+}
+
+.cm-card-type {
+  font-size: 0.75rem;
+  color: #8b949e;
+  background: #21262d;
+  padding: 0.125rem 0.5rem;
+  border-radius: 12px;
+  margin-right: 0.5rem;
+}
+
+.cm-card-status {
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 12px;
+}
+
+.cm-status-active {
+  color: #3fb950;
+  background: #23863622;
+}
+
+.cm-status-inactive {
+  color: #f0883e;
+  background: #f0883e22;
+}
+
+.cm-status-disabled {
+  color: #8b949e;
+  background: #21262d;
+}
+
+.cm-card-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.cm-card-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.cm-config-item {
+  font-size: 0.75rem;
+  color: #8b949e;
+  font-family: monospace;
+  background: #0d1117;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+}
+
+/* Connector Form */
+
+.cm-form {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.cm-form h3 {
+  font-size: 1.125rem;
+  color: #f0f6fc;
+  margin-bottom: 1rem;
+}
+
+.cm-form-row {
+  margin-bottom: 0.75rem;
+}
+
+.cm-form-row label {
+  display: block;
+  font-size: 0.875rem;
+  color: #c9d1d9;
+  margin-bottom: 0.25rem;
+}
+
+.cm-form-row input[type="text"],
+.cm-form-row select {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #f0f6fc;
+  outline: none;
+}
+
+.cm-form-row input[type="text"]:focus,
+.cm-form-row select:focus {
+  border-color: #58a6ff;
+}
+
+.cm-form-row input[type="text"]::placeholder {
+  color: #484f58;
+}
+
+.cm-form-row input[type="checkbox"] {
+  margin-right: 0.375rem;
+}
+
+.cm-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}

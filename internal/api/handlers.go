@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/store"
@@ -13,10 +12,10 @@ import (
 )
 
 type handler struct {
-	store      *store.Store
-	pipeline   *pipeline.Pipeline
-	connectors map[string]connector.Connector
-	log        *zap.Logger
+	store    *store.Store
+	pipeline *pipeline.Pipeline
+	cm       *ConnectorManager
+	log      *zap.Logger
 }
 
 func (h *handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +48,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "connector")
-	conn, ok := h.connectors[name]
+	conn, ok := h.cm.Get(name)
 	if !ok {
 		writeError(w, http.StatusNotFound, "connector not found: "+name)
 		return
@@ -63,21 +62,4 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, report)
-}
-
-func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
-	type connectorInfo struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-	}
-
-	var list []connectorInfo
-	for _, conn := range h.connectors {
-		list = append(list, connectorInfo{
-			Name: conn.Name(),
-			Type: conn.Type(),
-		})
-	}
-
-	writeJSON(w, http.StatusOK, list)
 }

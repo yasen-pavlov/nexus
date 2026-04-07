@@ -58,4 +58,48 @@ func TestOperationsOnClosedStore(t *testing.T) {
 			t.Error("expected error on closed store")
 		}
 	})
+
+	t.Run("delete cursor on closed store", func(t *testing.T) {
+		err := st.DeleteSyncCursor(ctx, "test")
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("list connector configs on closed store", func(t *testing.T) {
+		_, err := st.ListConnectorConfigs(ctx)
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("get connector config on closed store", func(t *testing.T) {
+		_, err := st.GetConnectorConfig(ctx, uuid.New())
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("create connector config on closed store", func(t *testing.T) {
+		cfg := &model.ConnectorConfig{Type: "test", Name: "test", Config: map[string]any{}}
+		err := st.CreateConnectorConfig(ctx, cfg)
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("update connector config on closed store", func(t *testing.T) {
+		cfg := &model.ConnectorConfig{ID: uuid.New(), Type: "test", Name: "test", Config: map[string]any{}}
+		err := st.UpdateConnectorConfig(ctx, cfg)
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("delete connector config on closed store", func(t *testing.T) {
+		err := st.DeleteConnectorConfig(ctx, uuid.New())
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
 }

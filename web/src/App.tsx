@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorInfo } from './api';
+import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorConfig } from './api';
+import ConnectorManager from './ConnectorManager';
 import './App.css';
 
 function App() {
@@ -8,13 +9,16 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
-  const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
+  const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [error, setError] = useState('');
+  const [showConnectors, setShowConnectors] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  useEffect(() => {
+  const loadConnectors = useCallback(() => {
     listConnectors().then(setConnectors).catch(() => {});
   }, []);
+
+  useEffect(loadConnectors, [loadConnectors]);
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -53,6 +57,18 @@ function App() {
     }
   };
 
+  if (showConnectors) {
+    return (
+      <div className="app">
+        <header className="header">
+          <h1>Nexus</h1>
+          <p className="subtitle">Personal Search</p>
+        </header>
+        <ConnectorManager onClose={() => { setShowConnectors(false); loadConnectors(); }} />
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -72,7 +88,7 @@ function App() {
       </div>
 
       <div className="controls">
-        {connectors.map((conn) => (
+        {connectors.filter(c => c.enabled).map((conn) => (
           <button
             key={conn.name}
             className="sync-button"
@@ -82,6 +98,12 @@ function App() {
             {syncing ? 'Syncing...' : `Sync ${conn.name}`}
           </button>
         ))}
+        <button
+          className="sync-button cm-settings-btn"
+          onClick={() => setShowConnectors(true)}
+        >
+          Manage Connectors
+        </button>
       </div>
 
       {syncReport && (

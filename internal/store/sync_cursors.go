@@ -54,3 +54,11 @@ func (s *Store) UpsertSyncCursor(ctx context.Context, cursor *model.SyncCursor) 
 	}
 	return nil
 }
+
+func (s *Store) DeleteSyncCursor(ctx context.Context, connectorID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sync_cursors WHERE connector_id = $1`, connectorID)
+	if err != nil {
+		return fmt.Errorf("store: delete sync cursor: %w", err)
+	}
+	return nil
+}
