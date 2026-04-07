@@ -83,7 +83,9 @@ docker compose up --build    # full stack at localhost:8080
 - **Scheduler:** `robfig/cron/v3` for automatic sync, keyed by connector ID, updated live via `ScheduleObserver`
 - **No ORM:** Raw SQL via pgx for Postgres operations
 - **Pipeline stages:** Fetch → Index in OpenSearch (future: Chunk → Embed)
-- **Search:** OpenSearch handles document storage and search. PostgreSQL only stores application state.
+- **Search:** OpenSearch handles document storage and search (BM25 + optional k-NN vector search). PostgreSQL only stores application state.
+- **Embeddings:** Pluggable providers (Ollama, OpenAI, Voyage, Cohere) via `embedding.Embedder` interface. Documents are chunked (~500 tokens, ~100 overlap) before embedding. Hybrid search uses reciprocal rank fusion (RRF) to merge BM25 and vector results.
+- **Chunking:** `internal/chunking/` splits text into overlapping chunks for embedding. Pure logic, no external dependencies.
 - **Static embedding:** React build output is embedded into the Go binary via `//go:embed` in `internal/api/static/`
 - **Migrations:** Embedded in the binary, run automatically at startup via goose
 
@@ -94,5 +96,9 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_DATABASE_URL` (required)
 - `NEXUS_OPENSEARCH_URL` (default: http://localhost:9200)
 - `NEXUS_LOG_LEVEL` (default: info)
+- `NEXUS_EMBEDDING_PROVIDER` — `ollama`, `openai`, `voyage`, `cohere` (empty = disabled)
+- `NEXUS_EMBEDDING_MODEL` — model name (provider-specific defaults apply)
+- `NEXUS_EMBEDDING_API_KEY` — API key for openai/voyage/cohere
+- `NEXUS_OLLAMA_URL` (default: http://localhost:11434) — Ollama base URL
 - `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run)
 - `NEXUS_FS_PATTERNS` — glob patterns (default: `*.txt,*.md`)

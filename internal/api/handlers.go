@@ -16,6 +16,7 @@ type handler struct {
 	store    *store.Store
 	search   *search.Client
 	pipeline *pipeline.Pipeline
+	em       *EmbeddingManager
 	cm       *ConnectorManager
 	log      *zap.Logger
 }
@@ -34,11 +35,28 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	result, err := h.search.Search(r.Context(), model.SearchRequest{
+	req := model.SearchRequest{
 		Query:  query,
 		Limit:  limit,
 		Offset: offset,
-	})
+	}
+
+	// Try hybrid search if embedder is available
+	embedder := h.em.Get()
+	if embedder != nil {
+		embeddings, err := embedder.Embed(r.Context(), []string{query})
+		if err == nil && len(embeddings) > 0 {
+			result, err := h.search.HybridSearch(r.Context(), req, embeddings[0])
+			if err == nil {
+				writeJSON(w, http.StatusOK, result)
+				return
+			}
+			h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
+		}
+	}
+
+	// Fallback: BM25-only
+	result, err := h.search.Search(r.Context(), req)
 	if err != nil {
 		h.log.Error("search failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "search failed")

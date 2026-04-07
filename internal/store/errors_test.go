@@ -77,6 +77,27 @@ func TestOperationsOnClosedStore(t *testing.T) {
 		}
 	})
 
+	t.Run("get setting on closed store", func(t *testing.T) {
+		_, err := st.GetSetting(ctx, "test")
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("set setting on closed store", func(t *testing.T) {
+		err := st.SetSetting(ctx, "test", "val")
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("get settings on closed store", func(t *testing.T) {
+		_, err := st.GetSettings(ctx, []string{"test"})
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
 	t.Run("update last_run on closed store", func(t *testing.T) {
 		err := st.UpdateLastRun(ctx, uuid.New(), time.Now())
 		if err == nil {

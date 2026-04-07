@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorConfig } from './api';
 import ConnectorManager from './ConnectorManager';
+import Settings from './Settings';
 import './App.css';
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [error, setError] = useState('');
   const [showConnectors, setShowConnectors] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const loadConnectors = useCallback(() => {
@@ -56,6 +58,18 @@ function App() {
       setSyncing(false);
     }
   };
+
+  if (showSettings) {
+    return (
+      <div className="app">
+        <header className="header">
+          <h1>Nexus</h1>
+          <p className="subtitle">Personal Search</p>
+        </header>
+        <Settings onClose={() => setShowSettings(false)} />
+      </div>
+    );
+  }
 
   if (showConnectors) {
     return (
@@ -102,7 +116,13 @@ function App() {
           className="sync-button cm-settings-btn"
           onClick={() => setShowConnectors(true)}
         >
-          Manage Connectors
+          Connectors
+        </button>
+        <button
+          className="sync-button cm-settings-btn"
+          onClick={() => setShowSettings(true)}
+        >
+          Settings
         </button>
       </div>
 

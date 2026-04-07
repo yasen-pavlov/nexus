@@ -40,7 +40,7 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager)
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
-	if err := sc.EnsureIndex(context.Background()); err != nil {
+	if err := sc.EnsureIndex(context.Background(), 0); err != nil {
 		t.Fatalf("create search index: %v", err)
 	}
 	t.Cleanup(func() { sc.DeleteIndex(context.Background()) }) //nolint:errcheck // test
@@ -52,15 +52,16 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager)
 func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManager, http.Handler) {
 	t.Helper()
 	st, sc, cm := newTestDeps(t)
-	p := pipeline.New(st, sc, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, zap.NewNop())
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
 	return st, sc, cm, router
 }
 
 // --- Search tests ---
 
 func TestSearchHandler_Integration(t *testing.T) {
-	_, sc, cm := newTestDeps(t)
+	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
 	doc := &model.Document{
@@ -73,7 +74,7 @@ func TestSearchHandler_Integration(t *testing.T) {
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
 
-	h := &handler{search: sc, cm: cm, log: zap.NewNop()}
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchable", nil)
 	w := httptest.NewRecorder()
@@ -92,7 +93,7 @@ func TestSearchHandler_Integration(t *testing.T) {
 }
 
 func TestSearchHandler_WithParams(t *testing.T) {
-	_, sc, cm := newTestDeps(t)
+	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
 	for i, content := range []string{
@@ -109,7 +110,7 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
 
-	h := &handler{search: sc, cm: cm, log: zap.NewNop()}
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchterm&limit=2", nil)
 	w := httptest.NewRecorder()
@@ -218,8 +219,9 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 
 	st.Close()
 
-	p := pipeline.New(st, sc, zap.NewNop())
-	h := &handler{store: st, search: sc, pipeline: p, cm: cm, log: zap.NewNop()}
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, log: zap.NewNop()}
 
 	r := chi.NewRouter()
 	r.Post("/api/sync/{connector}", h.TriggerSync)
@@ -458,7 +460,7 @@ func TestSearchHandler_SearchError(t *testing.T) {
 	// Delete the search index to cause search errors
 	sc.DeleteIndex(context.Background()) //nolint:errcheck // test
 
-	h := &handler{store: st, search: sc, cm: cm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=test", nil)
 	w := httptest.NewRecorder()
 	h.Search(w, req)
@@ -562,8 +564,9 @@ func TestGetConnector_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	st.Close()
 
-	p := pipeline.New(st, sc, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, zap.NewNop())
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -577,8 +580,9 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	st.Close()
 
-	p := pipeline.New(st, sc, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, zap.NewNop())
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -638,6 +642,173 @@ func TestUpdateConnector_Integration(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected 409, got %d", w.Code)
+	}
+}
+
+func TestGetEmbeddingSettings(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["provider"] != "" {
+		t.Errorf("expected empty provider, got %v", data["provider"])
+	}
+}
+
+func TestUpdateEmbeddingSettings(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Set to ollama
+	body := `{"provider":"ollama","model":"nomic-embed-text","ollama_url":"http://localhost:11434"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify settings persisted
+	req = httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["provider"] != "ollama" {
+		t.Errorf("expected provider 'ollama', got %v", data["provider"])
+	}
+}
+
+func TestUpdateEmbeddingSettings_BadBody(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetEmbeddingSettings_StoreError(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	st.Close()
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestEmbeddingManager_LoadAndUpdate(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	ctx := context.Background()
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+
+	// Load with no DB settings and no env config
+	if err := em.LoadFromDB(ctx, &config.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	if em.Get() != nil {
+		t.Error("expected nil embedder with no config")
+	}
+	if em.Dimension() != 0 {
+		t.Errorf("expected dimension 0, got %d", em.Dimension())
+	}
+
+	// Update to ollama
+	if err := em.UpdateFromSettings(ctx, "ollama", "nomic-embed-text", "", "http://localhost:11434"); err != nil {
+		t.Fatal(err)
+	}
+	if em.Get() == nil {
+		t.Error("expected non-nil embedder after update")
+	}
+	if em.Dimension() != 768 {
+		t.Errorf("expected dimension 768, got %d", em.Dimension())
+	}
+
+	// Disable
+	if err := em.UpdateFromSettings(ctx, "", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if em.Get() != nil {
+		t.Error("expected nil embedder after disable")
+	}
+}
+
+func TestUpdateEmbeddingSettings_InvalidProvider(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	body := `{"provider":"invalid_provider"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateEmbeddingSettings_Disable(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	body := `{"provider":""}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateEmbeddingSettings_MaskedKey(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+
+	// Set a real key first
+	st.SetSetting(context.Background(), "embedding_api_key", "sk-real-key-12345") //nolint:errcheck // test
+
+	// Update with masked key — should keep original
+	body := `{"provider":"openai","model":"text-embedding-3-small","api_key":"****2345"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify key was preserved (masked in response)
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["api_key"] != "****2345" {
+		t.Errorf("expected masked key, got %v", data["api_key"])
 	}
 }
 

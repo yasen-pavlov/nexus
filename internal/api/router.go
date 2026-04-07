@@ -18,6 +18,7 @@ func NewRouter(
 	search *search.Client,
 	pipeline *pipeline.Pipeline,
 	cm *ConnectorManager,
+	em *EmbeddingManager,
 	log *zap.Logger,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -38,6 +39,7 @@ func NewRouter(
 		store:    store,
 		search:   search,
 		pipeline: pipeline,
+		em:       em,
 		cm:       cm,
 		log:      log,
 	}
@@ -53,6 +55,11 @@ func NewRouter(
 			r.Get("/{id}", h.GetConnector)
 			r.Put("/{id}", h.UpdateConnector)
 			r.Delete("/{id}", h.DeleteConnector)
+		})
+
+		r.Route("/settings", func(r chi.Router) {
+			r.Get("/embedding", h.GetEmbeddingSettings)
+			r.Put("/embedding", h.UpdateEmbeddingSettings)
 		})
 	})
 

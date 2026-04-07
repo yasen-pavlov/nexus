@@ -9,6 +9,7 @@ import (
 
 	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
+	"github.com/muty/nexus/internal/embedding"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
@@ -31,17 +32,80 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client) {
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
-	if err := sc.EnsureIndex(context.Background()); err != nil {
+	if err := sc.EnsureIndex(context.Background(), 0); err != nil {
 		t.Fatalf("create search index: %v", err)
 	}
 	t.Cleanup(func() { sc.DeleteIndex(context.Background()) }) //nolint:errcheck // test
 	return st, sc
 }
 
+type mockEmbedderProvider struct {
+	embedder embedding.Embedder
+}
+
+func (m *mockEmbedderProvider) Get() embedding.Embedder { return m.embedder }
+
+type mockEmbedder struct {
+	dim int
+}
+
+func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = make([]float32, m.dim)
+		for j := range result[i] {
+			result[i][j] = 0.1
+		}
+	}
+	return result, nil
+}
+
+func (m *mockEmbedder) Dimension() int { return m.dim }
+
+func TestPipelineRun_WithEmbedder(t *testing.T) {
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+
+	// Recreate index with k-NN enabled
+	sc.DeleteIndex(ctx)                  //nolint:errcheck // test
+	sc.EnsureIndex(ctx, 3)               //nolint:errcheck // test using dim=3 for simplicity
+
+	provider := &mockEmbedderProvider{embedder: &mockEmbedder{dim: 3}}
+	p := New(st, sc, provider, zap.NewNop())
+
+	dir := t.TempDir()
+	os.WriteFile(dir+"/test.txt", []byte("Document with embeddings for testing"), 0o644) //nolint:errcheck // test
+
+	fsConn, _ := connector.Create("filesystem")
+	_ = fsConn.Configure(connector.Config{
+		"name": "embed-test", "root_path": dir, "patterns": "*.txt",
+	})
+
+	report, err := p.Run(ctx, fsConn)
+	if err != nil {
+		t.Fatalf("pipeline run failed: %v", err)
+	}
+	if report.DocsProcessed != 1 {
+		t.Errorf("expected 1 doc, got %d", report.DocsProcessed)
+	}
+	if report.Errors != 0 {
+		t.Errorf("expected 0 errors, got %d", report.Errors)
+	}
+
+	sc.Refresh(ctx) //nolint:errcheck // test
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "embeddings", Limit: 10})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if result.TotalCount != 1 {
+		t.Errorf("expected 1 result, got %d", result.TotalCount)
+	}
+}
+
 func TestPipelineRun(t *testing.T) {
 	st, sc := newTestDeps(t)
 	ctx := context.Background()
-	p := New(st, sc, zap.NewNop())
+	p := New(st, sc, nil, zap.NewNop())
 
 	dir := t.TempDir()
 	os.WriteFile(dir+"/hello.txt", []byte("Unique xylophone document for verification"), 0o644)     //nolint:errcheck // test file

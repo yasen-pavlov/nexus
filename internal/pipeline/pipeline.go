@@ -6,11 +6,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/muty/nexus/internal/chunking"
 	"github.com/muty/nexus/internal/connector"
+	"github.com/muty/nexus/internal/embedding"
+	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
+
+// EmbedderProvider returns the current embedder (supports hot-reload).
+type EmbedderProvider interface {
+	Get() embedding.Embedder
+}
 
 // SyncReport contains the results of a sync operation.
 type SyncReport struct {
@@ -23,48 +31,98 @@ type SyncReport struct {
 
 // Pipeline orchestrates fetching documents and indexing them.
 type Pipeline struct {
-	store  *store.Store
-	search *search.Client
-	log    *zap.Logger
+	store      *store.Store
+	search     *search.Client
+	embeddings EmbedderProvider
+	log        *zap.Logger
 }
 
-// New creates a new Pipeline.
-func New(store *store.Store, search *search.Client, log *zap.Logger) *Pipeline {
-	return &Pipeline{store: store, search: search, log: log}
+// New creates a new Pipeline. embeddings can be nil for BM25-only mode.
+func New(store *store.Store, search *search.Client, embeddings EmbedderProvider, log *zap.Logger) *Pipeline {
+	return &Pipeline{store: store, search: search, embeddings: embeddings, log: log}
 }
 
-// Run fetches documents from a connector and indexes them in OpenSearch.
+// Run fetches documents from a connector, chunks them, generates embeddings, and indexes them.
 func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncReport, error) {
 	start := time.Now()
 	connID := conn.Name()
 
 	p.log.Info("sync started", zap.String("connector", connID), zap.String("type", conn.Type()))
 
-	// Load existing cursor
 	cursor, err := p.store.GetSyncCursor(ctx, connID)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: get cursor: %w", err)
 	}
 
-	// Fetch documents
 	result, err := conn.Fetch(ctx, cursor)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: fetch: %w", err)
 	}
 
-	// Index each document in OpenSearch
 	var errCount int
 	for i := range result.Documents {
-		if err := p.search.IndexDocument(ctx, &result.Documents[i]); err != nil {
+		doc := &result.Documents[i]
+		parentID := doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
+
+		// Chunk the document
+		textChunks := chunking.Split(doc.Content, chunking.DefaultMaxTokens, chunking.DefaultOverlapTokens)
+		if len(textChunks) == 0 {
+			textChunks = []chunking.Chunk{{Index: 0, Text: doc.Content}}
+		}
+
+		// Build model chunks
+		chunks := make([]model.Chunk, len(textChunks))
+		for j, tc := range textChunks {
+			chunks[j] = model.Chunk{
+				ID:         fmt.Sprintf("%s:%d", parentID, tc.Index),
+				ParentID:   parentID,
+				ChunkIndex: tc.Index,
+				Title:      doc.Title,
+				Content:    tc.Text,
+				SourceType: doc.SourceType,
+				SourceName: doc.SourceName,
+				SourceID:   doc.SourceID,
+				Metadata:   doc.Metadata,
+				URL:        doc.URL,
+				Visibility: doc.Visibility,
+				CreatedAt:  doc.CreatedAt,
+			}
+			if tc.Index == 0 {
+				chunks[j].FullContent = doc.Content
+			}
+		}
+
+		// Generate embeddings if available
+		embedder := p.getEmbedder()
+		if embedder != nil {
+			texts := make([]string, len(chunks))
+			for j, c := range chunks {
+				texts[j] = c.Content
+			}
+
+			embeddings, err := embedder.Embed(ctx, texts)
+			if err != nil {
+				p.log.Warn("embedding failed, indexing without vectors",
+					zap.String("source_id", doc.SourceID),
+					zap.Error(err),
+				)
+			} else if len(embeddings) == len(chunks) {
+				for j := range chunks {
+					chunks[j].Embedding = embeddings[j]
+				}
+			}
+		}
+
+		// Index chunks
+		if err := p.search.IndexChunks(ctx, chunks); err != nil {
 			p.log.Error("failed to index document",
-				zap.String("source_id", result.Documents[i].SourceID),
+				zap.String("source_id", doc.SourceID),
 				zap.Error(err),
 			)
 			errCount++
 		}
 	}
 
-	// Update sync cursor
 	if result.Cursor != nil {
 		if err := p.store.UpsertSyncCursor(ctx, result.Cursor); err != nil {
 			return nil, fmt.Errorf("pipeline: update cursor: %w", err)
@@ -87,4 +145,11 @@ func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncRepo
 	)
 
 	return report, nil
+}
+
+func (p *Pipeline) getEmbedder() embedding.Embedder {
+	if p.embeddings == nil {
+		return nil
+	}
+	return p.embeddings.Get()
 }

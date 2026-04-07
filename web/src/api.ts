@@ -106,3 +106,24 @@ export async function deleteConnector(id: string): Promise<void> {
     throw new Error(body.error || 'Delete failed');
   }
 }
+
+// Embedding settings
+
+export interface EmbeddingSettings {
+  provider: string;
+  model: string;
+  api_key: string;
+  ollama_url: string;
+}
+
+export async function getEmbeddingSettings(): Promise<EmbeddingSettings> {
+  return fetchAPI<EmbeddingSettings>('/api/settings/embedding');
+}
+
+export async function updateEmbeddingSettings(settings: EmbeddingSettings): Promise<EmbeddingSettings> {
+  return fetchAPI<EmbeddingSettings>('/api/settings/embedding', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+}

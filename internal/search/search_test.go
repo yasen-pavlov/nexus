@@ -20,7 +20,7 @@ func newTestClient(t *testing.T) *Client {
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
-	if err := client.EnsureIndex(ctx); err != nil {
+	if err := client.EnsureIndex(ctx, 0); err != nil {
 		t.Fatalf("create index: %v", err)
 	}
 	t.Cleanup(func() {
@@ -209,33 +209,6 @@ func TestDeleteBySource(t *testing.T) {
 	}
 }
 
-func TestGetDocument(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
-
-	doc := testDoc("get.txt", "Get Test", "Document for get test")
-	c.IndexDocument(ctx, doc) //nolint:errcheck // test
-	c.Refresh(ctx)            //nolint:errcheck // test
-
-	got, err := c.GetDocument(ctx, "filesystem", "test", "get.txt")
-	if err != nil {
-		t.Fatalf("get failed: %v", err)
-	}
-	if got.Title != "Get Test" {
-		t.Errorf("expected title 'Get Test', got %q", got.Title)
-	}
-}
-
-func TestGetDocument_NotFound(t *testing.T) {
-	c := newTestClient(t)
-	ctx := context.Background()
-
-	_, err := c.GetDocument(ctx, "filesystem", "test", "nonexistent.txt")
-	if err == nil {
-		t.Fatal("expected error for not found")
-	}
-}
-
 func TestIndexDocument_NilID(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
@@ -287,12 +260,113 @@ func TestDeleteBySource_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestGetDocument_CancelledContext(t *testing.T) {
+func TestIndexChunks(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	chunks := []model.Chunk{
+		{
+			ID: "fs:test:doc1:0", ParentID: "fs:test:doc1", ChunkIndex: 0,
+			Title: "Test Doc", Content: "First chunk of the test document",
+			FullContent: "First chunk of the test document. Second chunk continues here.",
+			SourceType: "filesystem", SourceName: "test", SourceID: "doc1",
+			Metadata: map[string]any{}, Visibility: "private", CreatedAt: now,
+		},
+		{
+			ID: "fs:test:doc1:1", ParentID: "fs:test:doc1", ChunkIndex: 1,
+			Title: "Test Doc", Content: "Second chunk continues here",
+			SourceType: "filesystem", SourceName: "test", SourceID: "doc1",
+			Metadata: map[string]any{}, Visibility: "private", CreatedAt: now,
+		},
+	}
+
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatalf("index chunks failed: %v", err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	result, err := c.Search(ctx, model.SearchRequest{Query: "chunk", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should dedup by parent_id — only 1 result for the document
+	if result.TotalCount != 1 {
+		t.Errorf("expected 1 result (deduped), got %d", result.TotalCount)
+	}
+}
+
+func TestIndexChunks_Empty(t *testing.T) {
+	c := newTestClient(t)
+	if err := c.IndexChunks(context.Background(), nil); err != nil {
+		t.Fatalf("expected no error for empty chunks, got: %v", err)
+	}
+}
+
+func TestIndexChunks_CancelledContext(t *testing.T) {
 	c := newTestClient(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := c.GetDocument(ctx, "filesystem", "test", "nope.txt")
+	chunks := []model.Chunk{{ID: "test:0", ParentID: "test", Content: "test"}}
+	err := c.IndexChunks(ctx, chunks)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestHybridSearch(t *testing.T) {
+	url, index := testutil.TestOSConfig(t, "hybrid")
+	ctx := context.Background()
+	c, err := NewWithIndex(ctx, url, index, nil)
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	// Create index with k-NN (dim=3)
+	if err := c.EnsureIndex(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.DeleteIndex(context.Background()) }) //nolint:errcheck // test
+
+	now := time.Now()
+	chunks := []model.Chunk{
+		{
+			ID: "fs:test:a:0", ParentID: "fs:test:a", ChunkIndex: 0,
+			Title: "Doc A", Content: "Semantic search with vector embeddings",
+			SourceType: "filesystem", SourceName: "test", SourceID: "a",
+			Embedding: []float32{0.9, 0.1, 0.0}, Metadata: map[string]any{},
+			Visibility: "private", CreatedAt: now,
+		},
+		{
+			ID: "fs:test:b:0", ParentID: "fs:test:b", ChunkIndex: 0,
+			Title: "Doc B", Content: "Traditional keyword based search",
+			SourceType: "filesystem", SourceName: "test", SourceID: "b",
+			Embedding: []float32{0.1, 0.9, 0.0}, Metadata: map[string]any{},
+			Visibility: "private", CreatedAt: now,
+		},
+	}
+
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatal(err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	queryEmb := []float32{0.8, 0.2, 0.0} // closer to Doc A
+	result, err := c.HybridSearch(ctx, model.SearchRequest{Query: "search", Limit: 10}, queryEmb)
+	if err != nil {
+		t.Fatalf("hybrid search failed: %v", err)
+	}
+	if result.TotalCount < 1 {
+		t.Errorf("expected at least 1 result, got %d", result.TotalCount)
+	}
+}
+
+func TestHybridSearch_CancelledContext(t *testing.T) {
+	c := newTestClient(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.HybridSearch(ctx, model.SearchRequest{Query: "test"}, []float32{0.1, 0.2})
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -303,7 +377,7 @@ func TestEnsureIndex_Idempotent(t *testing.T) {
 	ctx := context.Background()
 
 	// Index already created by newTestClient, calling again should not error
-	if err := c.EnsureIndex(ctx); err != nil {
+	if err := c.EnsureIndex(ctx, 0); err != nil {
 		t.Fatalf("second EnsureIndex failed: %v", err)
 	}
 }

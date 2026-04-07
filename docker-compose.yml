@@ -31,6 +31,18 @@ services:
       timeout: 5s
       retries: 10
 
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   nexus:
     build: .
     ports:
@@ -40,6 +52,12 @@ services:
       NEXUS_OPENSEARCH_URL: http://opensearch:9200
       NEXUS_FS_ROOT_PATH: /data
       NEXUS_FS_PATTERNS: "*.txt,*.md"
+      # Embedding configured via Settings UI, or uncomment for env var override:
+      # NEXUS_EMBEDDING_PROVIDER: ollama
+      # NEXUS_OLLAMA_URL: http://ollama:11434
+      # For API providers instead:
+      # NEXUS_EMBEDDING_PROVIDER: openai
+      # NEXUS_EMBEDDING_API_KEY: sk-...
     volumes:
       - ./testdata:/data:ro
     depends_on:
@@ -51,3 +69,4 @@ services:
 volumes:
   pgdata:
   osdata:
+  ollama-data:

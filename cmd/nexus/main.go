@@ -55,12 +55,25 @@ func run() error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
+	// Set up embedding (DB settings override env vars)
+	em := api.NewEmbeddingManager(st, log)
+	if err := em.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load embedding settings, falling back to env vars", zap.Error(err))
+	}
+
+	embeddingDim := em.Dimension()
+	if embeddingDim > 0 {
+		log.Info("embedding enabled", zap.Int("dimension", embeddingDim))
+	} else {
+		log.Info("embedding disabled, using BM25-only search")
+	}
+
 	// Set up OpenSearch
 	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log)
 	if err != nil {
 		return fmt.Errorf("init search: %w", err)
 	}
-	if err := searchClient.EnsureIndex(ctx); err != nil {
+	if err := searchClient.EnsureIndex(ctx, embeddingDim); err != nil {
 		return fmt.Errorf("ensure search index: %w", err)
 	}
 
@@ -76,7 +89,7 @@ func run() error {
 	}
 
 	// Set up scheduler
-	p := pipeline.New(st, searchClient, log)
+	p := pipeline.New(st, searchClient, em, log)
 	sched := scheduler.New(cm, p, st, log)
 	cm.SetScheduleObserver(sched)
 
@@ -84,7 +97,7 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	router := api.NewRouter(st, searchClient, p, cm, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

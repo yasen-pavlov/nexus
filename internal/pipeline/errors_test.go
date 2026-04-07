@@ -18,7 +18,7 @@ func TestPipelineRun_CursorError(t *testing.T) {
 	// Close store to trigger cursor error
 	st.Close()
 
-	p := New(st, sc, zap.NewNop())
+	p := New(st, sc, nil, zap.NewNop())
 
 	dir := t.TempDir()
 	os.WriteFile(dir+"/test.txt", []byte("test"), 0o644) //nolint:errcheck // test file
@@ -36,7 +36,7 @@ func TestPipelineRun_CursorError(t *testing.T) {
 
 func TestPipelineRun_FetchError(t *testing.T) {
 	st, sc := newTestDeps(t)
-	p := New(st, sc, zap.NewNop())
+	p := New(st, sc, nil, zap.NewNop())
 
 	fsConn, _ := connector.Create("filesystem")
 	_ = fsConn.Configure(connector.Config{
