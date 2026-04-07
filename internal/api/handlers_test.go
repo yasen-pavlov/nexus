@@ -95,3 +95,21 @@ func TestTriggerSyncHandler_NotFound(t *testing.T) {
 		t.Errorf("expected status 404, got %d", w.Code)
 	}
 }
+
+func TestParseCSV(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"", 0},
+		{"paperless", 1},
+		{"paperless,filesystem", 2},
+		{"paperless, filesystem , ", 2},
+	}
+	for _, tt := range tests {
+		result := parseCSV(tt.input)
+		if len(result) != tt.want {
+			t.Errorf("parseCSV(%q) = %d items, want %d", tt.input, len(result), tt.want)
+		}
+	}
+}

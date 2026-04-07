@@ -1,17 +1,31 @@
 package model
 
+// SearchRequest contains search parameters including filters.
 type SearchRequest struct {
-	Query  string `json:"query"`
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
+	Query       string   `json:"query"`
+	Limit       int      `json:"limit"`
+	Offset      int      `json:"offset"`
+	Sources     []string `json:"sources,omitempty"`      // filter by source_type
+	SourceNames []string `json:"source_names,omitempty"` // filter by source_name
+	DateFrom    string   `json:"date_from,omitempty"`    // ISO date (e.g., 2025-01-01)
+	DateTo      string   `json:"date_to,omitempty"`      // ISO date
 }
 
+// SearchResult contains search results with optional facets.
 type SearchResult struct {
-	Documents  []DocumentHit `json:"documents"`
-	TotalCount int           `json:"total_count"`
-	Query      string        `json:"query"`
+	Documents  []DocumentHit      `json:"documents"`
+	TotalCount int                `json:"total_count"`
+	Query      string             `json:"query"`
+	Facets     map[string][]Facet `json:"facets,omitempty"`
 }
 
+// Facet represents a single aggregation bucket.
+type Facet struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
+}
+
+// DocumentHit is a search result with ranking info.
 type DocumentHit struct {
 	Document
 	Rank     float64 `json:"rank"`

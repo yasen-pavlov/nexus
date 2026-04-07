@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/muty/nexus/internal/model"
@@ -36,9 +37,13 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
 	req := model.SearchRequest{
-		Query:  query,
-		Limit:  limit,
-		Offset: offset,
+		Query:       query,
+		Limit:       limit,
+		Offset:      offset,
+		Sources:     parseCSV(r.URL.Query().Get("sources")),
+		SourceNames: parseCSV(r.URL.Query().Get("source_names")),
+		DateFrom:    r.URL.Query().Get("date_from"),
+		DateTo:      r.URL.Query().Get("date_to"),
 	}
 
 	// Try hybrid search if embedder is available
@@ -82,4 +87,19 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, report)
+}
+
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }

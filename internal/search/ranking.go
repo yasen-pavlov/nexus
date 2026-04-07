@@ -1,5 +1,15 @@
 package search
 
+import "github.com/muty/nexus/internal/model"
+
+// rankedChunk is a deduped search result used during ranking.
+type rankedChunk struct {
+	parentID string
+	doc      model.Document
+	headline string
+	rrfScore float64
+}
+
 // Ranking configuration for hybrid search.
 // These constants control how BM25 and k-NN results are merged.
 // Adjust these values to tune search quality.

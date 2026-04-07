@@ -17,10 +17,23 @@ export interface DocumentHit extends Document {
   headline: string;
 }
 
+export interface Facet {
+  value: string;
+  count: number;
+}
+
 export interface SearchResult {
   documents: DocumentHit[] | null;
   total_count: number;
   query: string;
+  facets?: Record<string, Facet[]>;
+}
+
+export interface SearchFilters {
+  sources?: string[];
+  sourceNames?: string[];
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface SyncReport {
@@ -66,8 +79,12 @@ async function fetchAPI<T>(url: string, options?: RequestInit): Promise<T> {
   return body.data as T;
 }
 
-export async function search(query: string, limit = 20, offset = 0): Promise<SearchResult> {
+export async function search(query: string, limit = 20, offset = 0, filters?: SearchFilters): Promise<SearchResult> {
   const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
+  if (filters?.sources?.length) params.set('sources', filters.sources.join(','));
+  if (filters?.sourceNames?.length) params.set('source_names', filters.sourceNames.join(','));
+  if (filters?.dateFrom) params.set('date_from', filters.dateFrom);
+  if (filters?.dateTo) params.set('date_to', filters.dateTo);
   return fetchAPI<SearchResult>(`/api/search?${params}`);
 }
 

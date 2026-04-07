@@ -180,13 +180,16 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 		req.Limit = 20
 	}
 
-	query := map[string]any{
-		"query": map[string]any{
-			"multi_match": map[string]any{
-				"query":  req.Query,
-				"fields": []string{"title^2", "content"},
-			},
+	matchQuery := map[string]any{
+		"multi_match": map[string]any{
+			"query":  req.Query,
+			"fields": []string{"title^2", "content"},
 		},
+	}
+	filters := buildFilterClauses(req)
+
+	query := map[string]any{
+		"query": buildSearchQuery(matchQuery, filters),
 		"highlight": map[string]any{
 			"fields": map[string]any{
 				"content": map[string]any{
@@ -224,14 +227,17 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 	}
 	fetchSize := req.Limit * 3
 
-	// BM25 query
-	bm25Query := map[string]any{
-		"query": map[string]any{
-			"multi_match": map[string]any{
-				"query":  req.Query,
-				"fields": []string{"title^2", "content"},
-			},
+	matchQuery := map[string]any{
+		"multi_match": map[string]any{
+			"query":  req.Query,
+			"fields": []string{"title^2", "content"},
 		},
+	}
+	filters := buildFilterClauses(req)
+
+	// BM25 query with filters
+	bm25Query := map[string]any{
+		"query": buildSearchQuery(matchQuery, filters),
 		"highlight": map[string]any{
 			"fields": map[string]any{
 				"content": map[string]any{
@@ -254,16 +260,17 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 		return nil, fmt.Errorf("search: bm25 query: %w", err)
 	}
 
-	// k-NN query with minimum score threshold
-	knnQuery := map[string]any{
-		"query": map[string]any{
-			"knn": map[string]any{
-				"embedding": map[string]any{
-					"vector": queryEmbedding,
-					"k":      fetchSize,
-				},
+	// k-NN query with minimum score threshold and filters
+	knnMatchQuery := map[string]any{
+		"knn": map[string]any{
+			"embedding": map[string]any{
+				"vector": queryEmbedding,
+				"k":      fetchSize,
 			},
 		},
+	}
+	knnQuery := map[string]any{
+		"query":     buildSearchQuery(knnMatchQuery, filters),
 		"min_score": knnMinScore,
 		"size":      fetchSize,
 	}
@@ -281,12 +288,6 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 }
 
 func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.SearchRequest, knnResp *opensearchapi.SearchResp) (*model.SearchResult, error) {
-	type rankedChunk struct {
-		parentID string
-		doc      model.Document
-		headline string
-		rrfScore float64
-	}
 
 	// Parse BM25 hits — these are the primary results
 	chunkData := make(map[string]*rankedChunk)
@@ -382,6 +383,9 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 		return results[i].rrfScore > results[j].rrfScore
 	})
 
+	// Compute facets from the full deduped result set (before pagination)
+	facets := computeFacets(results)
+
 	// Apply offset and limit
 	totalCount := len(results)
 	if req.Offset > 0 && req.Offset < len(results) {
@@ -406,6 +410,7 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 		Documents:  hits,
 		TotalCount: totalCount,
 		Query:      req.Query,
+		Facets:     facets,
 	}, nil
 }
 

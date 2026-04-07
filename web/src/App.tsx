@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorConfig } from './api';
+import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorConfig, type SearchFilters } from './api';
 import ConnectorManager from './ConnectorManager';
+import SearchFiltersBar from './SearchFilters';
 import Settings from './Settings';
 import './App.css';
 
@@ -14,6 +15,7 @@ function App() {
   const [error, setError] = useState('');
   const [showConnectors, setShowConnectors] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [filters, setFilters] = useState<SearchFilters>({});
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const loadConnectors = useCallback(() => {
@@ -22,7 +24,7 @@ function App() {
 
   useEffect(loadConnectors, [loadConnectors]);
 
-  const doSearch = useCallback(async (q: string) => {
+  const doSearch = useCallback(async (q: string, f?: SearchFilters) => {
     if (!q.trim()) {
       setResult(null);
       return;
@@ -30,7 +32,7 @@ function App() {
     setLoading(true);
     setError('');
     try {
-      const res = await search(q);
+      const res = await search(q, 20, 0, f);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
@@ -42,7 +44,14 @@ function App() {
   const handleInputChange = (value: string) => {
     setQuery(value);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => doSearch(value), 300);
+    debounceRef.current = setTimeout(() => doSearch(value, filters), 300);
+  };
+
+  const handleFilterChange = (newFilters: SearchFilters) => {
+    setFilters(newFilters);
+    if (query.trim()) {
+      doSearch(query, newFilters);
+    }
   };
 
   const handleSync = async (connectorName: string) => {
@@ -131,6 +140,14 @@ function App() {
           Synced {syncReport.docs_processed} documents from {syncReport.connector_name}
           {syncReport.errors > 0 && ` (${syncReport.errors} errors)`}
         </div>
+      )}
+
+      {result && (
+        <SearchFiltersBar
+          facets={result.facets}
+          filters={filters}
+          onChange={handleFilterChange}
+        />
       )}
 
       {error && <div className="error">{error}</div>}
