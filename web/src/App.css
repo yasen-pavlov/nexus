@@ -139,6 +139,11 @@ body {
   font-weight: 600;
   color: #58a6ff;
   font-size: 1rem;
+  text-decoration: none;
+}
+
+a.result-title:hover {
+  text-decoration: underline;
 }
 
 .result-source {

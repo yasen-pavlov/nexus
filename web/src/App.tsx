@@ -162,7 +162,11 @@ function App() {
           {result.documents?.map((hit) => (
             <div key={hit.id} className="result-card">
               <div className="result-header">
-                <span className="result-title">{hit.title}</span>
+                {hit.url && !hit.url.startsWith('file://') ? (
+                  <a className="result-title" href={hit.url} target="_blank" rel="noopener noreferrer">{hit.title}</a>
+                ) : (
+                  <span className="result-title">{hit.title}</span>
+                )}
                 <span className="result-source">{hit.source_type}:{hit.source_name}</span>
               </div>
               {hit.headline ? (
