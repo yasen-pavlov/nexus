@@ -1,0 +1,20 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+  settings:
+    staticcheck:
+      checks:
+        - "all"
+  exclusions:
+    paths:
+      - "web"
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,22 @@
+Homelab Setup Notes
+
+The main server runs Proxmox VE with several LXC containers and VMs.
+
+Services running:
+- Traefik reverse proxy for SSL termination
+- Paperless-ngx for document management
+- Nextcloud for file sync
+- Home Assistant for smart home automation
+- Grafana + Prometheus for monitoring
+- PostgreSQL database server
+- Ollama for local LLM inference
+
+The Synology NAS handles bulk storage with two volumes:
+- Volume 1: Media files (photos, videos, music)
+- Volume 2: Backups and archives
+
+Network is segmented into VLANs:
+- VLAN 10: Management
+- VLAN 20: Services
+- VLAN 30: IoT devices
+- VLAN 40: Guest network

@@ -1,0 +1,24 @@
+Docker Compose Cheatsheet
+
+Common commands:
+  docker compose up -d          Start all services in background
+  docker compose down           Stop and remove containers
+  docker compose logs -f        Follow logs from all services
+  docker compose ps             List running containers
+  docker compose pull           Pull latest images
+  docker compose restart        Restart all services
+
+Useful flags:
+  --build                       Rebuild images before starting
+  --force-recreate              Recreate containers even if unchanged
+  --remove-orphans              Remove containers for undefined services
+
+Volume management:
+  docker volume ls              List all volumes
+  docker volume prune           Remove unused volumes
+  docker system prune -a        Remove all unused data (careful!)
+
+Debugging:
+  docker compose exec <svc> sh  Shell into a running container
+  docker compose run <svc> sh   Start a new container with shell
+  docker inspect <container>    Show container details

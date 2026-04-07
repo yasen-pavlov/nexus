@@ -1,0 +1,27 @@
+# Go
+nexus
+bin/
+coverage.out
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Node
+web/node_modules/
+web/dist/
+
+# Environment
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

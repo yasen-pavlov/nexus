@@ -1,0 +1,127 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { search, triggerSync, listConnectors, type SearchResult, type SyncReport, type ConnectorInfo } from './api';
+import './App.css';
+
+function App() {
+  const [query, setQuery] = useState('');
+  const [result, setResult] = useState<SearchResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
+  const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
+  const [error, setError] = useState('');
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    listConnectors().then(setConnectors).catch(() => {});
+  }, []);
+
+  const doSearch = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResult(null);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const res = await search(q);
+      setResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Search failed');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleInputChange = (value: string) => {
+    setQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => doSearch(value), 300);
+  };
+
+  const handleSync = async (connectorName: string) => {
+    setSyncing(true);
+    setSyncReport(null);
+    setError('');
+    try {
+      const report = await triggerSync(connectorName);
+      setSyncReport(report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  return (
+    <div className="app">
+      <header className="header">
+        <h1>Nexus</h1>
+        <p className="subtitle">Personal Search</p>
+      </header>
+
+      <div className="search-container">
+        <input
+          type="text"
+          className="search-input"
+          placeholder="Search across all your data..."
+          value={query}
+          onChange={(e) => handleInputChange(e.target.value)}
+          autoFocus
+        />
+      </div>
+
+      <div className="controls">
+        {connectors.map((conn) => (
+          <button
+            key={conn.name}
+            className="sync-button"
+            onClick={() => handleSync(conn.name)}
+            disabled={syncing}
+          >
+            {syncing ? 'Syncing...' : `Sync ${conn.name}`}
+          </button>
+        ))}
+      </div>
+
+      {syncReport && (
+        <div className="sync-report">
+          Synced {syncReport.docs_processed} documents from {syncReport.connector_name}
+          {syncReport.errors > 0 && ` (${syncReport.errors} errors)`}
+        </div>
+      )}
+
+      {error && <div className="error">{error}</div>}
+
+      {loading && <div className="loading">Searching...</div>}
+
+      {result && (
+        <div className="results">
+          <div className="results-count">
+            {result.total_count} result{result.total_count !== 1 ? 's' : ''} for "{result.query}"
+          </div>
+          {result.documents?.map((hit) => (
+            <div key={hit.id} className="result-card">
+              <div className="result-header">
+                <span className="result-title">{hit.title}</span>
+                <span className="result-source">{hit.source_type}:{hit.source_name}</span>
+              </div>
+              <div
+                className="result-snippet"
+                dangerouslySetInnerHTML={{ __html: hit.headline }}
+              />
+              <div className="result-meta">
+                {hit.metadata?.path ? <span className="result-path">{String(hit.metadata.path)}</span> : null}
+                <span className="result-date">
+                  {new Date(hit.created_at).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
