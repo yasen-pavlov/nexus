@@ -16,7 +16,7 @@ import (
 var ErrDuplicateName = errors.New("connector name already exists")
 
 func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConfig, error) {
-	query := `SELECT id, type, name, config, enabled, created_at, updated_at FROM connector_configs ORDER BY name`
+	query := `SELECT id, type, name, config, enabled, schedule, last_run, created_at, updated_at FROM connector_configs ORDER BY name`
 
 	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
@@ -28,7 +28,7 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 	for rows.Next() {
 		var cfg model.ConnectorConfig
 		var configJSON []byte
-		err := rows.Scan(&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.CreatedAt, &cfg.UpdatedAt)
+		err := rows.Scan(&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan connector config: %w", err)
 		}
@@ -48,12 +48,12 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 }
 
 func (s *Store) GetConnectorConfig(ctx context.Context, id uuid.UUID) (*model.ConnectorConfig, error) {
-	query := `SELECT id, type, name, config, enabled, created_at, updated_at FROM connector_configs WHERE id = $1`
+	query := `SELECT id, type, name, config, enabled, schedule, last_run, created_at, updated_at FROM connector_configs WHERE id = $1`
 
 	var cfg model.ConnectorConfig
 	var configJSON []byte
 	err := s.pool.QueryRow(ctx, query, id).Scan(
-		&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.CreatedAt, &cfg.UpdatedAt,
+		&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -80,11 +80,11 @@ func (s *Store) CreateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `INSERT INTO connector_configs (id, type, name, config, enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`
+	query := `INSERT INTO connector_configs (id, type, name, config, enabled, schedule, last_run, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
 	_, err = s.pool.Exec(ctx, query,
-		cfg.ID, cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.CreatedAt, cfg.UpdatedAt,
+		cfg.ID, cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.LastRun, cfg.CreatedAt, cfg.UpdatedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -104,10 +104,10 @@ func (s *Store) UpdateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, updated_at = $5 WHERE id = $6`
+	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, schedule = $5, updated_at = $6 WHERE id = $7`
 
 	result, err := s.pool.Exec(ctx, query,
-		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.UpdatedAt, cfg.ID,
+		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.UpdatedAt, cfg.ID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -118,6 +118,15 @@ func (s *Store) UpdateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 	}
 	if result.RowsAffected() == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) error {
+	query := `UPDATE connector_configs SET last_run = $1 WHERE id = $2`
+	_, err := s.pool.Exec(ctx, query, t, id)
+	if err != nil {
+		return fmt.Errorf("store: update last_run: %w", err)
 	}
 	return nil
 }

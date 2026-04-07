@@ -156,6 +156,12 @@ export default function ConnectorManager({ onClose }: Props) {
               {Object.entries(conn.config).map(([k, v]) => (
                 <span key={k} className="cm-config-item">{k}: {String(v)}</span>
               ))}
+              {conn.schedule && (
+                <span className="cm-config-item cm-schedule">schedule: {conn.schedule}</span>
+              )}
+              {conn.last_run && (
+                <span className="cm-config-item">last run: {new Date(conn.last_run).toLocaleString()}</span>
+              )}
             </div>
           </div>
         ))}
@@ -174,6 +180,7 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
   const [type, setType] = useState(initial?.type || 'filesystem');
   const [name, setName] = useState(initial?.name || '');
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [schedule, setSchedule] = useState(initial?.schedule || '');
   const [configValues, setConfigValues] = useState<Record<string, string>>(() => {
     if (initial?.config) {
       const vals: Record<string, string> = {};
@@ -195,7 +202,7 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
         config[field.key] = configValues[field.key];
       }
     }
-    onSubmit({ type, name, config, enabled });
+    onSubmit({ type, name, config, enabled, schedule });
   };
 
   return (
@@ -230,6 +237,16 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
           />
         </div>
       ))}
+      <div className="cm-form-row">
+        <label>Schedule (cron)</label>
+        <input
+          type="text"
+          value={schedule}
+          onChange={(e) => setSchedule(e.target.value)}
+          placeholder="*/30 * * * *"
+        />
+        <span className="cm-form-hint">Leave empty for manual sync only. Examples: */5 * * * * (every 5 min), 0 * * * * (hourly)</span>
+      </div>
       <div className="cm-form-row">
         <label>
           <input

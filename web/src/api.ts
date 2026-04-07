@@ -37,6 +37,8 @@ export interface ConnectorConfig {
   name: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  schedule: string;
+  last_run: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -47,6 +49,7 @@ export interface CreateConnectorRequest {
   name: string;
   config: Record<string, unknown>;
   enabled: boolean;
+  schedule: string;
 }
 
 interface APIResponse<T> {

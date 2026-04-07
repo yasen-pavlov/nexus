@@ -1,5 +1,5 @@
 # Go
-nexus
+/nexus
 bin/
 coverage.out
 *.exe

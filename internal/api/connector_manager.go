@@ -13,13 +13,25 @@ import (
 	"go.uber.org/zap"
 )
 
+// ScheduleObserver is notified when connector schedules change.
+type ScheduleObserver interface {
+	OnConnectorChanged(cfg *model.ConnectorConfig)
+	OnConnectorRemoved(id uuid.UUID, name string)
+}
+
 // ConnectorManager manages the lifecycle of connectors, bridging
 // database-persisted configurations with in-memory connector instances.
 type ConnectorManager struct {
-	mu         sync.RWMutex
-	connectors map[string]connector.Connector
-	store      *store.Store
-	log        *zap.Logger
+	mu            sync.RWMutex
+	connectors    map[string]connector.Connector
+	store         *store.Store
+	log           *zap.Logger
+	schedObserver ScheduleObserver
+}
+
+// SetScheduleObserver sets the observer that is notified when connector schedules change.
+func (m *ConnectorManager) SetScheduleObserver(obs ScheduleObserver) {
+	m.schedObserver = obs
 }
 
 // NewConnectorManager creates a new ConnectorManager.
@@ -98,6 +110,10 @@ func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) 
 		m.mu.Unlock()
 	}
 
+	if m.schedObserver != nil {
+		m.schedObserver.OnConnectorChanged(cfg)
+	}
+
 	return nil
 }
 
@@ -132,6 +148,10 @@ func (m *ConnectorManager) Update(ctx context.Context, cfg *model.ConnectorConfi
 		delete(m.connectors, cfg.Name)
 	}
 
+	if m.schedObserver != nil {
+		m.schedObserver.OnConnectorChanged(cfg)
+	}
+
 	return nil
 }
 
@@ -154,6 +174,10 @@ func (m *ConnectorManager) Remove(ctx context.Context, id uuid.UUID) error {
 	m.mu.Lock()
 	delete(m.connectors, cfg.Name)
 	m.mu.Unlock()
+
+	if m.schedObserver != nil {
+		m.schedObserver.OnConnectorRemoved(id, cfg.Name)
+	}
 
 	return nil
 }

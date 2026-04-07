@@ -102,4 +102,11 @@ func TestOperationsOnClosedStore(t *testing.T) {
 			t.Error("expected error on closed store")
 		}
 	})
+
+	t.Run("update last_run on closed store", func(t *testing.T) {
+		err := st.UpdateLastRun(ctx, uuid.New(), time.Now())
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
 }

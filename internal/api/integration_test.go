@@ -491,6 +491,33 @@ func TestUpdateConnector_Integration(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("update invalid id: expected 400, got %d", w.Code)
 	}
+
+	// Update with invalid JSON body
+	req = httptest.NewRequest(http.MethodPut, "/api/connectors/"+connID, bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("update bad body: expected 400, got %d", w.Code)
+	}
+
+	// Create second connector to test duplicate name on update
+	dir3 := t.TempDir()
+	body2 := `{"type":"filesystem","name":"upd-other","config":{"root_path":"` + dir3 + `","patterns":"*.txt"},"enabled":true}`
+	req = httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body2))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Try to rename first connector to second's name
+	dupeBody := `{"type":"filesystem","name":"upd-other","config":{"root_path":"` + dir2 + `","patterns":"*.md"},"enabled":true}`
+	req = httptest.NewRequest(http.MethodPut, "/api/connectors/"+connID, bytes.NewBufferString(dupeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("update dupe name: expected 409, got %d", w.Code)
+	}
 }
 
 func TestListConnectors_StoreError(t *testing.T) {
@@ -536,6 +563,122 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestUpdateConnector_InvalidSchedule(t *testing.T) {
+	_, _, router := newTestRouter(t)
+
+	// Create first
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"upd-sched","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	connID := resp.Data.(map[string]any)["id"].(string)
+
+	// Update with invalid schedule
+	updateBody := `{"type":"filesystem","name":"upd-sched","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true,"schedule":"bad cron"}`
+	req = httptest.NewRequest(http.MethodPut, "/api/connectors/"+connID, bytes.NewBufferString(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid schedule on update, got %d", w.Code)
+	}
+}
+
+func TestSetScheduleObserver(t *testing.T) {
+	_, cm := newTestStoreAndManager(t)
+
+	// Should not panic with nil observer
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "obs-test",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set observer and verify it's called
+	called := false
+	obs := &testObserver{onChanged: func(_ *model.ConnectorConfig) { called = true }}
+	cm.SetScheduleObserver(obs)
+
+	cfg2 := &model.ConnectorConfig{
+		Type: "filesystem", Name: "obs-test2",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true,
+	}
+	if err := cm.Add(context.Background(), cfg2); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("expected observer to be called")
+	}
+}
+
+type testObserver struct {
+	onChanged func(cfg *model.ConnectorConfig)
+	onRemoved func(id uuid.UUID, name string)
+}
+
+func (o *testObserver) OnConnectorChanged(cfg *model.ConnectorConfig) {
+	if o.onChanged != nil {
+		o.onChanged(cfg)
+	}
+}
+
+func (o *testObserver) OnConnectorRemoved(id uuid.UUID, name string) {
+	if o.onRemoved != nil {
+		o.onRemoved(id, name)
+	}
+}
+
+func TestCreateConnector_InvalidSchedule(t *testing.T) {
+	_, _, router := newTestRouter(t)
+
+	body := `{"type":"filesystem","name":"bad-sched","config":{"root_path":"` + t.TempDir() + `","patterns":"*.txt"},"enabled":true,"schedule":"not a cron"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid schedule, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateConnector_WithSchedule(t *testing.T) {
+	_, _, router := newTestRouter(t)
+
+	body := `{"type":"filesystem","name":"sched-test","config":{"root_path":"` + t.TempDir() + `","patterns":"*.txt"},"enabled":true,"schedule":"*/30 * * * *"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify schedule is returned in list
+	req = httptest.NewRequest(http.MethodGet, "/api/connectors/", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	connectors := resp.Data.([]any)
+	if len(connectors) != 1 {
+		t.Fatalf("expected 1 connector, got %d", len(connectors))
+	}
+	conn := connectors[0].(map[string]any)
+	if conn["schedule"] != "*/30 * * * *" {
+		t.Errorf("expected schedule '*/30 * * * *', got %v", conn["schedule"])
 	}
 }
 

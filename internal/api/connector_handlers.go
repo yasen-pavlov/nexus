@@ -3,27 +3,31 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
+	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 )
 
 type createConnectorRequest struct {
-	Type    string         `json:"type"`
-	Name    string         `json:"name"`
-	Config  map[string]any `json:"config"`
-	Enabled bool           `json:"enabled"`
+	Type     string         `json:"type"`
+	Name     string         `json:"name"`
+	Config   map[string]any `json:"config"`
+	Enabled  bool           `json:"enabled"`
+	Schedule string         `json:"schedule"`
 }
 
 type updateConnectorRequest struct {
-	Type    string         `json:"type"`
-	Name    string         `json:"name"`
-	Config  map[string]any `json:"config"`
-	Enabled bool           `json:"enabled"`
+	Type     string         `json:"type"`
+	Name     string         `json:"name"`
+	Config   map[string]any `json:"config"`
+	Enabled  bool           `json:"enabled"`
+	Schedule string         `json:"schedule"`
 }
 
 type connectorResponse struct {
@@ -90,11 +94,17 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateSchedule(req.Schedule); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	cfg := &model.ConnectorConfig{
-		Type:    req.Type,
-		Name:    req.Name,
-		Config:  req.Config,
-		Enabled: req.Enabled,
+		Type:     req.Type,
+		Name:     req.Name,
+		Config:   req.Config,
+		Enabled:  req.Enabled,
+		Schedule: req.Schedule,
 	}
 	if cfg.Config == nil {
 		cfg.Config = map[string]any{}
@@ -130,12 +140,18 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateSchedule(req.Schedule); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	cfg := &model.ConnectorConfig{
-		ID:      id,
-		Type:    req.Type,
-		Name:    req.Name,
-		Config:  req.Config,
-		Enabled: req.Enabled,
+		ID:       id,
+		Type:     req.Type,
+		Name:     req.Name,
+		Config:   req.Config,
+		Enabled:  req.Enabled,
+		Schedule: req.Schedule,
 	}
 	if cfg.Config == nil {
 		cfg.Config = map[string]any{}
@@ -175,4 +191,16 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func validateSchedule(schedule string) error {
+	if schedule == "" {
+		return nil
+	}
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	_, err := parser.Parse(schedule)
+	if err != nil {
+		return fmt.Errorf("invalid cron expression: %w", err)
+	}
+	return nil
 }

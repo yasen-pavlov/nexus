@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/model"
@@ -31,10 +32,11 @@ func TestCreateAndGetConnectorConfig(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.ConnectorConfig{
-		Type:    "filesystem",
-		Name:    "my-files",
-		Config:  map[string]any{"root_path": "/data", "patterns": "*.txt"},
-		Enabled: true,
+		Type:     "filesystem",
+		Name:     "my-files",
+		Config:   map[string]any{"root_path": "/data", "patterns": "*.txt"},
+		Enabled:  true,
+		Schedule: "*/30 * * * *",
 	}
 
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
@@ -204,5 +206,57 @@ func TestListConnectorConfigs(t *testing.T) {
 	// Should be ordered by name
 	if configs[0].Name != "alpha" {
 		t.Errorf("expected first config to be 'alpha', got %q", configs[0].Name)
+	}
+}
+
+func TestScheduleRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "sched-test", Config: map[string]any{},
+		Enabled: true, Schedule: "*/15 * * * *",
+	}
+	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetConnectorConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Schedule != "*/15 * * * *" {
+		t.Errorf("expected schedule '*/15 * * * *', got %q", got.Schedule)
+	}
+	if got.LastRun != nil {
+		t.Error("expected nil last_run")
+	}
+}
+
+func TestUpdateLastRun(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "lastrun-test", Config: map[string]any{}, Enabled: true,
+	}
+	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().Truncate(time.Microsecond)
+	if err := st.UpdateLastRun(ctx, cfg.ID, now); err != nil {
+		t.Fatalf("update last_run failed: %v", err)
+	}
+
+	got, err := st.GetConnectorConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastRun == nil {
+		t.Fatal("expected last_run to be set")
+	}
+	if !got.LastRun.Truncate(time.Microsecond).Equal(now) {
+		t.Errorf("expected last_run %v, got %v", now, *got.LastRun)
 	}
 }
