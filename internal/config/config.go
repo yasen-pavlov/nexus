@@ -9,6 +9,9 @@ type Config struct {
 	OpenSearchURL string `envconfig:"OPENSEARCH_URL" default:"http://localhost:9200"`
 	LogLevel      string `envconfig:"LOG_LEVEL" default:"info"`
 
+	// Content extraction
+	TikaURL string `envconfig:"TIKA_URL" default:"http://localhost:9998"`
+
 	// Embedding
 	EmbeddingProvider string `envconfig:"EMBEDDING_PROVIDER"` // ollama, openai, voyage, cohere (empty = disabled)
 	EmbeddingModel    string `envconfig:"EMBEDDING_MODEL"`

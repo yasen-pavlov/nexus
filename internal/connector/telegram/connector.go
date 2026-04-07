@@ -14,6 +14,12 @@ import (
 	"github.com/muty/nexus/internal/model"
 )
 
+// telegramAPI abstracts the Telegram API calls for testability.
+type telegramAPI interface {
+	MessagesGetDialogs(ctx context.Context, req *tg.MessagesGetDialogsRequest) (tg.MessagesDialogsClass, error)
+	MessagesGetHistory(ctx context.Context, req *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error)
+}
+
 func init() {
 	connector.Register("telegram", func() connector.Connector {
 		return &Connector{}
@@ -108,53 +114,15 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	})
 
 	var docs []model.Document
-	var fetchErr error
 
 	err := client.Run(ctx, func(ctx context.Context) error {
-		api := client.API()
-
-		// Determine the earliest message date
-		var sinceDate int
-		if cursor != nil {
-			if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
-				sinceDate = int(ts)
-			}
-		} else if !c.syncSince.IsZero() {
-			sinceDate = int(c.syncSince.Unix())
-		}
-
-		// Get dialogs
-		dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-			OffsetPeer: &tg.InputPeerEmpty{},
-			Limit:      100,
-		})
-		if err != nil {
-			return fmt.Errorf("get dialogs: %w", err)
-		}
-
-		var chats []tg.ChatClass
-		var users []tg.UserClass
-
-		switch d := dialogs.(type) {
-		case *tg.MessagesDialogs:
-			chats = d.Chats
-			users = d.Users
-		case *tg.MessagesDialogsSlice:
-			chats = d.Chats
-			users = d.Users
-		default:
-			return nil
-		}
-
-		docs, fetchErr = c.processDialogs(ctx, api, chats, users, sinceDate)
+		var fetchErr error
+		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), cursor)
 		return fetchErr
 	})
 
 	if err != nil {
 		return nil, fmt.Errorf("telegram: client run: %w", err)
-	}
-	if fetchErr != nil {
-		return nil, fetchErr
 	}
 
 	now := time.Now()
@@ -172,7 +140,42 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}, nil
 }
 
-func (c *Connector) processDialogs(ctx context.Context, api *tg.Client, chats []tg.ChatClass, users []tg.UserClass, sinceDate int) ([]model.Document, error) {
+func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, cursor *model.SyncCursor) ([]model.Document, error) {
+	var sinceDate int
+	if cursor != nil {
+		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
+			sinceDate = int(ts)
+		}
+	} else if !c.syncSince.IsZero() {
+		sinceDate = int(c.syncSince.Unix())
+	}
+
+	dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get dialogs: %w", err)
+	}
+
+	var chats []tg.ChatClass
+	var users []tg.UserClass
+
+	switch d := dialogs.(type) {
+	case *tg.MessagesDialogs:
+		chats = d.Chats
+		users = d.Users
+	case *tg.MessagesDialogsSlice:
+		chats = d.Chats
+		users = d.Users
+	default:
+		return nil, nil
+	}
+
+	return c.processDialogs(ctx, api, chats, users, sinceDate)
+}
+
+func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, chats []tg.ChatClass, users []tg.UserClass, sinceDate int) ([]model.Document, error) {
 	var allDocs []model.Document
 
 	for _, chat := range chats {
@@ -220,7 +223,7 @@ func (c *Connector) processDialogs(ctx context.Context, api *tg.Client, chats []
 	return allDocs, nil
 }
 
-func (c *Connector) fetchChatMessages(ctx context.Context, api *tg.Client, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
+func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
 	var docs []model.Document
 
 	req := &tg.MessagesGetHistoryRequest{

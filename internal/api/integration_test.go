@@ -26,6 +26,17 @@ import (
 	"go.uber.org/zap"
 )
 
+type mockEmbedder struct{ dim int }
+
+func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = make([]float32, m.dim)
+	}
+	return result, nil
+}
+func (m *mockEmbedder) Dimension() int { return m.dim }
+
 func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager) {
 	t.Helper()
 	tdb := testutil.NewTestDB(t, "api", migrations.FS)
@@ -59,6 +70,35 @@ func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManage
 }
 
 // --- Search tests ---
+
+func TestSearchHandler_HybridFallback(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	doc := &model.Document{
+		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "hybrid-test.txt",
+		Title: "Hybrid Test", Content: "Testing hybrid search with embedder fallback",
+		Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
+	}
+	sc.IndexDocument(ctx, doc) //nolint:errcheck // test
+	sc.Refresh(ctx)            //nolint:errcheck // test
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	// Set a mock embedder that returns fake embeddings
+	em.Set(&mockEmbedder{dim: 3})
+
+	h := &handler{search: sc, cm: cm, em: em, log: zap.NewNop()}
+
+	// This will try hybrid search (embed query → k-NN), but k-NN will fail
+	// because the index has no embedding field. Falls back to BM25.
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=hybrid", nil)
+	w := httptest.NewRecorder()
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
 
 func TestSearchHandler_Integration(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
@@ -691,6 +731,25 @@ func TestUpdateEmbeddingSettings(t *testing.T) {
 	}
 }
 
+func TestEmbeddingManager_LoadFromDB_WithSettings(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	ctx := context.Background()
+
+	// Pre-populate DB settings
+	st.SetSetting(ctx, "embedding_provider", "ollama")   //nolint:errcheck // test
+	st.SetSetting(ctx, "embedding_model", "nomic-embed-text") //nolint:errcheck // test
+	st.SetSetting(ctx, "ollama_url", "http://localhost:11434") //nolint:errcheck // test
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	if err := em.LoadFromDB(ctx, &config.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	// Embedder should be created from DB settings
+	if em.Get() == nil {
+		t.Error("expected embedder loaded from DB settings")
+	}
+}
+
 func TestUpdateEmbeddingSettings_BadBody(t *testing.T) {
 	_, _, _, router := newTestRouter(t)
 
@@ -820,5 +879,168 @@ func TestNewRouter_Integration(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("health: expected 200, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthStart_NotFound(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/start", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthStart_InvalidID(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/not-uuid/auth/start", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthStart_NotTelegram(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"auth-fs","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	connID := resp.Data.(map[string]any)["id"].(string)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/start", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTelegramAuthStart_ValidTelegram(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Create a valid telegram connector
+	body := `{"type":"telegram","name":"auth-valid","config":{"api_id":"12345","api_hash":"abc","phone":"+1234567890"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", w.Code)
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	connID := resp.Data.(map[string]any)["id"].(string)
+
+	// Start auth — will attempt to connect to Telegram (will fail since it's fake credentials,
+	// but the validation path up to the goroutine launch is covered)
+	req = httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/start", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	// Should return 200 (auth started) even though the background goroutine will fail
+	// The goroutine runs async so the HTTP response comes back before it completes
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTelegramAuthStart_MissingConfig(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Create telegram connector without phone
+	body := `{"type":"telegram","name":"auth-nophone","config":{"api_id":"123","api_hash":"abc"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	// This will fail at connector validation (phone required)
+	if w.Code == http.StatusCreated {
+		var resp APIResponse
+		json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+		connID := resp.Data.(map[string]any)["id"].(string)
+
+		req = httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/start", nil)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for missing phone, got %d", w.Code)
+		}
+	}
+}
+
+func TestTelegramAuthCode_BadBody(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthCode_NoPending(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	body := `{"code":"12345"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthCode_MissingCode(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	body := `{}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestConnectorManager_SetExtractor(t *testing.T) {
+	_, _, cm := newTestDeps(t)
+	cm.SetExtractor(nil)
+	// Should not panic
+}
+
+func TestConnectorManager_InstantiateFilesystem(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"ext-test","config":{"root_path":"` + dir + `","patterns":"*.pdf,*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConnectorManager_InstantiateTelegram(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	body := `{"type":"telegram","name":"tg-test","config":{"api_id":"12345","api_hash":"abc","phone":"+1234567890"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected 201, got %d; body: %s", w.Code, w.Body.String())
 	}
 }

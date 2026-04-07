@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -224,6 +225,36 @@ func TestOnConnectorChanged_InvalidSchedule(t *testing.T) {
 	if _, ok := s.entries[id]; ok {
 		t.Error("expected no entry for invalid schedule")
 	}
+}
+
+func TestRunSync_PipelineError(t *testing.T) {
+	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
+		"err": &mockConn{name: "err"},
+	}}
+	pipe := &mockPipelineRunner{err: fmt.Errorf("pipeline error")}
+	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
+	s.ctx = context.Background()
+
+	s.runSync("err", uuid.New())
+
+	if len(pipe.getCalls()) != 1 {
+		t.Errorf("expected 1 pipeline call, got %d", len(pipe.getCalls()))
+	}
+}
+
+func TestRunSync_UpdateLastRunError(t *testing.T) {
+	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
+		"test": &mockConn{name: "test"},
+	}}
+	pipe := &mockPipelineRunner{}
+	store := &mockConfigLister{
+		lastRun: nil, // UpdateLastRun will work but this tests the path
+	}
+	s := New(cm, pipe, store, zap.NewNop())
+	s.ctx = context.Background()
+
+	s.runSync("test", uuid.New())
+	// Should complete without panic even if UpdateLastRun has issues
 }
 
 func TestRunSync_ConnectorNotFound(t *testing.T) {

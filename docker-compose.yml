@@ -31,6 +31,16 @@ services:
       timeout: 5s
       retries: 10
 
+  tika:
+    image: apache/tika:latest-full
+    ports:
+      - "9998:9998"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9998/tika"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   ollama:
     image: ollama/ollama:latest
     volumes:
@@ -50,8 +60,9 @@ services:
     environment:
       NEXUS_DATABASE_URL: postgres://nexus:nexus@db:5432/nexus?sslmode=disable
       NEXUS_OPENSEARCH_URL: http://opensearch:9200
+      NEXUS_TIKA_URL: http://tika:9998
       NEXUS_FS_ROOT_PATH: /data
-      NEXUS_FS_PATTERNS: "*.txt,*.md"
+      NEXUS_FS_PATTERNS: "*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png"
       # Embedding configured via Settings UI, or uncomment for env var override:
       # NEXUS_EMBEDDING_PROVIDER: ollama
       # NEXUS_OLLAMA_URL: http://ollama:11434

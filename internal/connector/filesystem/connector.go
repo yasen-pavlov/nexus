@@ -9,9 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"mime"
+
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
 func init() {
@@ -20,11 +23,18 @@ func init() {
 	})
 }
 
+// Connector crawls local directories and extracts text from files.
 type Connector struct {
 	name      string
 	rootPath  string
 	patterns  []string
 	syncSince time.Time
+	extractor *extractor.Registry
+}
+
+// SetExtractor sets the content extractor for non-text files.
+func (c *Connector) SetExtractor(ext *extractor.Registry) {
+	c.extractor = ext
 }
 
 func (c *Connector) Type() string { return "filesystem" }
@@ -104,12 +114,25 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil // skip files we can't read
 		}
 
 		relPath, _ := filepath.Rel(c.rootPath, path)
+		contentType := detectContentType(d.Name())
+
+		// Extract text content
+		var textContent string
+		if c.extractor != nil && c.extractor.CanExtract(contentType) {
+			extracted, err := c.extractor.Extract(ctx, contentType, raw)
+			if err != nil {
+				return nil // skip files we can't extract
+			}
+			textContent = extracted
+		} else {
+			textContent = string(raw)
+		}
 
 		docs = append(docs, model.Document{
 			ID:         uuid.New(),
@@ -117,11 +140,12 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			SourceName: c.name,
 			SourceID:   relPath,
 			Title:      d.Name(),
-			Content:    string(content),
+			Content:    textContent,
 			Metadata: map[string]any{
-				"path":      relPath,
-				"size":      info.Size(),
-				"extension": filepath.Ext(d.Name()),
+				"path":         relPath,
+				"size":         info.Size(),
+				"extension":    filepath.Ext(d.Name()),
+				"content_type": contentType,
 			},
 			URL:        "file://" + path,
 			Visibility: "private",
@@ -156,4 +180,16 @@ func (c *Connector) matchesPattern(name string) bool {
 		}
 	}
 	return false
+}
+
+func detectContentType(filename string) string {
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		return "application/octet-stream"
+	}
+	ct := mime.TypeByExtension(ext)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return ct
 }

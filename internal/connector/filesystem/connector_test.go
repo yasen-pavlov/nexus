@@ -2,13 +2,17 @@ package filesystem
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
 func TestConfigure(t *testing.T) {
@@ -209,6 +213,112 @@ func TestFetchContextCancellation(t *testing.T) {
 	_, err := c.Fetch(ctx, nil)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestDetectContentType(t *testing.T) {
+	tests := []struct {
+		filename   string
+		wantPrefix string
+	}{
+		{"doc.pdf", "application/pdf"},
+		{"file.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"file.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"file.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+		{"file.doc", "application/msword"},
+		{"file.xls", "application/vnd.ms-excel"},
+		{"notes.md", "text/markdown"},
+		{"noext", "application/octet-stream"},
+	}
+	for _, tt := range tests {
+		got := detectContentType(tt.filename)
+		if !strings.HasPrefix(got, tt.wantPrefix) {
+			t.Errorf("detectContentType(%q) = %q, want prefix %q", tt.filename, got, tt.wantPrefix)
+		}
+	}
+}
+
+func TestSetExtractor(t *testing.T) {
+	c := &Connector{}
+	if c.extractor != nil {
+		t.Error("expected nil extractor initially")
+	}
+	reg := extractor.NewRegistry("")
+	c.SetExtractor(reg)
+	if c.extractor == nil {
+		t.Error("expected extractor to be set")
+	}
+}
+
+func TestFetch_WithExtractor_UnsupportedType(t *testing.T) {
+	// Tika not available — registry only has PlainText
+	reg := extractor.NewRegistry("")
+	dir := t.TempDir()
+	writeFile(t, dir, "data.bin", "binary data")
+
+	c := &Connector{
+		name:      "test",
+		rootPath:  dir,
+		patterns:  []string{"*.bin"},
+		extractor: reg,
+	}
+
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// .bin files fall through to raw content since no extractor matches
+	if len(result.Documents) != 1 {
+		t.Errorf("expected 1 doc (raw fallback), got %d", len(result.Documents))
+	}
+}
+
+func TestFetch_WithExtractor(t *testing.T) {
+	// Create a mock Tika server
+	tikaSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.Write([]byte("Extracted PDF content")) //nolint:errcheck // test
+			return
+		}
+		w.WriteHeader(http.StatusOK) // health check
+	}))
+	defer tikaSrv.Close()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "doc.pdf", "fake pdf bytes")
+	writeFile(t, dir, "notes.txt", "plain text content")
+
+	reg := extractor.NewRegistry(tikaSrv.URL)
+	c := &Connector{
+		name:      "test",
+		rootPath:  dir,
+		patterns:  []string{"*.pdf", "*.txt"},
+		extractor: reg,
+	}
+
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if len(result.Documents) != 2 {
+		t.Fatalf("expected 2 documents, got %d", len(result.Documents))
+	}
+
+	// Find the PDF doc and verify extraction worked
+	for _, doc := range result.Documents {
+		if strings.HasSuffix(doc.SourceID, ".pdf") {
+			if doc.Content != "Extracted PDF content" {
+				t.Errorf("expected extracted content, got %q", doc.Content)
+			}
+			if doc.Metadata["content_type"] != "application/pdf" {
+				t.Errorf("expected content_type 'application/pdf', got %v", doc.Metadata["content_type"])
+			}
+		}
+		if strings.HasSuffix(doc.SourceID, ".txt") {
+			if doc.Content != "plain text content" {
+				t.Errorf("expected plain text content, got %q", doc.Content)
+			}
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	_ "github.com/muty/nexus/internal/connector/paperless"
 	_ "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
@@ -78,8 +79,12 @@ func run() error {
 		return fmt.Errorf("ensure search index: %w", err)
 	}
 
+	// Set up content extraction
+	extractorRegistry := extractor.NewRegistry(cfg.TikaURL)
+
 	// Set up connector manager
 	cm := api.NewConnectorManager(st, log)
+	cm.SetExtractor(extractorRegistry)
 
 	if err := cm.LoadFromDB(ctx); err != nil {
 		return fmt.Errorf("load connectors from db: %w", err)

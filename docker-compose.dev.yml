@@ -31,6 +31,16 @@ services:
       timeout: 5s
       retries: 10
 
+  tika:
+    image: apache/tika:latest-full
+    ports:
+      - "9998:9998"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9998/tika"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata-dev:
   osdata-dev:

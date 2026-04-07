@@ -10,6 +10,7 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	tgconn "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
@@ -28,11 +29,17 @@ type ConnectorManager struct {
 	store         *store.Store
 	log           *zap.Logger
 	schedObserver ScheduleObserver
+	extractor     *extractor.Registry
 }
 
 // SetScheduleObserver sets the observer that is notified when connector schedules change.
 func (m *ConnectorManager) SetScheduleObserver(obs ScheduleObserver) {
 	m.schedObserver = obs
+}
+
+// SetExtractor sets the content extractor registry for filesystem connectors.
+func (m *ConnectorManager) SetExtractor(ext *extractor.Registry) {
+	m.extractor = ext
 }
 
 // NewConnectorManager creates a new ConnectorManager.
@@ -233,6 +240,15 @@ func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (conn
 
 	if err := conn.Validate(); err != nil {
 		return nil, fmt.Errorf("validation failed for %q: %w", cfg.Name, err)
+	}
+
+	// Inject extractor for filesystem connectors
+	if cfg.Type == "filesystem" && m.extractor != nil {
+		if fsConn, ok := conn.(interface {
+			SetExtractor(*extractor.Registry)
+		}); ok {
+			fsConn.SetExtractor(m.extractor)
+		}
 	}
 
 	// Inject session storage for Telegram connectors

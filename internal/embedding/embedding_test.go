@@ -260,7 +260,7 @@ func TestOllama_Dimension(t *testing.T) {
 }
 
 func TestOpenAI_Dimension(t *testing.T) {
-	tests := map[string]int{"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "unknown": 1536}
+	tests := map[string]int{"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536, "unknown": 1536}
 	for model, dim := range tests {
 		if NewOpenAI("k", model, zap.NewNop()).Dimension() != dim {
 			t.Errorf("model %s: expected %d", model, dim)
@@ -269,7 +269,7 @@ func TestOpenAI_Dimension(t *testing.T) {
 }
 
 func TestVoyage_Dimension(t *testing.T) {
-	tests := map[string]int{"voyage-3-large": 1024, "voyage-3-lite": 512, "unknown": 1024}
+	tests := map[string]int{"voyage-3-large": 1024, "voyage-3": 1024, "voyage-3-lite": 512, "unknown": 1024}
 	for model, dim := range tests {
 		if NewVoyage("k", model, zap.NewNop()).Dimension() != dim {
 			t.Errorf("model %s: expected %d", model, dim)
