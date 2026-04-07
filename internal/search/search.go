@@ -383,7 +383,16 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 		return results[i].rrfScore > results[j].rrfScore
 	})
 
-	// Compute facets from the full deduped result set (before pagination)
+	// Filter out low-relevance results below the minimum score
+	filtered := results[:0]
+	for _, r := range results {
+		if r.rrfScore >= minResultScore {
+			filtered = append(filtered, r)
+		}
+	}
+	results = filtered
+
+	// Compute facets from the filtered result set (before pagination)
 	facets := computeFacets(results)
 
 	// Apply offset and limit

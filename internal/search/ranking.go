@@ -28,4 +28,9 @@ const (
 	// 0.1 = allow but heavily penalize (recommended)
 	// 1.0 = equal weight (original behavior)
 	knnOnlyWeight = 0.1
+
+	// minResultScore is the absolute minimum RRF score for a result to be included.
+	// Results below this are discarded as low-relevance noise.
+	// TODO: make configurable via settings UI
+	minResultScore = 0.005
 )

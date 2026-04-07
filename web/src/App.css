@@ -174,6 +174,35 @@ body {
   font-family: monospace;
 }
 
+.results-more-hint {
+  color: #484f58;
+}
+
+.result-card-low {
+  opacity: 0.6;
+}
+
+.show-more-btn {
+  display: block;
+  width: 100%;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  background: #161b22;
+  border: 1px dashed #30363d;
+  border-radius: 8px;
+  color: #8b949e;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.show-more-btn:hover {
+  background: #21262d;
+  color: #c9d1d9;
+  border-color: #484f58;
+}
+
 /* Search Filters */
 
 .search-filters {
