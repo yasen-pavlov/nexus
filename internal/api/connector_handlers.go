@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
 	"github.com/robfig/cron/v3"
@@ -50,6 +51,7 @@ func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 		if _, ok := active[cfg.Name]; ok {
 			status = "active"
 		}
+		cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
 		result[i] = connectorResponse{ConnectorConfig: cfg, Status: status}
 	}
 
@@ -79,6 +81,7 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 		status = "active"
 	}
 
+	cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
 	writeJSON(w, http.StatusOK, connectorResponse{ConnectorConfig: *cfg, Status: status})
 }
 
@@ -157,6 +160,12 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		cfg.Config = map[string]any{}
 	}
 
+	// Restore masked secrets from existing config so they aren't overwritten
+	existing, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err == nil {
+		cfg.Config = crypto.RestoreMaskedFields(cfg.Type, cfg.Config, existing.Config)
+	}
+
 	if err := h.cm.Update(r.Context(), cfg); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "connector not found")
@@ -170,6 +179,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
 	writeJSON(w, http.StatusOK, cfg)
 }
 

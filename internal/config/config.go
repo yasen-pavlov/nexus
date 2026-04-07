@@ -18,6 +18,9 @@ type Config struct {
 	EmbeddingAPIKey   string `envconfig:"EMBEDDING_API_KEY"`
 	OllamaURL         string `envconfig:"OLLAMA_URL" default:"http://localhost:11434"`
 
+	// Encryption
+	EncryptionKey string `envconfig:"ENCRYPTION_KEY"` // 64-char hex string (32 bytes) for AES-256-GCM
+
 	// Filesystem connector
 	FSRootPath string `envconfig:"FS_ROOT_PATH"`
 	FSPatterns string `envconfig:"FS_PATTERNS" default:"*.txt,*.md"`

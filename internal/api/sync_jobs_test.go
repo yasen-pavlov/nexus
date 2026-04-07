@@ -229,7 +229,7 @@ func TestStreamSyncProgress_Handler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // test
 
 	if resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", resp.Header.Get("Content-Type"))

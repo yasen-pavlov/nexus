@@ -63,6 +63,7 @@ services:
       NEXUS_TIKA_URL: http://tika:9998
       NEXUS_FS_ROOT_PATH: /data
       NEXUS_FS_PATTERNS: "*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png"
+      NEXUS_ENCRYPTION_KEY: REDACTED_DEV_ENCRYPTION_KEY
       # Embedding configured via Settings UI, or uncomment for env var override:
       # NEXUS_EMBEDDING_PROVIDER: ollama
       # NEXUS_OLLAMA_URL: http://ollama:11434

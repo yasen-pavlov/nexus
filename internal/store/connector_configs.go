@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/model"
 )
 
@@ -35,6 +36,11 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 		if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
 			return nil, fmt.Errorf("store: unmarshal connector config: %w", err)
 		}
+		decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+		if err != nil {
+			return nil, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
+		}
+		cfg.Config = decrypted
 		configs = append(configs, cfg)
 	}
 	if err := rows.Err(); err != nil {
@@ -64,6 +70,11 @@ func (s *Store) GetConnectorConfig(ctx context.Context, id uuid.UUID) (*model.Co
 	if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
 		return nil, fmt.Errorf("store: unmarshal connector config: %w", err)
 	}
+	decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+	if err != nil {
+		return nil, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
+	}
+	cfg.Config = decrypted
 	return &cfg, nil
 }
 
@@ -75,7 +86,11 @@ func (s *Store) CreateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 	cfg.CreatedAt = now
 	cfg.UpdatedAt = now
 
-	configJSON, err := json.Marshal(cfg.Config)
+	encConfig, err := crypto.EncryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+	if err != nil {
+		return fmt.Errorf("store: encrypt connector config: %w", err)
+	}
+	configJSON, err := json.Marshal(encConfig)
 	if err != nil {
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
@@ -99,7 +114,11 @@ func (s *Store) CreateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 func (s *Store) UpdateConnectorConfig(ctx context.Context, cfg *model.ConnectorConfig) error {
 	cfg.UpdatedAt = time.Now()
 
-	configJSON, err := json.Marshal(cfg.Config)
+	encConfig, err := crypto.EncryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+	if err != nil {
+		return fmt.Errorf("store: encrypt connector config: %w", err)
+	}
+	configJSON, err := json.Marshal(encConfig)
 	if err != nil {
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
@@ -129,6 +148,76 @@ func (s *Store) UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) er
 		return fmt.Errorf("store: update last_run: %w", err)
 	}
 	return nil
+}
+
+// EncryptExistingConfigs encrypts any sensitive config fields that are still stored as plaintext.
+// This is a one-time migration for existing data when encryption is first enabled.
+func (s *Store) EncryptExistingConfigs(ctx context.Context) (int, error) {
+	if s.encryptionKey == nil {
+		return 0, nil
+	}
+
+	// Read raw configs without decryption to check for plaintext sensitive fields
+	query := `SELECT id, type, config FROM connector_configs`
+	rows, err := s.pool.Query(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("store: list configs for encryption: %w", err)
+	}
+	defer rows.Close()
+
+	type rawConfig struct {
+		id       uuid.UUID
+		connType string
+		config   map[string]any
+	}
+	var toEncrypt []rawConfig
+
+	for rows.Next() {
+		var id uuid.UUID
+		var connType string
+		var configJSON []byte
+		if err := rows.Scan(&id, &connType, &configJSON); err != nil {
+			return 0, fmt.Errorf("store: scan config for encryption: %w", err)
+		}
+		var config map[string]any
+		if err := json.Unmarshal(configJSON, &config); err != nil {
+			return 0, fmt.Errorf("store: unmarshal config for encryption: %w", err)
+		}
+
+		// Check if any sensitive field is still plaintext
+		fields := crypto.SensitiveFields[connType]
+		needsEncrypt := false
+		for _, field := range fields {
+			if val, ok := config[field].(string); ok && val != "" && !crypto.IsEncrypted(val) {
+				needsEncrypt = true
+				break
+			}
+		}
+		if needsEncrypt {
+			toEncrypt = append(toEncrypt, rawConfig{id: id, connType: connType, config: config})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: rows error: %w", err)
+	}
+
+	// Encrypt and update each config
+	for _, rc := range toEncrypt {
+		encrypted, err := crypto.EncryptConfig(s.encryptionKey, rc.connType, rc.config)
+		if err != nil {
+			return 0, fmt.Errorf("store: encrypt config %s: %w", rc.id, err)
+		}
+		configJSON, err := json.Marshal(encrypted)
+		if err != nil {
+			return 0, fmt.Errorf("store: marshal encrypted config: %w", err)
+		}
+		_, err = s.pool.Exec(ctx, `UPDATE connector_configs SET config = $1 WHERE id = $2`, configJSON, rc.id)
+		if err != nil {
+			return 0, fmt.Errorf("store: update encrypted config %s: %w", rc.id, err)
+		}
+	}
+
+	return len(toEncrypt), nil
 }
 
 func (s *Store) DeleteConnectorConfig(ctx context.Context, id uuid.UUID) error {

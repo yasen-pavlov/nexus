@@ -90,6 +90,7 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := h.syncJobs.Start(name, conn.Type())
+	snapshot := *job // copy before goroutine can mutate it
 
 	// Run pipeline in background with a detached context
 	go func() {
@@ -106,7 +107,7 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusAccepted, job)
+	writeJSON(w, http.StatusAccepted, &snapshot)
 }
 
 func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {

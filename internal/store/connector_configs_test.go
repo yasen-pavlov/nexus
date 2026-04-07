@@ -4,10 +4,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/model"
 )
 
@@ -258,5 +260,86 @@ func TestUpdateLastRun(t *testing.T) {
 	}
 	if !got.LastRun.Truncate(time.Microsecond).Equal(now) {
 		t.Errorf("expected last_run %v, got %v", now, *got.LastRun)
+	}
+}
+
+func TestEncryptExistingConfigs(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// Create a connector with plaintext secrets
+	cfg := &model.ConnectorConfig{
+		Type:    "imap",
+		Name:    "encrypt-test",
+		Config:  map[string]any{"server": "imap.example.com", "password": "my-secret"},
+		Enabled: true,
+	}
+	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+
+	// Set encryption key and run migration
+	key, err := crypto.NewKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("NewKey failed: %v", err)
+	}
+	st.SetEncryptionKey(key)
+
+	n, err := st.EncryptExistingConfigs(ctx)
+	if err != nil {
+		t.Fatalf("EncryptExistingConfigs failed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("encrypted %d configs, want 1", n)
+	}
+
+	// Verify the password is encrypted in the DB (read raw)
+	var configJSON []byte
+	err = st.pool.QueryRow(ctx, `SELECT config FROM connector_configs WHERE id = $1`, cfg.ID).Scan(&configJSON)
+	if err != nil {
+		t.Fatalf("raw query failed: %v", err)
+	}
+	var rawConfig map[string]any
+	json.Unmarshal(configJSON, &rawConfig) //nolint:errcheck // test
+	pw, _ := rawConfig["password"].(string)
+	if !crypto.IsEncrypted(pw) {
+		t.Errorf("password in DB should be encrypted, got %q", pw)
+	}
+
+	// server should still be plaintext
+	if rawConfig["server"] != "imap.example.com" {
+		t.Errorf("server should be plaintext, got %v", rawConfig["server"])
+	}
+
+	// Read via store (should be decrypted)
+	got, err := st.GetConnectorConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got.Config["password"] != "my-secret" {
+		t.Errorf("decrypted password = %v, want my-secret", got.Config["password"])
+	}
+
+	// Running again should not re-encrypt
+	n, err = st.EncryptExistingConfigs(ctx)
+	if err != nil {
+		t.Fatalf("second EncryptExistingConfigs failed: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("encrypted %d configs on second run, want 0", n)
+	}
+}
+
+func TestEncryptExistingConfigs_NoKey(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	// No encryption key set — should be a no-op
+	n, err := st.EncryptExistingConfigs(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("encrypted %d, want 0 (no key)", n)
 	}
 }

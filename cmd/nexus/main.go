@@ -15,6 +15,7 @@ import (
 	_ "github.com/muty/nexus/internal/connector/imap"
 	_ "github.com/muty/nexus/internal/connector/paperless"
 	_ "github.com/muty/nexus/internal/connector/telegram"
+	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/scheduler"
@@ -56,6 +57,24 @@ func run() error {
 
 	if err := st.RunMigrations(cfg.DatabaseURL, migrations.FS); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
+	}
+
+	// Set up encryption for connector secrets
+	if cfg.EncryptionKey != "" {
+		key, err := crypto.NewKey(cfg.EncryptionKey)
+		if err != nil {
+			return fmt.Errorf("encryption key: %w", err)
+		}
+		st.SetEncryptionKey(key)
+
+		// Encrypt any existing plaintext configs
+		n, err := st.EncryptExistingConfigs(ctx)
+		if err != nil {
+			return fmt.Errorf("encrypt existing configs: %w", err)
+		}
+		if n > 0 {
+			log.Info("encrypted existing connector configs", zap.Int("count", n))
+		}
 	}
 
 	// Set up embedding (DB settings override env vars)

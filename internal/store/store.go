@@ -18,8 +18,9 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type Store struct {
-	pool *pgxpool.Pool
-	log  *zap.Logger
+	pool          *pgxpool.Pool
+	log           *zap.Logger
+	encryptionKey []byte // AES-256 key for encrypting sensitive config fields; nil = disabled
 }
 
 func New(ctx context.Context, databaseURL string, log *zap.Logger) (*Store, error) {
@@ -32,6 +33,11 @@ func New(ctx context.Context, databaseURL string, log *zap.Logger) (*Store, erro
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
 	return &Store{pool: pool, log: log}, nil
+}
+
+// SetEncryptionKey sets the key used to encrypt/decrypt sensitive connector config fields.
+func (s *Store) SetEncryptionKey(key []byte) {
+	s.encryptionKey = key
 }
 
 func (s *Store) Close() {
