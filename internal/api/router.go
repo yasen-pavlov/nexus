@@ -26,7 +26,7 @@ func NewRouter(
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
-	r.Use(chimw.Timeout(60 * time.Second))
+	r.Use(chimw.Timeout(10 * time.Minute))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:5173"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -55,6 +55,11 @@ func NewRouter(
 			r.Get("/{id}", h.GetConnector)
 			r.Put("/{id}", h.UpdateConnector)
 			r.Delete("/{id}", h.DeleteConnector)
+		})
+
+		r.Route("/connectors/{id}/auth", func(r chi.Router) {
+			r.Post("/start", h.TelegramAuthStart)
+			r.Post("/code", h.TelegramAuthCode)
 		})
 
 		r.Route("/settings", func(r chi.Router) {

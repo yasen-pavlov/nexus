@@ -5,6 +5,8 @@ import {
   updateConnector,
   deleteConnector,
   triggerSync,
+  telegramAuthStart,
+  telegramAuthCode,
   type ConnectorConfig,
   type CreateConnectorRequest,
   type SyncReport,
@@ -14,16 +16,30 @@ interface Props {
   onClose: () => void;
 }
 
-const CONNECTOR_TYPES = ['filesystem', 'paperless'];
+const CONNECTOR_TYPES = ['filesystem', 'paperless', 'telegram'];
+
+const COMMON_FIELDS = [
+  { key: 'sync_since_days', label: 'Sync History (days)', placeholder: 'e.g., 30 (empty = all history)' },
+  { key: 'sync_since', label: 'Sync Since Date', placeholder: 'YYYY-MM-DD (overridden by days if set)' },
+];
 
 const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: string }[]> = {
   filesystem: [
     { key: 'root_path', label: 'Root Path', placeholder: '/data/files' },
     { key: 'patterns', label: 'File Patterns', placeholder: '*.txt,*.md' },
+    ...COMMON_FIELDS,
   ],
   paperless: [
     { key: 'url', label: 'Paperless URL', placeholder: 'http://paperless:8000' },
     { key: 'token', label: 'API Token', placeholder: 'your-api-token' },
+    ...COMMON_FIELDS,
+  ],
+  telegram: [
+    { key: 'api_id', label: 'API ID', placeholder: 'From my.telegram.org' },
+    { key: 'api_hash', label: 'API Hash', placeholder: 'From my.telegram.org' },
+    { key: 'phone', label: 'Phone Number', placeholder: '+1234567890' },
+    { key: 'chat_filter', label: 'Chat Filter', placeholder: 'Chat names or IDs (comma-separated, empty = all)' },
+    ...COMMON_FIELDS,
   ],
 };
 
@@ -34,6 +50,10 @@ export default function ConnectorManager({ onClose }: Props) {
   const [error, setError] = useState('');
   const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
   const [syncing, setSyncing] = useState('');
+  const [authConnectorId, setAuthConnectorId] = useState('');
+  const [authCode, setAuthCode] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authStatus, setAuthStatus] = useState('');
 
   const loadConnectors = () => {
     listConnectors().then(setConnectors).catch((err) => setError(err.message));
@@ -86,6 +106,32 @@ export default function ConnectorManager({ onClose }: Props) {
     }
   };
 
+  const handleAuthStart = async (connectorId: string) => {
+    setError('');
+    setAuthStatus('');
+    try {
+      const result = await telegramAuthStart(connectorId);
+      setAuthConnectorId(connectorId);
+      setAuthStatus(result.message || 'Code sent — check your Telegram app');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Auth start failed');
+    }
+  };
+
+  const handleAuthCode = async () => {
+    setError('');
+    try {
+      await telegramAuthCode(authConnectorId, authCode, authPassword || undefined);
+      setAuthConnectorId('');
+      setAuthCode('');
+      setAuthPassword('');
+      setAuthStatus('Connected successfully!');
+      loadConnectors();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Auth failed');
+    }
+  };
+
   return (
     <div className="connector-manager">
       <div className="cm-header">
@@ -99,10 +145,47 @@ export default function ConnectorManager({ onClose }: Props) {
       </div>
 
       {error && <div className="error">{error}</div>}
+      {authStatus && <div className="sync-report">{authStatus}</div>}
       {syncReport && (
         <div className="sync-report">
           Synced {syncReport.docs_processed} documents from {syncReport.connector_name}
           {syncReport.errors > 0 && ` (${syncReport.errors} errors)`}
+        </div>
+      )}
+
+      {authConnectorId && (
+        <div className="cm-form">
+          <h3>Telegram Authentication</h3>
+          <p className="cm-form-hint" style={{ marginBottom: '0.75rem' }}>
+            Enter the code sent to your Telegram app.
+          </p>
+          <div className="cm-form-row">
+            <label>Code</label>
+            <input
+              type="text"
+              value={authCode}
+              onChange={(e) => setAuthCode(e.target.value)}
+              placeholder="12345"
+              autoFocus
+            />
+          </div>
+          <div className="cm-form-row">
+            <label>2FA Password (if enabled)</label>
+            <input
+              type="password"
+              value={authPassword}
+              onChange={(e) => setAuthPassword(e.target.value)}
+              placeholder="Optional"
+            />
+          </div>
+          <div className="cm-form-actions">
+            <button className="cm-btn cm-btn-primary" onClick={handleAuthCode}>
+              Submit Code
+            </button>
+            <button className="cm-btn" onClick={() => setAuthConnectorId('')}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
@@ -135,6 +218,14 @@ export default function ConnectorManager({ onClose }: Props) {
                 {!conn.enabled && <span className="cm-card-status cm-status-disabled">disabled</span>}
               </div>
               <div className="cm-card-actions">
+                {conn.type === 'telegram' && (
+                  <button
+                    className="cm-btn cm-btn-sm cm-btn-primary"
+                    onClick={() => handleAuthStart(conn.id)}
+                  >
+                    Connect
+                  </button>
+                )}
                 <button
                   className="cm-btn cm-btn-sm"
                   onClick={() => handleSync(conn.name)}

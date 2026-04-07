@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/config"
 	"github.com/muty/nexus/internal/connector"
+	tgconn "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
@@ -58,7 +59,7 @@ func (m *ConnectorManager) LoadFromDB(ctx context.Context) error {
 		if !cfg.Enabled {
 			continue
 		}
-		conn, err := instantiateConnector(cfg)
+		conn, err := m.instantiateConnector(cfg)
 		if err != nil {
 			m.log.Warn("failed to load connector",
 				zap.String("name", cfg.Name),
@@ -95,7 +96,7 @@ func (m *ConnectorManager) All() map[string]connector.Connector {
 
 // Add validates a connector config, saves it to the database, and adds it to the in-memory map.
 func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) error {
-	conn, err := instantiateConnector(*cfg)
+	conn, err := m.instantiateConnector(*cfg)
 	if err != nil {
 		return err
 	}
@@ -125,7 +126,7 @@ func (m *ConnectorManager) Update(ctx context.Context, cfg *model.ConnectorConfi
 		return err
 	}
 
-	conn, err := instantiateConnector(*cfg)
+	conn, err := m.instantiateConnector(*cfg)
 	if err != nil {
 		return err
 	}
@@ -217,7 +218,7 @@ func (m *ConnectorManager) SeedFromEnv(ctx context.Context, appCfg *config.Confi
 	return nil
 }
 
-func instantiateConnector(cfg model.ConnectorConfig) (connector.Connector, error) {
+func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (connector.Connector, error) {
 	conn, err := connector.Create(cfg.Type)
 	if err != nil {
 		return nil, fmt.Errorf("unknown connector type %q: %w", cfg.Type, err)
@@ -232,6 +233,17 @@ func instantiateConnector(cfg model.ConnectorConfig) (connector.Connector, error
 
 	if err := conn.Validate(); err != nil {
 		return nil, fmt.Errorf("validation failed for %q: %w", cfg.Name, err)
+	}
+
+	// Inject session storage for Telegram connectors
+	if cfg.Type == "telegram" {
+		if tgConn, ok := conn.(interface {
+			SetSession(*tgconn.DBSessionStorage)
+		}); ok {
+			sessionKey := fmt.Sprintf("telegram_session_%s", cfg.ID.String())
+			session := tgconn.NewDBSessionStorage(sessionKey, m.store.GetSetting, m.store.SetSetting)
+			tgConn.SetSession(session)
+		}
 	}
 
 	return conn, nil

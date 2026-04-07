@@ -13,6 +13,7 @@ import (
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	_ "github.com/muty/nexus/internal/connector/paperless"
+	_ "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/search"

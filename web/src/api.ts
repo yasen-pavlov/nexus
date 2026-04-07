@@ -116,6 +116,18 @@ export async function updateConnector(id: string, req: CreateConnectorRequest): 
   });
 }
 
+export async function telegramAuthStart(connectorId: string): Promise<{ status: string; message: string }> {
+  return fetchAPI(`/api/connectors/${connectorId}/auth/start`, { method: 'POST' });
+}
+
+export async function telegramAuthCode(connectorId: string, code: string, password?: string): Promise<{ status: string }> {
+  return fetchAPI(`/api/connectors/${connectorId}/auth/code`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, password }),
+  });
+}
+
 export async function deleteConnector(id: string): Promise<void> {
   const res = await fetch(`/api/connectors/${id}`, { method: 'DELETE' });
   if (!res.ok) {

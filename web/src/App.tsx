@@ -165,10 +165,16 @@ function App() {
                 <span className="result-title">{hit.title}</span>
                 <span className="result-source">{hit.source_type}:{hit.source_name}</span>
               </div>
-              <div
-                className="result-snippet"
-                dangerouslySetInnerHTML={{ __html: hit.headline }}
-              />
+              {hit.headline ? (
+                <div
+                  className="result-snippet"
+                  dangerouslySetInnerHTML={{ __html: hit.headline }}
+                />
+              ) : hit.content ? (
+                <div className="result-snippet">
+                  {hit.content.length > 200 ? hit.content.slice(0, 200) + '...' : hit.content}
+                </div>
+              ) : null}
               <div className="result-meta">
                 {hit.metadata?.path ? <span className="result-path">{String(hit.metadata.path)}</span> : null}
                 <span className="result-date">

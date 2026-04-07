@@ -21,9 +21,10 @@ func init() {
 }
 
 type Connector struct {
-	name     string
-	rootPath string
-	patterns []string
+	name      string
+	rootPath  string
+	patterns  []string
+	syncSince time.Time
 }
 
 func (c *Connector) Type() string { return "filesystem" }
@@ -51,6 +52,8 @@ func (c *Connector) Configure(cfg connector.Config) error {
 		c.patterns[i] = strings.TrimSpace(c.patterns[i])
 	}
 
+	c.syncSince = connector.ComputeSyncSince(cfg)
+
 	return nil
 }
 
@@ -71,6 +74,8 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
 			lastSync, _ = time.Parse(time.RFC3339Nano, ts)
 		}
+	} else if !c.syncSince.IsZero() {
+		lastSync = c.syncSince
 	}
 
 	var docs []model.Document

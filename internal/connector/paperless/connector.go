@@ -24,10 +24,11 @@ func init() {
 
 // Connector fetches documents from a Paperless-ngx instance.
 type Connector struct {
-	name    string
-	baseURL string
-	token   string
-	client  *http.Client
+	name      string
+	baseURL   string
+	token     string
+	syncSince time.Time
+	client    *http.Client
 }
 
 func (c *Connector) Type() string { return "paperless" }
@@ -51,6 +52,7 @@ func (c *Connector) Configure(cfg connector.Config) error {
 		return fmt.Errorf("paperless: token is required")
 	}
 	c.token = token
+	c.syncSince = connector.ComputeSyncSince(cfg)
 
 	return nil
 }
@@ -105,6 +107,8 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
 			params.Set("modified__gt", ts)
 		}
+	} else if !c.syncSince.IsZero() {
+		params.Set("modified__gt", c.syncSince.Format(time.RFC3339))
 	}
 
 	fetchURL := c.baseURL + "/api/documents/?" + params.Encode()
