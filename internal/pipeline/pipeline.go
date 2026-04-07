@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/muty/nexus/internal/connector"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
 
+// SyncReport contains the results of a sync operation.
 type SyncReport struct {
 	ConnectorName string        `json:"connector_name"`
 	ConnectorType string        `json:"connector_type"`
@@ -19,15 +21,19 @@ type SyncReport struct {
 	Duration      time.Duration `json:"duration"`
 }
 
+// Pipeline orchestrates fetching documents and indexing them.
 type Pipeline struct {
-	store *store.Store
-	log   *zap.Logger
+	store  *store.Store
+	search *search.Client
+	log    *zap.Logger
 }
 
-func New(store *store.Store, log *zap.Logger) *Pipeline {
-	return &Pipeline{store: store, log: log}
+// New creates a new Pipeline.
+func New(store *store.Store, search *search.Client, log *zap.Logger) *Pipeline {
+	return &Pipeline{store: store, search: search, log: log}
 }
 
+// Run fetches documents from a connector and indexes them in OpenSearch.
 func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncReport, error) {
 	start := time.Now()
 	connID := conn.Name()
@@ -46,11 +52,11 @@ func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncRepo
 		return nil, fmt.Errorf("pipeline: fetch: %w", err)
 	}
 
-	// Store each document
+	// Index each document in OpenSearch
 	var errCount int
 	for i := range result.Documents {
-		if err := p.store.UpsertDocument(ctx, &result.Documents[i]); err != nil {
-			p.log.Error("failed to upsert document",
+		if err := p.search.IndexDocument(ctx, &result.Documents[i]); err != nil {
+			p.log.Error("failed to index document",
 				zap.String("source_id", result.Documents[i].SourceID),
 				zap.Error(err),
 			)

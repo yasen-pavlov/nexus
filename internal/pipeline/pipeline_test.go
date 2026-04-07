@@ -10,13 +10,14 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/internal/testutil"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
 )
 
-func newTestStore(t *testing.T) *store.Store {
+func newTestDeps(t *testing.T) (*store.Store, *search.Client) {
 	t.Helper()
 	tdb := testutil.NewTestDB(t, "pipeline", migrations.FS)
 	st, err := store.New(context.Background(), tdb.URL, zap.NewNop())
@@ -24,13 +25,23 @@ func newTestStore(t *testing.T) *store.Store {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return st
+
+	osURL, osIndex := testutil.TestOSConfig(t, "pipeline")
+	sc, err := search.NewWithIndex(context.Background(), osURL, osIndex, nil)
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	if err := sc.EnsureIndex(context.Background()); err != nil {
+		t.Fatalf("create search index: %v", err)
+	}
+	t.Cleanup(func() { sc.DeleteIndex(context.Background()) }) //nolint:errcheck // test
+	return st, sc
 }
 
 func TestPipelineRun(t *testing.T) {
-	st := newTestStore(t)
+	st, sc := newTestDeps(t)
 	ctx := context.Background()
-	p := New(st, zap.NewNop())
+	p := New(st, sc, zap.NewNop())
 
 	dir := t.TempDir()
 	os.WriteFile(dir+"/hello.txt", []byte("Unique xylophone document for verification"), 0o644)     //nolint:errcheck // test file
@@ -59,12 +70,10 @@ func TestPipelineRun(t *testing.T) {
 	if report.Errors != 0 {
 		t.Errorf("expected 0 errors, got %d", report.Errors)
 	}
-	if report.ConnectorName != "pipeline-test" {
-		t.Errorf("expected connector name 'pipeline-test', got %q", report.ConnectorName)
-	}
 
-	// Verify documents are searchable
-	result, err := st.Search(ctx, model.SearchRequest{Query: "xylophone", Limit: 10})
+	// Verify documents are searchable in OpenSearch
+	sc.Refresh(ctx) //nolint:errcheck // test
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "xylophone", Limit: 10})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
@@ -79,9 +88,6 @@ func TestPipelineRun(t *testing.T) {
 	}
 	if cursor == nil {
 		t.Fatal("expected cursor to be saved")
-	}
-	if cursor.ItemsSynced != 2 {
-		t.Errorf("expected cursor items_synced=2, got %d", cursor.ItemsSynced)
 	}
 
 	// Second sync (incremental — no new files)

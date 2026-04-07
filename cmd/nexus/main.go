@@ -15,6 +15,7 @@ import (
 	_ "github.com/muty/nexus/internal/connector/paperless"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/scheduler"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
@@ -54,6 +55,15 @@ func run() error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 
+	// Set up OpenSearch
+	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log)
+	if err != nil {
+		return fmt.Errorf("init search: %w", err)
+	}
+	if err := searchClient.EnsureIndex(ctx); err != nil {
+		return fmt.Errorf("ensure search index: %w", err)
+	}
+
 	// Set up connector manager
 	cm := api.NewConnectorManager(st, log)
 
@@ -66,7 +76,7 @@ func run() error {
 	}
 
 	// Set up scheduler
-	p := pipeline.New(st, log)
+	p := pipeline.New(st, searchClient, log)
 	sched := scheduler.New(cm, p, st, log)
 	cm.SetScheduleObserver(sched)
 
@@ -74,7 +84,7 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	router := api.NewRouter(st, p, cm, log)
+	router := api.NewRouter(st, searchClient, p, cm, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

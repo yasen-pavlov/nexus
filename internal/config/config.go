@@ -4,9 +4,10 @@ package config
 import "github.com/kelseyhightower/envconfig"
 
 type Config struct {
-	Port        int    `envconfig:"PORT" default:"8080"`
-	DatabaseURL string `envconfig:"DATABASE_URL" required:"true"`
-	LogLevel    string `envconfig:"LOG_LEVEL" default:"info"`
+	Port          int    `envconfig:"PORT" default:"8080"`
+	DatabaseURL   string `envconfig:"DATABASE_URL" required:"true"`
+	OpenSearchURL string `envconfig:"OPENSEARCH_URL" default:"http://localhost:9200"`
+	LogLevel      string `envconfig:"LOG_LEVEL" default:"info"`
 
 	// Filesystem connector
 	FSRootPath string `envconfig:"FS_ROOT_PATH"`

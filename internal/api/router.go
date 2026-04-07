@@ -8,12 +8,14 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
 
 func NewRouter(
 	store *store.Store,
+	search *search.Client,
 	pipeline *pipeline.Pipeline,
 	cm *ConnectorManager,
 	log *zap.Logger,
@@ -34,6 +36,7 @@ func NewRouter(
 
 	h := &handler{
 		store:    store,
+		search:   search,
 		pipeline: pipeline,
 		cm:       cm,
 		log:      log,

@@ -7,12 +7,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
 
 type handler struct {
 	store    *store.Store
+	search   *search.Client
 	pipeline *pipeline.Pipeline
 	cm       *ConnectorManager
 	log      *zap.Logger
@@ -32,7 +34,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	result, err := h.store.Search(r.Context(), model.SearchRequest{
+	result, err := h.search.Search(r.Context(), model.SearchRequest{
 		Query:  query,
 		Limit:  limit,
 		Offset: offset,

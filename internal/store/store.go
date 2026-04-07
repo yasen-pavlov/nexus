@@ -1,9 +1,10 @@
-// Package store provides the database access layer for documents, search, and sync state.
+// Package store provides the database access layer for application state.
 package store
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 
@@ -12,6 +13,9 @@ import (
 	"github.com/pressly/goose/v3"
 	"go.uber.org/zap"
 )
+
+// ErrNotFound is returned when a requested record does not exist.
+var ErrNotFound = errors.New("not found")
 
 type Store struct {
 	pool *pgxpool.Pool

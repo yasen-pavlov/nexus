@@ -7,7 +7,7 @@ test: test-unit test-integration
 test-unit:
 	go test ./internal/...
 
-# Integration tests (requires Postgres)
+# Integration tests (requires Postgres + OpenSearch)
 test-integration:
 	go test -tags integration ./internal/...
 
@@ -25,12 +25,13 @@ coverage:
 build:
 	go build -o bin/nexus ./cmd/nexus
 
-# Dev: start only the database
+# Dev: start Postgres + OpenSearch
 dev-db:
 	docker compose -f docker-compose.dev.yml up -d
 
 # Dev: run the app locally
 dev: dev-db
 	NEXUS_DATABASE_URL=postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable \
+	NEXUS_OPENSEARCH_URL=http://localhost:9200 \
 	NEXUS_FS_ROOT_PATH=./testdata \
 	go run ./cmd/nexus
