@@ -1,15 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   listConnectors,
   createConnector,
   updateConnector,
   deleteConnector,
   triggerSync,
+  streamSyncProgress,
   telegramAuthStart,
   telegramAuthCode,
   type ConnectorConfig,
   type CreateConnectorRequest,
-  type SyncReport,
+  type SyncJob,
 } from './api';
 
 interface Props {
@@ -56,8 +57,8 @@ export default function ConnectorManager({ onClose }: Props) {
   const [editing, setEditing] = useState<ConnectorConfig | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
-  const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
-  const [syncing, setSyncing] = useState('');
+  const [syncJobs, setSyncJobs] = useState<Record<string, SyncJob>>({});
+  const cleanupRefs = useRef<Record<string, () => void>>({});
   const [authConnectorId, setAuthConnectorId] = useState('');
   const [authCode, setAuthCode] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -102,15 +103,19 @@ export default function ConnectorManager({ onClose }: Props) {
   };
 
   const handleSync = async (name: string) => {
-    setSyncing(name);
-    setSyncReport(null);
+    setError('');
     try {
-      const report = await triggerSync(name);
-      setSyncReport(report);
+      const job = await triggerSync(name);
+      setSyncJobs((prev) => ({ ...prev, [name]: job }));
+
+      const cleanup = streamSyncProgress(
+        name,
+        (update) => setSyncJobs((prev) => ({ ...prev, [name]: update })),
+        () => { delete cleanupRefs.current[name]; },
+      );
+      cleanupRefs.current[name] = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
-    } finally {
-      setSyncing('');
     }
   };
 
@@ -154,12 +159,27 @@ export default function ConnectorManager({ onClose }: Props) {
 
       {error && <div className="error">{error}</div>}
       {authStatus && <div className="sync-report">{authStatus}</div>}
-      {syncReport && (
-        <div className="sync-report">
-          Synced {syncReport.docs_processed} documents from {syncReport.connector_name}
-          {syncReport.errors > 0 && ` (${syncReport.errors} errors)`}
+      {Object.entries(syncJobs).map(([name, job]) => (
+        <div key={name} className={`sync-progress ${job.status === 'failed' ? 'sync-progress-error' : ''}`}>
+          <div className="sync-progress-header">
+            <span className="sync-progress-label">
+              {job.status === 'running' ? `Syncing ${name}...` : job.status === 'failed' ? `Failed: ${name}` : `Synced ${name}`}
+            </span>
+            <span className="sync-progress-stats">
+              {job.docs_processed}{job.docs_total > 0 ? `/${job.docs_total}` : ''} docs
+              {job.errors > 0 && ` (${job.errors} errors)`}
+            </span>
+            {job.status !== 'running' && (
+              <button className="sync-progress-dismiss" onClick={() => setSyncJobs((prev) => { const n = { ...prev }; delete n[name]; return n; })}>&times;</button>
+            )}
+          </div>
+          {job.status === 'running' && job.docs_total > 0 && (
+            <div className="sync-progress-bar-bg">
+              <div className="sync-progress-bar-fill" style={{ width: `${Math.round((job.docs_processed / job.docs_total) * 100)}%` }} />
+            </div>
+          )}
         </div>
-      )}
+      ))}
 
       {authConnectorId && (
         <div className="cm-form">
@@ -237,9 +257,9 @@ export default function ConnectorManager({ onClose }: Props) {
                 <button
                   className="cm-btn cm-btn-sm"
                   onClick={() => handleSync(conn.name)}
-                  disabled={syncing === conn.name || !conn.enabled}
+                  disabled={syncJobs[conn.name]?.status === 'running' || !conn.enabled}
                 >
-                  {syncing === conn.name ? 'Syncing...' : 'Sync'}
+                  {syncJobs[conn.name]?.status === 'running' ? 'Syncing...' : 'Sync'}
                 </button>
                 <button
                   className="cm-btn cm-btn-sm"

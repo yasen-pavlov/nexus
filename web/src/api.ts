@@ -44,6 +44,19 @@ export interface SyncReport {
   duration: number;
 }
 
+export interface SyncJob {
+  id: string;
+  connector_name: string;
+  connector_type: string;
+  status: 'running' | 'completed' | 'failed';
+  docs_total: number;
+  docs_processed: number;
+  errors: number;
+  error?: string;
+  started_at: string;
+  completed_at?: string;
+}
+
 export interface ConnectorConfig {
   id: string;
   type: string;
@@ -88,8 +101,24 @@ export async function search(query: string, limit = 20, offset = 0, filters?: Se
   return fetchAPI<SearchResult>(`/api/search?${params}`);
 }
 
-export async function triggerSync(connector: string): Promise<SyncReport> {
-  return fetchAPI<SyncReport>(`/api/sync/${connector}`, { method: 'POST' });
+export async function triggerSync(connector: string): Promise<SyncJob> {
+  return fetchAPI<SyncJob>(`/api/sync/${connector}`, { method: 'POST' });
+}
+
+export function streamSyncProgress(
+  connector: string,
+  onUpdate: (job: SyncJob) => void,
+  onDone: () => void,
+): () => void {
+  const es = new EventSource(`/api/sync/${connector}/progress`);
+  es.onmessage = (e) => onUpdate(JSON.parse(e.data));
+  es.addEventListener('done', () => { es.close(); onDone(); });
+  es.onerror = () => { es.close(); onDone(); };
+  return () => es.close();
+}
+
+export async function listSyncJobs(): Promise<SyncJob[]> {
+  return fetchAPI<SyncJob[]>('/api/sync');
 }
 
 export async function listConnectors(): Promise<ConnectorConfig[]> {

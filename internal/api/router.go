@@ -19,6 +19,7 @@ func NewRouter(
 	pipeline *pipeline.Pipeline,
 	cm *ConnectorManager,
 	em *EmbeddingManager,
+	syncJobs *SyncJobManager,
 	log *zap.Logger,
 ) chi.Router {
 	r := chi.NewRouter()
@@ -41,12 +42,17 @@ func NewRouter(
 		pipeline: pipeline,
 		em:       em,
 		cm:       cm,
+		syncJobs: syncJobs,
 		log:      log,
 	}
+
+	// SSE endpoint — outside the timeout middleware (long-lived connection)
+	r.Get("/api/sync/{connector}/progress", h.StreamSyncProgress)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/health", h.Health)
 		r.Get("/search", h.Search)
+		r.Get("/sync", h.ListSyncJobs)
 		r.Post("/sync/{connector}", h.TriggerSync)
 
 		r.Route("/connectors", func(r chi.Router) {

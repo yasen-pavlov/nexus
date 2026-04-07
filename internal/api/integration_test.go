@@ -65,7 +65,7 @@ func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManage
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
 	return st, sc, cm, router
 }
 
@@ -231,16 +231,19 @@ func TestTriggerSyncHandler_Integration(t *testing.T) {
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d; body: %s", w.Code, w.Body.String())
 	}
 
 	var resp APIResponse
 	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
 	data := resp.Data.(map[string]any)
-	if dp, _ := data["docs_processed"].(float64); dp != 1 {
-		t.Errorf("expected 1 doc, got %v", dp)
+	if data["status"] != "running" {
+		t.Errorf("expected status running, got %v", data["status"])
 	}
+
+	// Wait for background sync to complete
+	time.Sleep(500 * time.Millisecond)
 }
 
 func TestTriggerSyncHandler_StoreError(t *testing.T) {
@@ -261,7 +264,8 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, log: zap.NewNop()}
+	sjm := NewSyncJobManager()
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
 	r.Post("/api/sync/{connector}", h.TriggerSync)
@@ -270,8 +274,18 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", w.Code)
+	// Async sync returns 202 immediately; error happens in background
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d", w.Code)
+	}
+
+	// Wait for background goroutine to fail
+	time.Sleep(500 * time.Millisecond)
+
+	job := sjm.GetByConnector("err-sync")
+	// Job should have completed (with failure), so GetByConnector returns nil for running
+	if job != nil {
+		t.Errorf("expected no running job, got %v", job.Status)
 	}
 }
 
@@ -606,7 +620,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -622,7 +636,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -769,7 +783,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()

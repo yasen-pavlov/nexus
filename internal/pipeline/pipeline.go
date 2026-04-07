@@ -42,12 +42,24 @@ func New(store *store.Store, search *search.Client, embeddings EmbedderProvider,
 	return &Pipeline{store: store, search: search, embeddings: embeddings, log: log}
 }
 
+// ProgressFunc is called with (total, processed, errors) as documents are indexed.
+type ProgressFunc func(total, processed, errors int)
+
 // Run fetches documents from a connector, chunks them, generates embeddings, and indexes them.
 func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncReport, error) {
+	return p.RunWithProgress(ctx, conn, nil)
+}
+
+// RunWithProgress is like Run but calls progress after each document is processed.
+func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector, progress ProgressFunc) (*SyncReport, error) {
 	start := time.Now()
 	connID := conn.Name()
 
 	p.log.Info("sync started", zap.String("connector", connID), zap.String("type", conn.Type()))
+
+	if p.store == nil {
+		return nil, fmt.Errorf("pipeline: store not configured")
+	}
 
 	cursor, err := p.store.GetSyncCursor(ctx, connID)
 	if err != nil {
@@ -57,6 +69,11 @@ func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncRepo
 	result, err := conn.Fetch(ctx, cursor)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: fetch: %w", err)
+	}
+
+	total := len(result.Documents)
+	if progress != nil {
+		progress(total, 0, 0)
 	}
 
 	var errCount int
@@ -120,6 +137,10 @@ func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncRepo
 				zap.Error(err),
 			)
 			errCount++
+		}
+
+		if progress != nil {
+			progress(total, i+1, errCount)
 		}
 	}
 

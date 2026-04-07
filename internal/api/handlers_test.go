@@ -10,12 +10,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline"
 	"go.uber.org/zap"
 )
 
 type mockConnector struct {
-	name string
-	typ  string
+	name     string
+	typ      string
+	fetchErr error
 }
 
 func (m *mockConnector) Type() string                       { return m.typ }
@@ -24,6 +26,9 @@ func (m *mockConnector) Configure(_ connector.Config) error { return nil }
 func (m *mockConnector) Validate() error                    { return nil }
 
 func (m *mockConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
 	return &model.FetchResult{}, nil
 }
 
@@ -35,8 +40,10 @@ func newTestHandler() *handler {
 		log: zap.NewNop(),
 	}
 	return &handler{
-		cm:  cm,
-		log: zap.NewNop(),
+		cm:       cm,
+		syncJobs: NewSyncJobManager(),
+		pipeline: pipeline.New(nil, nil, nil, zap.NewNop()),
+		log:      zap.NewNop(),
 	}
 }
 
@@ -93,6 +100,85 @@ func TestTriggerSyncHandler_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", w.Code)
+	}
+}
+
+func TestTriggerSyncHandler_Accepted(t *testing.T) {
+	h := newTestHandler()
+	// Need a pipeline for async sync to work — but since it runs in a goroutine,
+	// we just verify the 202 response. Pipeline is nil so the goroutine will fail
+	// silently in the background.
+
+	r := chi.NewRouter()
+	r.Post("/api/sync/{connector}", h.TriggerSync)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sync/test-fs", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected status 202, got %d", w.Code)
+	}
+
+	var resp struct {
+		Data *SyncJob `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	if resp.Data == nil {
+		t.Fatal("expected sync job in response")
+	}
+	if resp.Data.Status != "running" {
+		t.Errorf("status = %q, want running", resp.Data.Status)
+	}
+	if resp.Data.ConnectorName != "test-fs" {
+		t.Errorf("connector_name = %q, want test-fs", resp.Data.ConnectorName)
+	}
+}
+
+func TestTriggerSyncHandler_Conflict(t *testing.T) {
+	h := newTestHandler()
+
+	// Start a job for test-fs
+	h.syncJobs.Start("test-fs", "filesystem")
+
+	r := chi.NewRouter()
+	r.Post("/api/sync/{connector}", h.TriggerSync)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sync/test-fs", nil)
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", w.Code)
+	}
+}
+
+func TestListSyncJobsHandler(t *testing.T) {
+	h := newTestHandler()
+	h.syncJobs.Start("a", "filesystem")
+	h.syncJobs.Start("b", "imap")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sync", nil)
+	w := httptest.NewRecorder()
+
+	h.ListSyncJobs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp struct {
+		Data []*SyncJob `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Errorf("got %d jobs, want 2", len(resp.Data))
 	}
 }
 

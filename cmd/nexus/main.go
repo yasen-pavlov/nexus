@@ -104,7 +104,8 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
-	router := api.NewRouter(st, searchClient, p, cm, em, log)
+	syncJobs := api.NewSyncJobManager()
+	router := api.NewRouter(st, searchClient, p, cm, em, syncJobs, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
