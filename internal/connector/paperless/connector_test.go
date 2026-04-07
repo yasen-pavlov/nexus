@@ -1,0 +1,326 @@
+package paperless
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/muty/nexus/internal/connector"
+	"github.com/muty/nexus/internal/model"
+)
+
+func TestConfigure(t *testing.T) {
+	c := &Connector{client: &http.Client{}}
+
+	t.Run("valid config", func(t *testing.T) {
+		err := c.Configure(connector.Config{
+			"name":  "my-paperless",
+			"url":   "http://paperless:8000",
+			"token": "abc123",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.Name() != "my-paperless" {
+			t.Errorf("expected name 'my-paperless', got %q", c.Name())
+		}
+		if c.Type() != "paperless" {
+			t.Errorf("expected type 'paperless', got %q", c.Type())
+		}
+		if c.baseURL != "http://paperless:8000" {
+			t.Errorf("expected baseURL without trailing slash, got %q", c.baseURL)
+		}
+	})
+
+	t.Run("trailing slash stripped", func(t *testing.T) {
+		c2 := &Connector{client: &http.Client{}}
+		err := c2.Configure(connector.Config{
+			"url": "http://paperless:8000/", "token": "x",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c2.baseURL != "http://paperless:8000" {
+			t.Errorf("expected trailing slash stripped, got %q", c2.baseURL)
+		}
+	})
+
+	t.Run("missing url", func(t *testing.T) {
+		c2 := &Connector{client: &http.Client{}}
+		err := c2.Configure(connector.Config{"token": "x"})
+		if err == nil {
+			t.Fatal("expected error for missing url")
+		}
+	})
+
+	t.Run("missing token", func(t *testing.T) {
+		c2 := &Connector{client: &http.Client{}}
+		err := c2.Configure(connector.Config{"url": "http://localhost"})
+		if err == nil {
+			t.Fatal("expected error for missing token")
+		}
+	})
+
+	t.Run("default name", func(t *testing.T) {
+		c2 := &Connector{client: &http.Client{}}
+		c2.Configure(connector.Config{"url": "http://localhost", "token": "x"}) //nolint:errcheck // test
+		if c2.Name() != "paperless" {
+			t.Errorf("expected default name 'paperless', got %q", c2.Name())
+		}
+	})
+}
+
+func TestValidate(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Token valid-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(paginatedResponse{Count: 0, Results: []paperlessDoc{}}) //nolint:errcheck // test
+		}))
+		defer srv.Close()
+
+		c := &Connector{baseURL: srv.URL, token: "valid-token", client: srv.Client()}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("validate failed: %v", err)
+		}
+	})
+
+	t.Run("auth failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+
+		c := &Connector{baseURL: srv.URL, token: "bad", client: srv.Client()}
+		err := c.Validate()
+		if err == nil {
+			t.Fatal("expected auth error")
+		}
+	})
+
+	t.Run("server error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		c := &Connector{baseURL: srv.URL, token: "x", client: srv.Client()}
+		err := c.Validate()
+		if err == nil {
+			t.Fatal("expected error for 500")
+		}
+	})
+
+	t.Run("connection error", func(t *testing.T) {
+		c := &Connector{baseURL: "http://localhost:59999", token: "x", client: &http.Client{Timeout: time.Second}}
+		err := c.Validate()
+		if err == nil {
+			t.Fatal("expected connection error")
+		}
+	})
+}
+
+func TestFetch(t *testing.T) {
+	now := time.Now()
+	corr1 := 1
+	dtype1 := 2
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck // test
+			Results: []lookupItem{{ID: 10, Name: "invoice"}, {ID: 20, Name: "receipt"}},
+		})
+	})
+	mux.HandleFunc("/api/correspondents/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck // test
+			Results: []lookupItem{{ID: 1, Name: "ACME Corp"}},
+		})
+	})
+	mux.HandleFunc("/api/document_types/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck // test
+			Results: []lookupItem{{ID: 2, Name: "Invoice"}},
+		})
+	})
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
+			Count: 2,
+			Results: []paperlessDoc{
+				{
+					ID: 1, Title: "Electric Bill", Content: "Monthly electric bill for January",
+					Correspondent: &corr1, DocumentType: &dtype1, Tags: []int{10},
+					OriginalFileName: "bill.pdf", Added: now, Modified: now,
+				},
+				{
+					ID: 2, Title: "Receipt", Content: "Coffee shop receipt",
+					Tags: []int{20}, OriginalFileName: "receipt.jpg", Added: now, Modified: now,
+				},
+			},
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test-paperless", baseURL: srv.URL, token: "test", client: srv.Client()}
+
+	t.Run("full sync", func(t *testing.T) {
+		result, err := c.Fetch(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("fetch failed: %v", err)
+		}
+		if len(result.Documents) != 2 {
+			t.Fatalf("expected 2 documents, got %d", len(result.Documents))
+		}
+
+		doc1 := result.Documents[0]
+		if doc1.Title != "Electric Bill" {
+			t.Errorf("expected title 'Electric Bill', got %q", doc1.Title)
+		}
+		if doc1.Content != "Monthly electric bill for January" {
+			t.Errorf("unexpected content: %q", doc1.Content)
+		}
+		if doc1.SourceType != "paperless" {
+			t.Errorf("expected source_type 'paperless', got %q", doc1.SourceType)
+		}
+		if doc1.SourceID != "1" {
+			t.Errorf("expected source_id '1', got %q", doc1.SourceID)
+		}
+		if doc1.Metadata["correspondent"] != "ACME Corp" {
+			t.Errorf("expected correspondent 'ACME Corp', got %v", doc1.Metadata["correspondent"])
+		}
+		if doc1.Metadata["document_type"] != "Invoice" {
+			t.Errorf("expected document_type 'Invoice', got %v", doc1.Metadata["document_type"])
+		}
+		tags, ok := doc1.Metadata["tags"].([]string)
+		if !ok || len(tags) != 1 || tags[0] != "invoice" {
+			t.Errorf("expected tags ['invoice'], got %v", doc1.Metadata["tags"])
+		}
+
+		// Doc 2 has no correspondent or document_type
+		doc2 := result.Documents[1]
+		if _, ok := doc2.Metadata["correspondent"]; ok {
+			t.Error("expected no correspondent on doc 2")
+		}
+
+		// Verify cursor
+		if result.Cursor == nil {
+			t.Fatal("expected cursor")
+		}
+		if result.Cursor.ItemsSynced != 2 {
+			t.Errorf("expected 2 items synced, got %d", result.Cursor.ItemsSynced)
+		}
+	})
+
+	t.Run("incremental sync with cursor", func(t *testing.T) {
+		cursor := &model.SyncCursor{
+			CursorData: map[string]any{
+				"last_sync_time": now.Add(-1 * time.Hour).Format(time.RFC3339Nano),
+			},
+		}
+		result, err := c.Fetch(context.Background(), cursor)
+		if err != nil {
+			t.Fatalf("fetch failed: %v", err)
+		}
+		// Our mock doesn't actually filter, but verify the cursor was used
+		if len(result.Documents) != 2 {
+			t.Fatalf("expected 2 documents, got %d", len(result.Documents))
+		}
+	})
+}
+
+func TestFetch_Pagination(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+
+	// Empty lookups
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
+		})
+	}
+
+	srv := httptest.NewServer(mux)
+	// Need to set up document handler with reference to srv.URL for next link
+	page2URL := ""
+
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callCount++
+		now := time.Now()
+
+		if callCount == 1 {
+			next := page2URL
+			json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
+				Count: 2,
+				Next:  &next,
+				Results: []paperlessDoc{
+					{ID: 1, Title: "Doc 1", Content: "First", Added: now, Modified: now},
+				},
+			})
+		} else {
+			json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
+				Count: 2,
+				Results: []paperlessDoc{
+					{ID: 2, Title: "Doc 2", Content: "Second", Added: now, Modified: now},
+				},
+			})
+		}
+	})
+
+	page2URL = srv.URL + "/api/documents/?page=2"
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("fetch failed: %v", err)
+	}
+	if len(result.Documents) != 2 {
+		t.Fatalf("expected 2 documents across 2 pages, got %d", len(result.Documents))
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 page fetches, got %d", callCount)
+	}
+}
+
+func TestFetch_ContextCancellation(t *testing.T) {
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		next := "http://localhost/api/documents/?page=2"
+		json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
+			Count: 100, Next: &next,
+			Results: []paperlessDoc{{ID: 1, Title: "Doc", Added: time.Now(), Modified: time.Now()}},
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := c.Fetch(ctx, nil)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}

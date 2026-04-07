@@ -14,12 +14,16 @@ interface Props {
   onClose: () => void;
 }
 
-const CONNECTOR_TYPES = ['filesystem'];
+const CONNECTOR_TYPES = ['filesystem', 'paperless'];
 
 const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: string }[]> = {
   filesystem: [
     { key: 'root_path', label: 'Root Path', placeholder: '/data/files' },
     { key: 'patterns', label: 'File Patterns', placeholder: '*.txt,*.md' },
+  ],
+  paperless: [
+    { key: 'url', label: 'Paperless URL', placeholder: 'http://paperless:8000' },
+    { key: 'token', label: 'API Token', placeholder: 'your-api-token' },
   ],
 };
 

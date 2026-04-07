@@ -12,6 +12,7 @@ import (
 	"github.com/muty/nexus/internal/api"
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
+	_ "github.com/muty/nexus/internal/connector/paperless"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/store"
