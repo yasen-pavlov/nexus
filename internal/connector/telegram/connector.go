@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"github.com/muty/nexus/internal/connector"
@@ -258,11 +257,12 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, inpu
 			}
 
 			msgTime := time.Unix(int64(m.Date), 0)
+			sourceID := fmt.Sprintf("%s:%d", chatID, m.ID)
 			docs = append(docs, model.Document{
-				ID:         uuid.New(),
+				ID:         model.DocumentID("telegram", c.name, sourceID),
 				SourceType: "telegram",
 				SourceName: c.name,
-				SourceID:   fmt.Sprintf("%s:%d", chatID, m.ID),
+				SourceID:   sourceID,
 				Title:      chatName,
 				Content:    m.Message,
 				Metadata: map[string]any{

@@ -11,7 +11,6 @@ import (
 
 	"mime"
 
-	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
@@ -135,7 +134,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		}
 
 		docs = append(docs, model.Document{
-			ID:         uuid.New(),
+			ID:         model.DocumentID("filesystem", c.name, relPath),
 			SourceType: "filesystem",
 			SourceName: c.name,
 			SourceID:   relPath,

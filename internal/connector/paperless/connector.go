@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 )
@@ -273,11 +272,12 @@ func (c *Connector) toDocument(pdoc paperlessDoc, tags, correspondents, docTypes
 		}
 	}
 
+	sourceID := strconv.Itoa(pdoc.ID)
 	return model.Document{
-		ID:         uuid.New(),
+		ID:         model.DocumentID("paperless", c.name, sourceID),
 		SourceType: "paperless",
 		SourceName: c.name,
-		SourceID:   strconv.Itoa(pdoc.ID),
+		SourceID:   sourceID,
 		Title:      pdoc.Title,
 		Content:    pdoc.Content,
 		Metadata:   metadata,

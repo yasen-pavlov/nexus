@@ -11,7 +11,6 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
@@ -347,11 +346,12 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 	var docs []model.Document
 
 	// Main email document
+	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
 	docs = append(docs, model.Document{
-		ID:         uuid.New(),
+		ID:         model.DocumentID("imap", c.name, emailSourceID),
 		SourceType: "imap",
 		SourceName: c.name,
-		SourceID:   fmt.Sprintf("%s:%d", folder, msg.UID),
+		SourceID:   emailSourceID,
 		Title:      env.Subject,
 		Content:    textContent,
 		Metadata:   metadata,
@@ -381,11 +381,12 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 			attMetadata["filename"] = att.Filename
 		}
 
+		attSourceID := fmt.Sprintf("%s:%d:attachment:%d", folder, msg.UID, i)
 		docs = append(docs, model.Document{
-			ID:         uuid.New(),
+			ID:         model.DocumentID("imap", c.name, attSourceID),
 			SourceType: "imap",
 			SourceName: c.name,
-			SourceID:   fmt.Sprintf("%s:%d:attachment:%d", folder, msg.UID, i),
+			SourceID:   attSourceID,
 			Title:      att.Filename,
 			Content:    extracted,
 			Metadata:   attMetadata,

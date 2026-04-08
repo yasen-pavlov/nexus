@@ -7,6 +7,15 @@ import (
 	"github.com/google/uuid"
 )
 
+// nexusNamespace is a fixed UUID v5 namespace for generating deterministic document IDs.
+var nexusNamespace = uuid.MustParse("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+// DocumentID returns a deterministic UUID v5 derived from the source triple.
+// The same source document always produces the same ID across re-syncs.
+func DocumentID(sourceType, sourceName, sourceID string) uuid.UUID {
+	return uuid.NewSHA1(nexusNamespace, []byte(sourceType+":"+sourceName+":"+sourceID))
+}
+
 type Document struct {
 	ID         uuid.UUID      `json:"id"`
 	SourceType string         `json:"source_type"`
