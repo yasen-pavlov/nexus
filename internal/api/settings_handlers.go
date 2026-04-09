@@ -23,6 +23,14 @@ type embeddingSettingsRequest struct {
 	OllamaURL string `json:"ollama_url"`
 }
 
+// GetEmbeddingSettings godoc
+//
+//	@Summary	Get embedding settings
+//	@Description	Returns current embedding provider configuration. API keys are masked.
+//	@Tags		settings
+//	@Produce	json
+//	@Success	200	{object}	embeddingSettingsResponse
+//	@Router		/settings/embedding [get]
 func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	keys := []string{"embedding_provider", "embedding_model", "embedding_api_key", "ollama_url"}
 	settings, err := h.store.GetSettings(r.Context(), keys)
@@ -42,6 +50,17 @@ func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// UpdateEmbeddingSettings godoc
+//
+//	@Summary	Update embedding settings
+//	@Description	Updates the embedding provider. If provider or model changes, automatically triggers a full re-index. Masked API keys (****...) are preserved.
+//	@Tags		settings
+//	@Accept		json
+//	@Produce	json
+//	@Param		request	body	embeddingSettingsRequest	true	"Embedding settings"
+//	@Success	200	{object}	embeddingSettingsResponse
+//	@Failure	400	{object}	APIResponse
+//	@Router		/settings/embedding [put]
 func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

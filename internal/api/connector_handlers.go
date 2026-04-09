@@ -36,6 +36,13 @@ type connectorResponse struct {
 	Status string `json:"status"`
 }
 
+// ListConnectors godoc
+//
+//	@Summary	List all connectors
+//	@Tags		connectors
+//	@Produce	json
+//	@Success	200	{array}	connectorResponse
+//	@Router		/connectors [get]
 func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 	configs, err := h.store.ListConnectorConfigs(r.Context())
 	if err != nil {
@@ -58,6 +65,15 @@ func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// GetConnector godoc
+//
+//	@Summary	Get a connector by ID
+//	@Tags		connectors
+//	@Produce	json
+//	@Param		id	path	string	true	"Connector UUID"
+//	@Success	200	{object}	connectorResponse
+//	@Failure	404	{object}	APIResponse
+//	@Router		/connectors/{id} [get]
 func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -85,6 +101,17 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, connectorResponse{ConnectorConfig: *cfg, Status: status})
 }
 
+// CreateConnector godoc
+//
+//	@Summary	Create a new connector
+//	@Tags		connectors
+//	@Accept		json
+//	@Produce	json
+//	@Param		request	body	createConnectorRequest	true	"Connector config"
+//	@Success	201	{object}	model.ConnectorConfig
+//	@Failure	400	{object}	APIResponse
+//	@Failure	409	{object}	APIResponse	"Name already exists"
+//	@Router		/connectors [post]
 func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	var req createConnectorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -125,6 +152,20 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, cfg)
 }
 
+// UpdateConnector godoc
+//
+//	@Summary	Update a connector
+//	@Description	Updates connector config. Masked secret values (****...) are preserved from the existing config.
+//	@Tags		connectors
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path	string					true	"Connector UUID"
+//	@Param		request	body	updateConnectorRequest	true	"Updated config"
+//	@Success	200	{object}	model.ConnectorConfig
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Failure	409	{object}	APIResponse	"Name already exists"
+//	@Router		/connectors/{id} [put]
 func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -183,6 +224,14 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cfg)
 }
 
+// DeleteConnector godoc
+//
+//	@Summary	Delete a connector
+//	@Tags		connectors
+//	@Param		id	path	string	true	"Connector UUID"
+//	@Success	204
+//	@Failure	404	{object}	APIResponse
+//	@Router		/connectors/{id} [delete]
 func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {

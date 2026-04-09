@@ -10,7 +10,10 @@ import (
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.uber.org/zap"
+
+	_ "github.com/muty/nexus/docs"
 )
 
 func NewRouter(
@@ -77,6 +80,9 @@ func NewRouter(
 			r.Put("/embedding", h.UpdateEmbeddingSettings)
 		})
 	})
+
+	// Swagger UI
+	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	// Serve static frontend files
 	staticHandler := staticFileHandler()

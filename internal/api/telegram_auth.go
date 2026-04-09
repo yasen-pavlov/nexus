@@ -40,7 +40,17 @@ type telegramAuthCodeRequest struct {
 	Password string `json:"password,omitempty"`
 }
 
-// TelegramAuthStart initiates the Telegram authentication flow.
+// TelegramAuthStart godoc
+//
+//	@Summary	Start Telegram authentication
+//	@Description	Initiates the Telegram MTProto auth flow. Sends a code to the user's Telegram app.
+//	@Tags		connectors
+//	@Produce	json
+//	@Param		id	path	string	true	"Connector UUID"
+//	@Success	200	{object}	map[string]string
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Router		/connectors/{id}/auth/start [post]
 func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -128,7 +138,18 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "code_sent", "message": "Check your Telegram app for the login code"})
 }
 
-// TelegramAuthCode submits the authentication code.
+// TelegramAuthCode godoc
+//
+//	@Summary	Submit Telegram auth code
+//	@Description	Completes Telegram authentication by submitting the code received in the Telegram app.
+//	@Tags		connectors
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path	string	true	"Connector UUID"
+//	@Param		request	body	object	true	"Auth code"
+//	@Success	200	{object}	map[string]string
+//	@Failure	400	{object}	APIResponse
+//	@Router		/connectors/{id}/auth/code [post]
 func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 

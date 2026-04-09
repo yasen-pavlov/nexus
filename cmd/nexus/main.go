@@ -1,3 +1,9 @@
+//	@title			Nexus API
+//	@version		1.0
+//	@description	Personal search and RAG tool — indexes data from multiple sources and provides unified search.
+//	@host			localhost:8080
+//	@BasePath		/api
+
 package main
 
 import (

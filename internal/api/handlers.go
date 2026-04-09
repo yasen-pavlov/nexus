@@ -27,10 +27,33 @@ type handler struct {
 	log      *zap.Logger
 }
 
+// Health godoc
+//
+//	@Summary	Health check
+//	@Tags		system
+//	@Produce	json
+//	@Success	200	{object}	map[string]string
+//	@Router		/health [get]
 func (h *handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// Search godoc
+//
+//	@Summary	Search across all indexed documents
+//	@Description	Performs hybrid search (BM25 + vector) if embeddings are enabled, otherwise BM25-only.
+//	@Tags		search
+//	@Produce	json
+//	@Param		q				query	string	true	"Search query"
+//	@Param		limit			query	int		false	"Max results (default 20)"
+//	@Param		offset			query	int		false	"Pagination offset"
+//	@Param		sources			query	string	false	"Filter by source types (comma-separated)"
+//	@Param		source_names	query	string	false	"Filter by source names (comma-separated)"
+//	@Param		date_from		query	string	false	"Filter by date (YYYY-MM-DD)"
+//	@Param		date_to			query	string	false	"Filter by date (YYYY-MM-DD)"
+//	@Success	200	{object}	model.SearchResult
+//	@Failure	400	{object}	APIResponse
+//	@Router		/search [get]
 func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
 	if query == "" {
@@ -76,6 +99,17 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// TriggerSync godoc
+//
+//	@Summary	Trigger sync for a single connector
+//	@Description	Starts an async sync job. Returns immediately with the job state.
+//	@Tags		sync
+//	@Produce	json
+//	@Param		connector	path	string	true	"Connector name"
+//	@Success	202	{object}	SyncJob
+//	@Failure	404	{object}	APIResponse
+//	@Failure	409	{object}	APIResponse	"Sync already running"
+//	@Router		/sync/{connector} [post]
 func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "connector")
 	conn, ok := h.cm.Get(name)
@@ -111,6 +145,16 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, &snapshot)
 }
 
+// StreamSyncProgress godoc
+//
+//	@Summary	Stream sync progress via SSE
+//	@Description	Opens a Server-Sent Events stream that pushes SyncJob updates in real-time. Sends an "event: done" when the job completes.
+//	@Tags		sync
+//	@Produce	text/event-stream
+//	@Param		connector	path	string	true	"Connector name"
+//	@Success	200	{string}	string	"SSE stream"
+//	@Failure	404	{object}	APIResponse
+//	@Router		/sync/{connector}/progress [get]
 func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "connector")
 
@@ -150,11 +194,27 @@ func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListSyncJobs godoc
+//
+//	@Summary	List active and recent sync jobs
+//	@Tags		sync
+//	@Produce	json
+//	@Success	200	{array}	SyncJob
+//	@Router		/sync [get]
 func (h *handler) ListSyncJobs(w http.ResponseWriter, _ *http.Request) {
 	jobs := h.syncJobs.Active()
 	writeJSON(w, http.StatusOK, jobs)
 }
 
+// DeleteAllCursors godoc
+//
+//	@Summary	Delete all sync cursors
+//	@Description	Clears all sync cursors, forcing a full re-sync on next trigger.
+//	@Tags		sync
+//	@Produce	json
+//	@Success	200	{object}	map[string]string
+//	@Failure	500	{object}	APIResponse
+//	@Router		/sync/cursors [delete]
 func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.DeleteAllSyncCursors(r.Context()); err != nil {
 		h.log.Error("delete all cursors failed", zap.Error(err))
@@ -164,6 +224,15 @@ func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "all cursors deleted"})
 }
 
+// DeleteCursor godoc
+//
+//	@Summary	Delete a single connector's sync cursor
+//	@Tags		sync
+//	@Produce	json
+//	@Param		connector	path	string	true	"Connector name"
+//	@Success	200	{object}	map[string]string
+//	@Failure	500	{object}	APIResponse
+//	@Router		/sync/cursors/{connector} [delete]
 func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "connector")
 	if err := h.store.DeleteSyncCursor(r.Context(), name); err != nil {
@@ -174,6 +243,14 @@ func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "cursor deleted for " + name})
 }
 
+// SyncAll godoc
+//
+//	@Summary	Sync all enabled connectors
+//	@Description	Starts async sync jobs for all enabled connectors. Skips connectors that are already syncing.
+//	@Tags		sync
+//	@Produce	json
+//	@Success	202	{array}	SyncJob
+//	@Router		/sync [post]
 func (h *handler) SyncAll(w http.ResponseWriter, _ *http.Request) {
 	var jobs []*SyncJob
 	for name, conn := range h.cm.All() {
@@ -199,6 +276,15 @@ func (h *handler) SyncAll(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusAccepted, jobs)
 }
 
+// TriggerReindex godoc
+//
+//	@Summary	Full re-index
+//	@Description	Recreates the OpenSearch index with the current embedding dimension, clears all sync cursors, and triggers a full sync for all enabled connectors.
+//	@Tags		sync
+//	@Produce	json
+//	@Success	202	{object}	map[string]any
+//	@Failure	500	{object}	APIResponse
+//	@Router		/reindex [post]
 func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 	// 1. Recreate index with current dimension
 	dim := h.em.Dimension()

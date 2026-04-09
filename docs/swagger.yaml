@@ -1,0 +1,619 @@
+basePath: /api
+definitions:
+  github_com_muty_nexus_internal_model.ConnectorConfig:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      last_run:
+        type: string
+      name:
+        type: string
+      schedule:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.DocumentHit:
+    properties:
+      content:
+        type: string
+      created_at:
+        type: string
+      headline:
+        type: string
+      id:
+        type: string
+      indexed_at:
+        type: string
+      metadata:
+        additionalProperties: {}
+        type: object
+      rank:
+        type: number
+      source_id:
+        type: string
+      source_name:
+        type: string
+      source_type:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+      visibility:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.Facet:
+    properties:
+      count:
+        type: integer
+      value:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.SearchResult:
+    properties:
+      documents:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.DocumentHit'
+        type: array
+      facets:
+        additionalProperties:
+          items:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.Facet'
+          type: array
+        type: object
+      query:
+        type: string
+      total_count:
+        type: integer
+    type: object
+  internal_api.APIResponse:
+    properties:
+      data: {}
+      error:
+        type: string
+    type: object
+  internal_api.SyncJob:
+    properties:
+      completed_at:
+        type: string
+      connector_name:
+        type: string
+      connector_type:
+        type: string
+      docs_processed:
+        type: integer
+      docs_total:
+        type: integer
+      error:
+        type: string
+      errors:
+        type: integer
+      id:
+        type: string
+      started_at:
+        type: string
+      status:
+        description: '"running", "completed", "failed"'
+        type: string
+    type: object
+  internal_api.connectorResponse:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      last_run:
+        type: string
+      name:
+        type: string
+      schedule:
+        type: string
+      status:
+        type: string
+      type:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  internal_api.createConnectorRequest:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      enabled:
+        type: boolean
+      name:
+        type: string
+      schedule:
+        type: string
+      type:
+        type: string
+    type: object
+  internal_api.embeddingSettingsRequest:
+    properties:
+      api_key:
+        type: string
+      model:
+        type: string
+      ollama_url:
+        type: string
+      provider:
+        type: string
+    type: object
+  internal_api.embeddingSettingsResponse:
+    properties:
+      api_key:
+        type: string
+      model:
+        type: string
+      ollama_url:
+        type: string
+      provider:
+        type: string
+    type: object
+  internal_api.updateConnectorRequest:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      enabled:
+        type: boolean
+      name:
+        type: string
+      schedule:
+        type: string
+      type:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Personal search and RAG tool — indexes data from multiple sources and
+    provides unified search.
+  title: Nexus API
+  version: "1.0"
+paths:
+  /connectors:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.connectorResponse'
+            type: array
+      summary: List all connectors
+      tags:
+      - connectors
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Connector config
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createConnectorRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.ConnectorConfig'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "409":
+          description: Name already exists
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Create a new connector
+      tags:
+      - connectors
+  /connectors/{id}:
+    delete:
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Delete a connector
+      tags:
+      - connectors
+    get:
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.connectorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Get a connector by ID
+      tags:
+      - connectors
+    put:
+      consumes:
+      - application/json
+      description: Updates connector config. Masked secret values (****...) are preserved
+        from the existing config.
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Updated config
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.updateConnectorRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.ConnectorConfig'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "409":
+          description: Name already exists
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Update a connector
+      tags:
+      - connectors
+  /connectors/{id}/auth/code:
+    post:
+      consumes:
+      - application/json
+      description: Completes Telegram authentication by submitting the code received
+        in the Telegram app.
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Auth code
+        in: body
+        name: request
+        required: true
+        schema:
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Submit Telegram auth code
+      tags:
+      - connectors
+  /connectors/{id}/auth/start:
+    post:
+      description: Initiates the Telegram MTProto auth flow. Sends a code to the user's
+        Telegram app.
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Start Telegram authentication
+      tags:
+      - connectors
+  /health:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health check
+      tags:
+      - system
+  /reindex:
+    post:
+      description: Recreates the OpenSearch index with the current embedding dimension,
+        clears all sync cursors, and triggers a full sync for all enabled connectors.
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Full re-index
+      tags:
+      - sync
+  /search:
+    get:
+      description: Performs hybrid search (BM25 + vector) if embeddings are enabled,
+        otherwise BM25-only.
+      parameters:
+      - description: Search query
+        in: query
+        name: q
+        required: true
+        type: string
+      - description: Max results (default 20)
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset
+        in: query
+        name: offset
+        type: integer
+      - description: Filter by source types (comma-separated)
+        in: query
+        name: sources
+        type: string
+      - description: Filter by source names (comma-separated)
+        in: query
+        name: source_names
+        type: string
+      - description: Filter by date (YYYY-MM-DD)
+        in: query
+        name: date_from
+        type: string
+      - description: Filter by date (YYYY-MM-DD)
+        in: query
+        name: date_to
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.SearchResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Search across all indexed documents
+      tags:
+      - search
+  /settings/embedding:
+    get:
+      description: Returns current embedding provider configuration. API keys are
+        masked.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.embeddingSettingsResponse'
+      summary: Get embedding settings
+      tags:
+      - settings
+    put:
+      consumes:
+      - application/json
+      description: Updates the embedding provider. If provider or model changes, automatically
+        triggers a full re-index. Masked API keys (****...) are preserved.
+      parameters:
+      - description: Embedding settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.embeddingSettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.embeddingSettingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Update embedding settings
+      tags:
+      - settings
+  /sync:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.SyncJob'
+            type: array
+      summary: List active and recent sync jobs
+      tags:
+      - sync
+    post:
+      description: Starts async sync jobs for all enabled connectors. Skips connectors
+        that are already syncing.
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.SyncJob'
+            type: array
+      summary: Sync all enabled connectors
+      tags:
+      - sync
+  /sync/{connector}:
+    post:
+      description: Starts an async sync job. Returns immediately with the job state.
+      parameters:
+      - description: Connector name
+        in: path
+        name: connector
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/internal_api.SyncJob'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "409":
+          description: Sync already running
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Trigger sync for a single connector
+      tags:
+      - sync
+  /sync/{connector}/progress:
+    get:
+      description: 'Opens a Server-Sent Events stream that pushes SyncJob updates
+        in real-time. Sends an "event: done" when the job completes.'
+      parameters:
+      - description: Connector name
+        in: path
+        name: connector
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Stream sync progress via SSE
+      tags:
+      - sync
+  /sync/cursors:
+    delete:
+      description: Clears all sync cursors, forcing a full re-sync on next trigger.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Delete all sync cursors
+      tags:
+      - sync
+  /sync/cursors/{connector}:
+    delete:
+      parameters:
+      - description: Connector name
+        in: path
+        name: connector
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Delete a single connector's sync cursor
+      tags:
+      - sync
+swagger: "2.0"

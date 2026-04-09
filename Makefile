@@ -21,8 +21,12 @@ coverage:
 	go tool cover -func=coverage.out | tail -1
 	@echo "Run 'go tool cover -html=coverage.out' for detailed report"
 
+# Generate swagger docs (requires: go install github.com/swaggo/swag/cmd/swag@v1.8.12)
+swagger:
+	swag init -g cmd/nexus/main.go -o docs --parseDependency --parseInternal
+
 # Build the binary
-build:
+build: swagger
 	go build -o bin/nexus ./cmd/nexus
 
 # Dev: start Postgres + OpenSearch
