@@ -62,7 +62,7 @@ func (v *Voyage) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("voyage: unexpected status %d", resp.StatusCode)
+		return nil, &EmbedError{StatusCode: resp.StatusCode, Provider: "voyage"}
 	}
 
 	var result voyageEmbedResponse

@@ -21,6 +21,8 @@ type Embedder interface {
 // New creates an Embedder based on the configured provider.
 // Returns nil if no provider is configured (embeddings disabled).
 func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
+	var inner Embedder
+
 	switch cfg.EmbeddingProvider {
 	case "":
 		return nil, nil // embeddings disabled
@@ -29,7 +31,7 @@ func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
 		if model == "" {
 			model = "nomic-embed-text"
 		}
-		return NewOllama(cfg.OllamaURL, model, log), nil
+		inner = NewOllama(cfg.OllamaURL, model, log)
 	case "openai":
 		model := cfg.EmbeddingModel
 		if model == "" {
@@ -38,7 +40,7 @@ func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
 		if cfg.EmbeddingAPIKey == "" {
 			return nil, fmt.Errorf("embedding: NEXUS_EMBEDDING_API_KEY required for openai provider")
 		}
-		return NewOpenAI(cfg.EmbeddingAPIKey, model, log), nil
+		inner = NewOpenAI(cfg.EmbeddingAPIKey, model, log)
 	case "voyage":
 		model := cfg.EmbeddingModel
 		if model == "" {
@@ -47,7 +49,7 @@ func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
 		if cfg.EmbeddingAPIKey == "" {
 			return nil, fmt.Errorf("embedding: NEXUS_EMBEDDING_API_KEY required for voyage provider")
 		}
-		return NewVoyage(cfg.EmbeddingAPIKey, model, log), nil
+		inner = NewVoyage(cfg.EmbeddingAPIKey, model, log)
 	case "cohere":
 		model := cfg.EmbeddingModel
 		if model == "" {
@@ -56,8 +58,10 @@ func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
 		if cfg.EmbeddingAPIKey == "" {
 			return nil, fmt.Errorf("embedding: NEXUS_EMBEDDING_API_KEY required for cohere provider")
 		}
-		return NewCohere(cfg.EmbeddingAPIKey, model, log), nil
+		inner = NewCohere(cfg.EmbeddingAPIKey, model, log)
 	default:
 		return nil, fmt.Errorf("embedding: unknown provider %q (supported: ollama, openai, voyage, cohere)", cfg.EmbeddingProvider)
 	}
+
+	return NewRetryEmbedder(inner, log), nil
 }

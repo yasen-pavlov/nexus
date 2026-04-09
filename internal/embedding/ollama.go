@@ -57,7 +57,7 @@ func (o *Ollama) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama: unexpected status %d", resp.StatusCode)
+		return nil, &EmbedError{StatusCode: resp.StatusCode, Provider: "ollama"}
 	}
 
 	var result ollamaEmbedResponse
