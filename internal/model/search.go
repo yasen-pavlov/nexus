@@ -28,6 +28,17 @@ type Facet struct {
 // DocumentHit is a search result with ranking info.
 type DocumentHit struct {
 	Document
-	Rank     float64 `json:"rank"`
-	Headline string  `json:"headline"`
+	Rank         float64       `json:"rank"`
+	Headline     string        `json:"headline"`
+	ScoreDetails *ScoreDetails `json:"score_details,omitempty"`
+}
+
+// ScoreDetails provides a breakdown of how the final rank was computed.
+// Only populated when ?explain=true is passed.
+type ScoreDetails struct {
+	Retrieval     float64 `json:"retrieval"`
+	Reranker      float64 `json:"reranker,omitempty"`
+	RecencyFactor float64 `json:"recency_factor"`
+	MetadataBonus float64 `json:"metadata_bonus"`
+	Final         float64 `json:"final"`
 }

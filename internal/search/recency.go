@@ -57,6 +57,10 @@ func ApplyRecencyDecay(result *model.SearchResult) {
 		freshness := math.Pow(0.5, ageDays/halfLife)
 		factor := recencyFloor + (1-recencyFloor)*freshness
 		doc.Rank *= factor
+
+		if doc.ScoreDetails != nil {
+			doc.ScoreDetails.RecencyFactor = factor
+		}
 	}
 
 	sort.Slice(result.Documents, func(i, j int) bool {

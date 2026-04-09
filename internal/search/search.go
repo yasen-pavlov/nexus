@@ -369,6 +369,7 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 			chunkData[chunk.ParentID] = &rankedChunk{
 				parentID: chunk.ParentID,
 				doc: model.Document{
+					ID:         model.DocumentID(chunk.SourceType, chunk.SourceName, chunk.SourceID),
 					SourceType: chunk.SourceType,
 					SourceName: chunk.SourceName,
 					SourceID:   chunk.SourceID,

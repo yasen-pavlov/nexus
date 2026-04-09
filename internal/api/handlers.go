@@ -100,11 +100,32 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Initialize score details if explain mode is on
+	explain := r.URL.Query().Get("score_details") == "true"
+	if explain {
+		for i := range result.Documents {
+			result.Documents[i].ScoreDetails = &model.ScoreDetails{
+				Retrieval: result.Documents[i].Rank,
+			}
+		}
+	}
+
 	// Rerank results if a reranker is available
 	result = h.rerankResults(r.Context(), query, result)
 
+	if explain {
+		for i := range result.Documents {
+			if result.Documents[i].ScoreDetails != nil {
+				result.Documents[i].ScoreDetails.Reranker = result.Documents[i].Rank
+			}
+		}
+	}
+
 	// Apply recency decay — boost recent documents, source-specific half-lives
 	search.ApplyRecencyDecay(result)
+
+	// Apply metadata bonus — boost results matching query terms in structured metadata
+	search.ApplyMetadataBonus(result, query)
 
 	writeJSON(w, http.StatusOK, result)
 }

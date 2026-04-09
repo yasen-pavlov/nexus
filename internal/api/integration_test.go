@@ -132,6 +132,84 @@ func TestSearchHandler_Integration(t *testing.T) {
 	}
 }
 
+func TestSearchHandler_ScoreDetails(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	doc := &model.Document{
+		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "explain-test.txt",
+		Title: "Explain Test", Content: "Testing score details breakdown",
+		Metadata: map[string]any{"path": "explain-test.txt"}, Visibility: "private", CreatedAt: time.Now(),
+	}
+	if err := sc.IndexDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	sc.Refresh(ctx) //nolint:errcheck // test
+
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=explain+test&score_details=true", nil)
+	w := httptest.NewRecorder()
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	docs := data["documents"].([]any)
+	if len(docs) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	firstDoc := docs[0].(map[string]any)
+	sd, ok := firstDoc["score_details"].(map[string]any)
+	if !ok || sd == nil {
+		t.Fatal("expected score_details in response when score_details=true")
+	}
+	if sd["retrieval"] == nil {
+		t.Error("expected retrieval score in score_details")
+	}
+	if sd["recency_factor"] == nil {
+		t.Error("expected recency_factor in score_details")
+	}
+	if sd["final"] == nil {
+		t.Error("expected final score in score_details")
+	}
+}
+
+func TestSearchHandler_NoScoreDetailsWithoutFlag(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	doc := &model.Document{
+		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "no-explain.txt",
+		Title: "No Explain", Content: "Should not have score details",
+		Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
+	}
+	sc.IndexDocument(ctx, doc) //nolint:errcheck // test
+	sc.Refresh(ctx)            //nolint:errcheck // test
+
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=explain", nil)
+	w := httptest.NewRecorder()
+	h.Search(w, req)
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	docs := data["documents"].([]any)
+	if len(docs) > 0 {
+		firstDoc := docs[0].(map[string]any)
+		if firstDoc["score_details"] != nil {
+			t.Error("score_details should not be present without flag")
+		}
+	}
+}
+
 func TestSearchHandler_WithParams(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
