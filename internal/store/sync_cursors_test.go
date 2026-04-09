@@ -77,6 +77,25 @@ func TestSyncCursors(t *testing.T) {
 		}
 	})
 
+	t.Run("delete all cursors", func(t *testing.T) {
+		// Insert multiple cursors
+		_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "c1", CursorData: map[string]any{}, LastSync: time.Now(), LastStatus: "ok"})
+		_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "c2", CursorData: map[string]any{}, LastSync: time.Now(), LastStatus: "ok"})
+
+		if err := st.DeleteAllSyncCursors(ctx); err != nil {
+			t.Fatalf("delete all failed: %v", err)
+		}
+
+		got1, _ := st.GetSyncCursor(ctx, "c1")
+		got2, _ := st.GetSyncCursor(ctx, "c2")
+		if got1 != nil || got2 != nil {
+			t.Error("expected all cursors deleted")
+		}
+
+		// Re-insert test-fs for the next subtest
+		_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "test-fs", CursorData: map[string]any{}, LastSync: time.Now(), LastStatus: "ok", ItemsSynced: 1})
+	})
+
 	t.Run("delete cursor", func(t *testing.T) {
 		if err := st.DeleteSyncCursor(ctx, "test-fs"); err != nil {
 			t.Fatalf("delete failed: %v", err)

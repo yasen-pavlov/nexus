@@ -105,6 +105,22 @@ export async function triggerSync(connector: string): Promise<SyncJob> {
   return fetchAPI<SyncJob>(`/api/sync/${connector}`, { method: 'POST' });
 }
 
+export async function syncAll(): Promise<SyncJob[]> {
+  return fetchAPI<SyncJob[]>('/api/sync', { method: 'POST' });
+}
+
+export async function deleteAllCursors(): Promise<void> {
+  await fetchAPI('/api/sync/cursors', { method: 'DELETE' });
+}
+
+export async function deleteCursor(connector: string): Promise<void> {
+  await fetchAPI(`/api/sync/cursors/${connector}`, { method: 'DELETE' });
+}
+
+export async function triggerReindex(): Promise<{ message: string; dimension: number; connectors: number }> {
+  return fetchAPI('/api/reindex', { method: 'POST' });
+}
+
 export function streamSyncProgress(
   connector: string,
   onUpdate: (job: SyncJob) => void,

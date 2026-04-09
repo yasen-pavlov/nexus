@@ -363,6 +363,15 @@ a.result-title:hover {
   margin-left: auto;
 }
 
+.cm-btn-danger {
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.cm-btn-danger:hover:not(:disabled) {
+  background: #f8514922;
+}
+
 .cm-header {
   display: flex;
   justify-content: space-between;

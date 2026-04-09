@@ -452,6 +452,24 @@ func (c *Client) DeleteBySource(ctx context.Context, sourceType, sourceName stri
 	return nil
 }
 
+// RecreateIndex deletes the existing index and creates a new one with the given embedding dimension.
+func (c *Client) RecreateIndex(ctx context.Context, embeddingDimension int) error {
+	_ = c.DeleteIndex(ctx) // ignore error if index doesn't exist
+
+	c.embeddingDimension = embeddingDimension
+	mapping := indexMappingJSON(embeddingDimension)
+	_, err := c.os.Indices.Create(ctx, opensearchapi.IndicesCreateReq{
+		Index: c.index,
+		Body:  strings.NewReader(mapping),
+	})
+	if err != nil {
+		return fmt.Errorf("search: recreate index: %w", err)
+	}
+
+	c.log.Info("recreated search index", zap.String("index", c.index), zap.Int("embedding_dim", embeddingDimension))
+	return nil
+}
+
 // DeleteIndex deletes the search index (for testing).
 func (c *Client) DeleteIndex(ctx context.Context) error {
 	_, err := c.os.Indices.Delete(ctx, opensearchapi.IndicesDeleteReq{

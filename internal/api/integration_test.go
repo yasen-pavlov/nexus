@@ -1024,6 +1024,298 @@ func TestTelegramAuthCode_MissingCode(t *testing.T) {
 	}
 }
 
+func TestDeleteAllCursors_Integration(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+	ctx := context.Background()
+
+	// Create some cursors
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "a", CursorData: map[string]any{}})
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "b", CursorData: map[string]any{}})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify cursors are gone
+	c, _ := st.GetSyncCursor(ctx, "a")
+	if c != nil {
+		t.Error("cursor 'a' should be deleted")
+	}
+	c, _ = st.GetSyncCursor(ctx, "b")
+	if c != nil {
+		t.Error("cursor 'b' should be deleted")
+	}
+}
+
+func TestDeleteCursor_Integration(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+	ctx := context.Background()
+
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "keep", CursorData: map[string]any{}})
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "delete-me", CursorData: map[string]any{}})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/delete-me", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	c, _ := st.GetSyncCursor(ctx, "delete-me")
+	if c != nil {
+		t.Error("cursor 'delete-me' should be deleted")
+	}
+	c, _ = st.GetSyncCursor(ctx, "keep")
+	if c == nil {
+		t.Error("cursor 'keep' should still exist")
+	}
+}
+
+func TestSyncAll_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Create a connector first
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"sync-all-test","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/sync", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	time.Sleep(500 * time.Millisecond)
+}
+
+func TestReindex_Integration(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+	ctx := context.Background()
+
+	// Create a connector and a cursor
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"reindex-test","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", w.Code)
+	}
+
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "reindex-test", CursorData: map[string]any{}})
+
+	// Verify cursor exists before reindex
+	c, _ := st.GetSyncCursor(ctx, "reindex-test")
+	if c == nil {
+		t.Fatal("cursor should exist before reindex")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/reindex", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Wait for async sync to complete
+	time.Sleep(500 * time.Millisecond)
+}
+
+func TestDeleteAllCursors_StoreError(t *testing.T) {
+	st, sc, _ := newTestDeps(t)
+	st.Close()
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	sjm := NewSyncJobManager()
+	h := &handler{store: st, search: sc, em: em, syncJobs: sjm, log: zap.NewNop()}
+
+	r := chi.NewRouter()
+	r.Delete("/api/sync/cursors", h.DeleteAllCursors)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestDeleteCursor_StoreError(t *testing.T) {
+	st, sc, _ := newTestDeps(t)
+	st.Close()
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	sjm := NewSyncJobManager()
+	h := &handler{store: st, search: sc, em: em, syncJobs: sjm, log: zap.NewNop()}
+
+	r := chi.NewRouter()
+	r.Delete("/api/sync/cursors/{connector}", h.DeleteCursor)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestTriggerReindex_Integration_Full(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+	ctx := context.Background()
+
+	// Index a document first to verify it's cleared after reindex
+	doc := &model.Document{
+		SourceType: "test", SourceName: "test", SourceID: "reindex-1",
+		Title: "Before Reindex", Content: "should be cleared",
+	}
+	if err := sc.IndexDocument(ctx, doc); err != nil {
+		t.Fatalf("index doc: %v", err)
+	}
+	_ = sc.Refresh(ctx)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reindex", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify response shape
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["message"] != "reindex started" {
+		t.Errorf("message = %v, want 'reindex started'", data["message"])
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Old document should be gone (index was recreated)
+	_ = sc.Refresh(ctx)
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "should be cleared", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(result.Documents) != 0 {
+		t.Errorf("expected 0 results after reindex, got %d", len(result.Documents))
+	}
+}
+
+func TestTriggerReindex_StoreError(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+
+	// Create and close store to simulate DB failure on cursor delete
+	// But we need RecreateIndex to succeed first — so we keep search client alive
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	sjm := NewSyncJobManager()
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, syncJobs: sjm, log: zap.NewNop()}
+
+	st.Close()
+
+	r := chi.NewRouter()
+	r.Post("/api/reindex", h.TriggerReindex)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reindex", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// RecreateIndex succeeds (OpenSearch is fine), but DeleteAllSyncCursors fails (DB closed)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListSyncJobs_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sync", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	// Should be an empty list (no syncs running)
+	data, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("expected array, got %T", resp.Data)
+	}
+	if len(data) != 0 {
+		t.Errorf("expected 0 jobs, got %d", len(data))
+	}
+}
+
+func TestStreamSyncProgress_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Create a connector and start a sync so we have a running job
+	dir := t.TempDir()
+	body := `{"type":"filesystem","name":"sse-test","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", w.Code)
+	}
+
+	// Trigger sync
+	req = httptest.NewRequest(http.MethodPost, "/api/sync/sse-test", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("sync: expected 202, got %d", w.Code)
+	}
+
+	// Start SSE stream via real HTTP server
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/sync/sse-test/progress")
+	if err != nil {
+		t.Fatalf("SSE request failed: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", resp.Header.Get("Content-Type"))
+	}
+}
+
+func TestStreamSyncProgress_NotFound_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sync/nonexistent/progress", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
 func TestConnectorManager_SetExtractor(t *testing.T) {
 	_, _, cm := newTestDeps(t)
 	cm.SetExtractor(nil)

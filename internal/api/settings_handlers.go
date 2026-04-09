@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
+	"github.com/muty/nexus/internal/connector"
 	"go.uber.org/zap"
 )
 
@@ -58,9 +60,20 @@ func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request
 		req.APIKey = existing
 	}
 
+	// Check if provider or model changed — triggers re-index
+	oldProvider, _ := h.store.GetSetting(r.Context(), "embedding_provider")
+	oldModel, _ := h.store.GetSetting(r.Context(), "embedding_model")
+	oldDim := h.em.Dimension()
+
 	if err := h.em.UpdateFromSettings(r.Context(), req.Provider, req.Model, req.APIKey, req.OllamaURL); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// If provider or model changed, trigger re-index
+	if req.Provider != oldProvider || req.Model != oldModel {
+		newDim := h.em.Dimension()
+		h.triggerAutoReindex(r.Context(), oldDim, newDim)
 	}
 
 	resp := embeddingSettingsResponse{
@@ -71,6 +84,40 @@ func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// triggerAutoReindex recreates the index if dimensions changed, clears cursors, and syncs all.
+func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
+	if oldDim != newDim {
+		if err := h.search.RecreateIndex(ctx, newDim); err != nil {
+			h.log.Error("auto-reindex: recreate index failed", zap.Error(err))
+			return
+		}
+		h.log.Info("auto-reindex: index recreated", zap.Int("old_dim", oldDim), zap.Int("new_dim", newDim))
+	}
+
+	if err := h.store.DeleteAllSyncCursors(ctx); err != nil {
+		h.log.Error("auto-reindex: delete cursors failed", zap.Error(err))
+		return
+	}
+
+	// Trigger async sync for all connectors
+	for name, conn := range h.cm.All() {
+		job := h.syncJobs.Start(name, conn.Type())
+		go func(n string, c connector.Connector, jobID string) {
+			bgCtx := context.Background()
+			progress := func(total, processed, errors int) {
+				h.syncJobs.Update(jobID, total, processed, errors)
+			}
+			_, err := h.pipeline.RunWithProgress(bgCtx, c, progress)
+			h.syncJobs.Complete(jobID, err)
+			if err != nil {
+				h.log.Error("auto-reindex: sync failed", zap.String("connector", n), zap.Error(err))
+			}
+		}(name, conn, job.ID)
+	}
+
+	h.log.Info("auto-reindex: triggered sync for all connectors")
 }
 
 func maskAPIKey(key string) string {

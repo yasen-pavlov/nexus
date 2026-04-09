@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/search"
@@ -152,6 +153,92 @@ func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 func (h *handler) ListSyncJobs(w http.ResponseWriter, _ *http.Request) {
 	jobs := h.syncJobs.Active()
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
+	if err := h.store.DeleteAllSyncCursors(r.Context()); err != nil {
+		h.log.Error("delete all cursors failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to delete cursors")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "all cursors deleted"})
+}
+
+func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "connector")
+	if err := h.store.DeleteSyncCursor(r.Context(), name); err != nil {
+		h.log.Error("delete cursor failed", zap.String("connector", name), zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to delete cursor")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "cursor deleted for " + name})
+}
+
+func (h *handler) SyncAll(w http.ResponseWriter, _ *http.Request) {
+	var jobs []*SyncJob
+	for name, conn := range h.cm.All() {
+		if existing := h.syncJobs.GetByConnector(name); existing != nil {
+			continue // already running
+		}
+		job := h.syncJobs.Start(name, conn.Type())
+		snapshot := *job
+		jobs = append(jobs, &snapshot)
+
+		go func(n string, c connector.Connector, jobID string) {
+			ctx := context.Background()
+			progress := func(total, processed, errors int) {
+				h.syncJobs.Update(jobID, total, processed, errors)
+			}
+			_, err := h.pipeline.RunWithProgress(ctx, c, progress)
+			h.syncJobs.Complete(jobID, err)
+			if err != nil {
+				h.log.Error("sync all: connector failed", zap.String("connector", n), zap.Error(err))
+			}
+		}(name, conn, job.ID)
+	}
+	writeJSON(w, http.StatusAccepted, jobs)
+}
+
+func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
+	// 1. Recreate index with current dimension
+	dim := h.em.Dimension()
+	if err := h.search.RecreateIndex(r.Context(), dim); err != nil {
+		h.log.Error("reindex: recreate index failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to recreate index")
+		return
+	}
+
+	// 2. Delete all cursors
+	if err := h.store.DeleteAllSyncCursors(r.Context()); err != nil {
+		h.log.Error("reindex: delete cursors failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to delete cursors")
+		return
+	}
+
+	// 3. Sync all connectors
+	var count int
+	for name, conn := range h.cm.All() {
+		job := h.syncJobs.Start(name, conn.Type())
+		go func(n string, c connector.Connector, jobID string) {
+			ctx := context.Background()
+			progress := func(total, processed, errors int) {
+				h.syncJobs.Update(jobID, total, processed, errors)
+			}
+			_, err := h.pipeline.RunWithProgress(ctx, c, progress)
+			h.syncJobs.Complete(jobID, err)
+			if err != nil {
+				h.log.Error("reindex: connector failed", zap.String("connector", n), zap.Error(err))
+			}
+		}(name, conn, job.ID)
+		count++
+	}
+
+	h.log.Info("reindex started", zap.Int("dimension", dim), zap.Int("connectors", count))
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"message":    "reindex started",
+		"dimension":  dim,
+		"connectors": count,
+	})
 }
 
 func parseCSV(s string) []string {

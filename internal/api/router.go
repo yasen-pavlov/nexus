@@ -53,7 +53,11 @@ func NewRouter(
 		r.Get("/health", h.Health)
 		r.Get("/search", h.Search)
 		r.Get("/sync", h.ListSyncJobs)
+		r.Post("/sync", h.SyncAll)
 		r.Post("/sync/{connector}", h.TriggerSync)
+		r.Delete("/sync/cursors", h.DeleteAllCursors)
+		r.Delete("/sync/cursors/{connector}", h.DeleteCursor)
+		r.Post("/reindex", h.TriggerReindex)
 
 		r.Route("/connectors", func(r chi.Router) {
 			r.Get("/", h.ListConnectors)

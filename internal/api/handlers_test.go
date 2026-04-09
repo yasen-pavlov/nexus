@@ -182,6 +182,19 @@ func TestListSyncJobsHandler(t *testing.T) {
 	}
 }
 
+func TestSyncAllHandler(t *testing.T) {
+	h := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sync", nil)
+	w := httptest.NewRecorder()
+
+	h.SyncAll(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d", w.Code)
+	}
+}
+
 func TestParseCSV(t *testing.T) {
 	tests := []struct {
 		input string

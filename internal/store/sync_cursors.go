@@ -55,6 +55,15 @@ func (s *Store) UpsertSyncCursor(ctx context.Context, cursor *model.SyncCursor) 
 	return nil
 }
 
+// DeleteAllSyncCursors removes all sync cursors, forcing a full re-sync on next run.
+func (s *Store) DeleteAllSyncCursors(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM sync_cursors`)
+	if err != nil {
+		return fmt.Errorf("store: delete all sync cursors: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) DeleteSyncCursor(ctx context.Context, connectorID string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM sync_cursors WHERE connector_id = $1`, connectorID)
 	if err != nil {

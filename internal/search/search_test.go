@@ -381,3 +381,33 @@ func TestEnsureIndex_Idempotent(t *testing.T) {
 		t.Fatalf("second EnsureIndex failed: %v", err)
 	}
 }
+
+func TestRecreateIndex(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// Index a document first
+	doc := &model.Document{
+		SourceType: "test", SourceName: "test", SourceID: "1",
+		Title: "Test", Content: "Before recreate",
+	}
+	if err := c.IndexDocument(ctx, doc); err != nil {
+		t.Fatalf("index failed: %v", err)
+	}
+	_ = c.Refresh(ctx)
+
+	// Recreate with different dimension
+	if err := c.RecreateIndex(ctx, 128); err != nil {
+		t.Fatalf("RecreateIndex failed: %v", err)
+	}
+
+	// Old document should be gone
+	_ = c.Refresh(ctx)
+	result, err := c.Search(ctx, model.SearchRequest{Query: "Before recreate", Limit: 10})
+	if err != nil {
+		t.Fatalf("search after recreate failed: %v", err)
+	}
+	if len(result.Documents) != 0 {
+		t.Errorf("expected 0 results after recreate, got %d", len(result.Documents))
+	}
+}

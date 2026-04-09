@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { search, triggerSync, streamSyncProgress, listConnectors, listSyncJobs, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters } from './api';
+import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamSyncProgress, listConnectors, listSyncJobs, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters } from './api';
 import ConnectorManager from './ConnectorManager';
 import SearchFiltersBar from './SearchFilters';
 import Settings from './Settings';
@@ -102,6 +102,61 @@ function App() {
     }
   };
 
+  const handleSyncAll = async () => {
+    setError('');
+    try {
+      const jobs = await syncAll();
+      const newJobs: Record<string, SyncJob> = {};
+      for (const job of jobs) {
+        newJobs[job.connector_name] = job;
+        const cleanup = streamSyncProgress(
+          job.connector_name,
+          (update) => setSyncJobs((prev) => ({ ...prev, [job.connector_name]: update })),
+          () => { delete cleanupRefs.current[job.connector_name]; },
+        );
+        cleanupRefs.current[job.connector_name] = cleanup;
+      }
+      setSyncJobs((prev) => ({ ...prev, ...newJobs }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync all failed');
+    }
+  };
+
+  const handleResetCursors = async () => {
+    setError('');
+    try {
+      await deleteAllCursors();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset cursors failed');
+    }
+  };
+
+  const handleReindex = async () => {
+    setError('');
+    try {
+      await triggerReindex();
+      // After reindex, all connectors sync — load their progress
+      const jobs = await listSyncJobs();
+      const running: Record<string, SyncJob> = {};
+      for (const job of jobs) {
+        if (job.status === 'running') {
+          running[job.connector_name] = job;
+          const cleanup = streamSyncProgress(
+            job.connector_name,
+            (update) => setSyncJobs((prev) => ({ ...prev, [job.connector_name]: update })),
+            () => { delete cleanupRefs.current[job.connector_name]; },
+          );
+          cleanupRefs.current[job.connector_name] = cleanup;
+        }
+      }
+      setSyncJobs((prev) => ({ ...prev, ...running }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reindex failed');
+    }
+  };
+
+  const anySyncing = Object.values(syncJobs).some((j) => j.status === 'running');
+
   const dismissJob = (connectorName: string) => {
     setSyncJobs((prev) => {
       const next = { ...prev };
@@ -167,6 +222,27 @@ function App() {
             </button>
           );
         })}
+        <button
+          className="sync-button"
+          onClick={handleSyncAll}
+          disabled={anySyncing}
+        >
+          Sync All
+        </button>
+        <button
+          className="sync-button"
+          onClick={handleResetCursors}
+          disabled={anySyncing}
+        >
+          Reset Cursors
+        </button>
+        <button
+          className="sync-button cm-btn-danger"
+          onClick={handleReindex}
+          disabled={anySyncing}
+        >
+          Re-index
+        </button>
         <button
           className="sync-button cm-settings-btn"
           onClick={() => setShowConnectors(true)}
