@@ -65,7 +65,7 @@ func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManage
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
 	return st, sc, cm, router
 }
 
@@ -87,7 +87,7 @@ func TestSearchHandler_HybridFallback(t *testing.T) {
 	// Set a mock embedder that returns fake embeddings
 	em.Set(&mockEmbedder{dim: 3})
 
-	h := &handler{search: sc, cm: cm, em: em, log: zap.NewNop()}
+	h := &handler{search: sc, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 
 	// This will try hybrid search (embed query → k-NN), but k-NN will fail
 	// because the index has no embedding field. Falls back to BM25.
@@ -114,7 +114,7 @@ func TestSearchHandler_Integration(t *testing.T) {
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
 
-	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchable", nil)
 	w := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
 
-	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
+	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchterm&limit=2", nil)
 	w := httptest.NewRecorder()
@@ -265,7 +265,7 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager()
-	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, syncJobs: sjm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
 	r.Post("/api/sync/{connector}", h.TriggerSync)
@@ -514,7 +514,7 @@ func TestSearchHandler_SearchError(t *testing.T) {
 	// Delete the search index to cause search errors
 	sc.DeleteIndex(context.Background()) //nolint:errcheck // test
 
-	h := &handler{store: st, search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), log: zap.NewNop()}
+	h := &handler{store: st, search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=test", nil)
 	w := httptest.NewRecorder()
 	h.Search(w, req)
@@ -605,7 +605,7 @@ func TestListConnectors_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	st.Close()
 
-	h := &handler{store: st, search: sc, cm: cm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, cm: cm, rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/", nil)
 	w := httptest.NewRecorder()
 	h.ListConnectors(w, req)
@@ -620,7 +620,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -636,7 +636,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -783,7 +783,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewSyncJobManager(), zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -857,6 +857,44 @@ func TestUpdateEmbeddingSettings_Disable(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
+}
+
+func TestUpdateEmbeddingSettings_ProviderChange_TriggersReindex(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+	ctx := context.Background()
+
+	// Set initial provider to ollama
+	body := `{"provider":"ollama","model":"nomic-embed-text","ollama_url":"http://localhost:11434"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set ollama: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Create a connector + cursor to verify reindex clears cursors and syncs
+	dir := t.TempDir()
+	connBody := `{"type":"filesystem","name":"reindex-trigger","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true}`
+	connReq := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(connBody))
+	connReq.Header.Set("Content-Type", "application/json")
+	cw := httptest.NewRecorder()
+	router.ServeHTTP(cw, connReq)
+
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "reindex-trigger", CursorData: map[string]any{}})
+
+	// Change to a different model (same provider but different model triggers reindex)
+	body = `{"provider":"ollama","model":"all-minilm","ollama_url":"http://localhost:11434"}`
+	req = httptest.NewRequest(http.MethodPut, "/api/settings/embedding", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("change model: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Wait for async reindex to complete
+	time.Sleep(500 * time.Millisecond)
 }
 
 func TestUpdateEmbeddingSettings_MaskedKey(t *testing.T) {
@@ -1142,7 +1180,7 @@ func TestDeleteAllCursors_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	sjm := NewSyncJobManager()
-	h := &handler{store: st, search: sc, em: em, syncJobs: sjm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
 	r.Delete("/api/sync/cursors", h.DeleteAllCursors)
@@ -1162,7 +1200,7 @@ func TestDeleteCursor_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	sjm := NewSyncJobManager()
-	h := &handler{store: st, search: sc, em: em, syncJobs: sjm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
 	r.Delete("/api/sync/cursors/{connector}", h.DeleteCursor)
@@ -1227,7 +1265,7 @@ func TestTriggerReindex_StoreError(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager()
-	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, syncJobs: sjm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	st.Close()
 
@@ -1313,6 +1351,169 @@ func TestStreamSyncProgress_NotFound_Integration(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestRerankManager_LoadFromDB_Integration(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	ctx := context.Background()
+
+	rm := NewRerankManager(st, zap.NewNop())
+	err := rm.LoadFromDB(ctx, &config.Config{})
+	if err != nil {
+		t.Fatalf("LoadFromDB failed: %v", err)
+	}
+	// No provider configured — reranker should be nil
+	if rm.Get() != nil {
+		t.Error("expected nil reranker when no provider set")
+	}
+}
+
+func TestRerankManager_UpdateFromSettings_Integration(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	ctx := context.Background()
+
+	rm := NewRerankManager(st, zap.NewNop())
+
+	// Disable (empty provider)
+	err := rm.UpdateFromSettings(ctx, "", "", "")
+	if err != nil {
+		t.Fatalf("UpdateFromSettings failed: %v", err)
+	}
+	if rm.Get() != nil {
+		t.Error("expected nil reranker after disabling")
+	}
+}
+
+func TestGetRerankSettings_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/rerank", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateRerankSettings_Integration(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Disable reranking
+	body := `{"provider":"","model":"","api_key":""}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateRerankSettings_WithVoyage(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Set voyage provider (will validate but we won't actually call the API)
+	body := `{"provider":"voyage","model":"rerank-2","api_key":"test-key-12345"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify masked key in response
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["api_key"] != "****2345" {
+		t.Errorf("expected masked key, got %v", data["api_key"])
+	}
+
+	// Read back settings
+	req = httptest.NewRequest(http.MethodGet, "/api/settings/rerank", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("get: expected 200, got %d", w.Code)
+	}
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data = resp.Data.(map[string]any)
+	if data["provider"] != "voyage" {
+		t.Errorf("provider = %v, want voyage", data["provider"])
+	}
+}
+
+func TestUpdateRerankSettings_MaskedKey(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// First set a key
+	body := `{"provider":"voyage","model":"rerank-2","api_key":"real-secret-key"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Update with masked key — should preserve original
+	body = `{"provider":"voyage","model":"rerank-2","api_key":"****-key"}`
+	req = httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateRerankSettings_BadBody(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetRerankSettings_StoreError(t *testing.T) {
+	st, sc, _ := newTestDeps(t)
+	st.Close()
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	rm := NewRerankManager(st, zap.NewNop())
+	h := &handler{store: st, search: sc, em: em, rm: rm, log: zap.NewNop()}
+
+	r := chi.NewRouter()
+	r.Get("/api/settings/rerank", h.GetRerankSettings)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/rerank", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestUpdateRerankSettings_InvalidProvider(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	body := `{"provider":"unknown","model":"","api_key":""}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rerank", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 

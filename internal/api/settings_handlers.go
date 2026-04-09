@@ -139,6 +139,86 @@ func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
 	h.log.Info("auto-reindex: triggered sync for all connectors")
 }
 
+type rerankSettingsResponse struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key"`
+}
+
+type rerankSettingsRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key"`
+}
+
+// GetRerankSettings godoc
+//
+//	@Summary	Get rerank settings
+//	@Description	Returns current reranking provider configuration. API keys are masked.
+//	@Tags		settings
+//	@Produce	json
+//	@Success	200	{object}	rerankSettingsResponse
+//	@Router		/settings/rerank [get]
+func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
+	keys := []string{"rerank_provider", "rerank_model", "rerank_api_key"}
+	settings, err := h.store.GetSettings(r.Context(), keys)
+	if err != nil {
+		h.log.Error("get rerank settings failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to get settings")
+		return
+	}
+
+	resp := rerankSettingsResponse{
+		Provider: settings["rerank_provider"],
+		Model:    settings["rerank_model"],
+		APIKey:   maskAPIKey(settings["rerank_api_key"]),
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// UpdateRerankSettings godoc
+//
+//	@Summary	Update rerank settings
+//	@Description	Updates the reranking provider. Masked API keys (****...) are preserved.
+//	@Tags		settings
+//	@Accept		json
+//	@Produce	json
+//	@Param		request	body	rerankSettingsRequest	true	"Rerank settings"
+//	@Success	200	{object}	rerankSettingsResponse
+//	@Failure	400	{object}	APIResponse
+//	@Router		/settings/rerank [put]
+func (h *handler) UpdateRerankSettings(w http.ResponseWriter, r *http.Request) {
+	var req rerankSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.APIKey != "" && isMasked(req.APIKey) {
+		existing, err := h.store.GetSetting(r.Context(), "rerank_api_key")
+		if err != nil {
+			h.log.Error("get rerank api key failed", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "failed to get settings")
+			return
+		}
+		req.APIKey = existing
+	}
+
+	if err := h.rm.UpdateFromSettings(r.Context(), req.Provider, req.Model, req.APIKey); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	resp := rerankSettingsResponse{
+		Provider: req.Provider,
+		Model:    req.Model,
+		APIKey:   maskAPIKey(req.APIKey),
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func maskAPIKey(key string) string {
 	if len(key) <= 4 {
 		return key

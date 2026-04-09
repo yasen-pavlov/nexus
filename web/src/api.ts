@@ -201,3 +201,23 @@ export async function updateEmbeddingSettings(settings: EmbeddingSettings): Prom
     body: JSON.stringify(settings),
   });
 }
+
+// Rerank settings
+
+export interface RerankSettings {
+  provider: string;
+  model: string;
+  api_key: string;
+}
+
+export async function getRerankSettings(): Promise<RerankSettings> {
+  return fetchAPI<RerankSettings>('/api/settings/rerank');
+}
+
+export async function updateRerankSettings(settings: RerankSettings): Promise<RerankSettings> {
+  return fetchAPI<RerankSettings>('/api/settings/rerank', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+}

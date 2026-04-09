@@ -129,8 +129,14 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
+	// Set up reranking
+	rm := api.NewRerankManager(st, log)
+	if err := rm.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load rerank settings", zap.Error(err))
+	}
+
 	syncJobs := api.NewSyncJobManager()
-	router := api.NewRouter(st, searchClient, p, cm, em, syncJobs, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

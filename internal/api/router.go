@@ -22,6 +22,7 @@ func NewRouter(
 	pipeline *pipeline.Pipeline,
 	cm *ConnectorManager,
 	em *EmbeddingManager,
+	rm *RerankManager,
 	syncJobs *SyncJobManager,
 	log *zap.Logger,
 ) chi.Router {
@@ -44,6 +45,7 @@ func NewRouter(
 		search:   search,
 		pipeline: pipeline,
 		em:       em,
+		rm:       rm,
 		cm:       cm,
 		syncJobs: syncJobs,
 		log:      log,
@@ -78,6 +80,8 @@ func NewRouter(
 		r.Route("/settings", func(r chi.Router) {
 			r.Get("/embedding", h.GetEmbeddingSettings)
 			r.Put("/embedding", h.UpdateEmbeddingSettings)
+			r.Get("/rerank", h.GetRerankSettings)
+			r.Put("/rerank", h.UpdateRerankSettings)
 		})
 	})
 

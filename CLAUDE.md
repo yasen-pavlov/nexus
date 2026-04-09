@@ -100,6 +100,9 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_EMBEDDING_MODEL` — model name (provider-specific defaults apply)
 - `NEXUS_EMBEDDING_API_KEY` — API key for openai/voyage/cohere
 - `NEXUS_OLLAMA_URL` (default: http://localhost:11434) — Ollama base URL
+- `NEXUS_RERANK_PROVIDER` — `voyage`, `cohere` (empty = disabled)
+- `NEXUS_RERANK_MODEL` — reranking model name (provider-specific defaults apply)
+- `NEXUS_RERANK_API_KEY` — API key for reranking (falls back to embedding key if same provider)
 - `NEXUS_ENCRYPTION_KEY` — 64-char hex string (32 bytes) for AES-256-GCM encryption of sensitive connector config fields (empty = disabled)
 - `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run)
 - `NEXUS_FS_PATTERNS` — glob patterns (default: `*.txt,*.md`)

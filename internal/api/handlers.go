@@ -12,6 +12,7 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/rerank"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
@@ -22,6 +23,7 @@ type handler struct {
 	search   *search.Client
 	pipeline *pipeline.Pipeline
 	em       *EmbeddingManager
+	rm       *RerankManager
 	cm       *ConnectorManager
 	syncJobs *SyncJobManager
 	log      *zap.Logger
@@ -75,26 +77,31 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try hybrid search if embedder is available
+	var result *model.SearchResult
 	embedder := h.em.Get()
 	if embedder != nil {
 		embeddings, err := embedder.Embed(r.Context(), []string{query})
 		if err == nil && len(embeddings) > 0 {
-			result, err := h.search.HybridSearch(r.Context(), req, embeddings[0])
-			if err == nil {
-				writeJSON(w, http.StatusOK, result)
-				return
+			result, err = h.search.HybridSearch(r.Context(), req, embeddings[0])
+			if err != nil {
+				h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
 			}
-			h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
 		}
 	}
 
 	// Fallback: BM25-only
-	result, err := h.search.Search(r.Context(), req)
-	if err != nil {
-		h.log.Error("search failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "search failed")
-		return
+	if result == nil {
+		var err error
+		result, err = h.search.Search(r.Context(), req)
+		if err != nil {
+			h.log.Error("search failed", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "search failed")
+			return
+		}
 	}
+
+	// Rerank results if a reranker is available
+	result = h.rerankResults(r.Context(), query, result)
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -325,6 +332,39 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 		"dimension":  dim,
 		"connectors": count,
 	})
+}
+
+func (h *handler) rerankResults(ctx context.Context, query string, result *model.SearchResult) *model.SearchResult {
+	reranker := h.rm.Get()
+	if reranker == nil || len(result.Documents) <= 1 {
+		return result
+	}
+
+	texts := make([]string, len(result.Documents))
+	for i, doc := range result.Documents {
+		texts[i] = doc.Title + " " + doc.Content
+	}
+
+	ranked, err := reranker.Rerank(ctx, query, texts)
+	if err != nil {
+		h.log.Warn("reranking failed, using original order", zap.Error(err))
+		return result
+	}
+
+	return reorderByRerankScores(result, ranked)
+}
+
+func reorderByRerankScores(result *model.SearchResult, ranked []rerank.Result) *model.SearchResult {
+	reordered := make([]model.DocumentHit, 0, len(ranked))
+	for _, r := range ranked {
+		if r.Index >= 0 && r.Index < len(result.Documents) {
+			hit := result.Documents[r.Index]
+			hit.Rank = r.Score
+			reordered = append(reordered, hit)
+		}
+	}
+	result.Documents = reordered
+	return result
 }
 
 func parseCSV(s string) []string {

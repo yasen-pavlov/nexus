@@ -11,6 +11,7 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/rerank"
 	"go.uber.org/zap"
 )
 
@@ -41,6 +42,7 @@ func newTestHandler() *handler {
 	}
 	return &handler{
 		cm:       cm,
+		rm:       NewRerankManager(nil, zap.NewNop()),
 		syncJobs: NewSyncJobManager(),
 		pipeline: pipeline.New(nil, nil, nil, zap.NewNop()),
 		log:      zap.NewNop(),
@@ -192,6 +194,90 @@ func TestSyncAllHandler(t *testing.T) {
 
 	if w.Code != http.StatusAccepted {
 		t.Errorf("expected 202, got %d", w.Code)
+	}
+}
+
+type mockReranker struct {
+	results []rerank.Result
+}
+
+func (m *mockReranker) Rerank(_ context.Context, _ string, docs []string) ([]rerank.Result, error) {
+	if m.results != nil {
+		return m.results, nil
+	}
+	// Reverse order by default
+	results := make([]rerank.Result, len(docs))
+	for i := range docs {
+		results[i] = rerank.Result{Index: len(docs) - 1 - i, Score: float64(len(docs)-i) * 0.1}
+	}
+	return results, nil
+}
+
+func TestRerankResults(t *testing.T) {
+	rm := NewRerankManager(nil, zap.NewNop())
+	rm.Set(&mockReranker{
+		results: []rerank.Result{
+			{Index: 2, Score: 0.9},
+			{Index: 0, Score: 0.5},
+			{Index: 1, Score: 0.3},
+		},
+	})
+
+	h := &handler{rm: rm, log: zap.NewNop()}
+
+	result := &model.SearchResult{
+		Documents: []model.DocumentHit{
+			{Document: model.Document{Title: "A"}, Rank: 1.0},
+			{Document: model.Document{Title: "B"}, Rank: 0.8},
+			{Document: model.Document{Title: "C"}, Rank: 0.6},
+		},
+	}
+
+	reranked := h.rerankResults(context.Background(), "test", result)
+
+	if len(reranked.Documents) != 3 {
+		t.Fatalf("expected 3 docs, got %d", len(reranked.Documents))
+	}
+	if reranked.Documents[0].Title != "C" {
+		t.Errorf("first result should be C (highest rerank score), got %q", reranked.Documents[0].Title)
+	}
+	if reranked.Documents[0].Rank != 0.9 {
+		t.Errorf("first result score = %f, want 0.9", reranked.Documents[0].Rank)
+	}
+}
+
+func TestRerankResults_NoReranker(t *testing.T) {
+	rm := NewRerankManager(nil, zap.NewNop())
+	h := &handler{rm: rm, log: zap.NewNop()}
+
+	result := &model.SearchResult{
+		Documents: []model.DocumentHit{
+			{Document: model.Document{Title: "A"}},
+		},
+	}
+
+	reranked := h.rerankResults(context.Background(), "test", result)
+	if reranked.Documents[0].Title != "A" {
+		t.Error("should return original order when no reranker")
+	}
+}
+
+func TestReorderByRerankScores(t *testing.T) {
+	result := &model.SearchResult{
+		Documents: []model.DocumentHit{
+			{Document: model.Document{Title: "First"}},
+			{Document: model.Document{Title: "Second"}},
+		},
+	}
+
+	ranked := []rerank.Result{
+		{Index: 1, Score: 0.9},
+		{Index: 0, Score: 0.1},
+	}
+
+	reordered := reorderByRerankScores(result, ranked)
+	if reordered.Documents[0].Title != "Second" {
+		t.Errorf("expected Second first, got %q", reordered.Documents[0].Title)
 	}
 }
 

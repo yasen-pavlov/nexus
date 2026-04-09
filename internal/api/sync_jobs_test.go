@@ -258,6 +258,12 @@ func TestStreamSyncProgress_NotFound(t *testing.T) {
 	}
 }
 
+func TestSyncJobManager_Notify_NonexistentJob(t *testing.T) {
+	m := NewSyncJobManager()
+	// Should not panic
+	m.notify("nonexistent")
+}
+
 func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 	m := NewSyncJobManager()
 	job := m.Start("test", "filesystem")

@@ -70,6 +70,9 @@ services:
       # For API providers instead:
       # NEXUS_EMBEDDING_PROVIDER: openai
       # NEXUS_EMBEDDING_API_KEY: sk-...
+      # Reranking (configured via Settings UI, or uncomment for env var):
+      # NEXUS_RERANK_PROVIDER: voyage
+      # NEXUS_RERANK_MODEL: rerank-2
     volumes:
       - ./testdata:/data:ro
     depends_on:

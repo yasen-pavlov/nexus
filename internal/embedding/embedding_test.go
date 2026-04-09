@@ -278,7 +278,7 @@ func TestVoyage_Dimension(t *testing.T) {
 }
 
 func TestCohere_Dimension(t *testing.T) {
-	tests := map[string]int{"embed-v4.0": 1024, "embed-english-light-v3.0": 384, "unknown": 1024}
+	tests := map[string]int{"embed-v4.0": 1024, "embed-english-v3.0": 1024, "embed-english-light-v3.0": 384, "embed-multilingual-v3.0": 1024, "unknown": 1024}
 	for model, dim := range tests {
 		if NewCohere("k", model, zap.NewNop()).Dimension() != dim {
 			t.Errorf("model %s: expected %d", model, dim)

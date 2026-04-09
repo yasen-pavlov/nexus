@@ -18,6 +18,11 @@ type Config struct {
 	EmbeddingAPIKey   string `envconfig:"EMBEDDING_API_KEY"`
 	OllamaURL         string `envconfig:"OLLAMA_URL" default:"http://localhost:11434"`
 
+	// Reranking
+	RerankProvider string `envconfig:"RERANK_PROVIDER"` // voyage, cohere (empty = disabled)
+	RerankModel    string `envconfig:"RERANK_MODEL"`
+	RerankAPIKey   string `envconfig:"RERANK_API_KEY"`
+
 	// Encryption
 	EncryptionKey string `envconfig:"ENCRYPTION_KEY"` // 64-char hex string (32 bytes) for AES-256-GCM
 
