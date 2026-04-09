@@ -103,6 +103,9 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	// Rerank results if a reranker is available
 	result = h.rerankResults(r.Context(), query, result)
 
+	// Apply recency decay — boost recent documents, source-specific half-lives
+	search.ApplyRecencyDecay(result)
+
 	writeJSON(w, http.StatusOK, result)
 }
 

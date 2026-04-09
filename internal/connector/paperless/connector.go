@@ -155,7 +155,8 @@ type paperlessDoc struct {
 	DocumentType     *int      `json:"document_type"`
 	Tags             []int     `json:"tags"`
 	OriginalFileName string    `json:"original_file_name"`
-	Added            time.Time `json:"added"`
+	Created          string    `json:"created"` // document date (YYYY-MM-DD), when originally issued
+	Added            time.Time `json:"added"`   // import date, when scanned into Paperless
 	Modified         time.Time `json:"modified"`
 }
 
@@ -272,6 +273,14 @@ func (c *Connector) toDocument(pdoc paperlessDoc, tags, correspondents, docTypes
 		}
 	}
 
+	// Use document date (when originally issued), fall back to import date
+	docDate := pdoc.Added
+	if pdoc.Created != "" {
+		if parsed, err := time.Parse("2006-01-02", pdoc.Created); err == nil {
+			docDate = parsed
+		}
+	}
+
 	sourceID := strconv.Itoa(pdoc.ID)
 	return model.Document{
 		ID:         model.DocumentID("paperless", c.name, sourceID),
@@ -283,6 +292,6 @@ func (c *Connector) toDocument(pdoc paperlessDoc, tags, correspondents, docTypes
 		Metadata:   metadata,
 		URL:        fmt.Sprintf("%s/documents/%d/details", c.baseURL, pdoc.ID),
 		Visibility: "private",
-		CreatedAt:  pdoc.Added,
+		CreatedAt:  docDate,
 	}
 }
