@@ -2,35 +2,18 @@ package search
 
 import "github.com/muty/nexus/internal/model"
 
-// rankedChunk is a deduped search result used during ranking.
+// rankedChunk is a deduped search result used during result processing.
 type rankedChunk struct {
 	parentID string
 	doc      model.Document
 	headline string
-	rrfScore float64
+	score    float64
 }
 
-// Ranking configuration for hybrid search.
-// These constants control how BM25 and k-NN results are merged.
-// Adjust these values to tune search quality.
 const (
-	// rrfK is the RRF constant. Higher values reduce the impact of rank differences.
-	rrfK = 60
-
-	// knnMinScore is the minimum cosine similarity for k-NN results.
-	// Results below this threshold are discarded before ranking.
-	knnMinScore = 0.3
-
-	// knnOnlyWeight is the RRF weight multiplier for results found only by k-NN
-	// (not in BM25 results). This heavily penalizes semantically vague matches
-	// that don't contain the query keywords.
-	// 0.0 = discard k-NN-only results entirely
-	// 0.1 = allow but heavily penalize (recommended)
-	// 1.0 = equal weight (original behavior)
-	knnOnlyWeight = 0.1
-
-	// minResultScore is the absolute minimum RRF score for a result to be included.
-	// Results below this are discarded as low-relevance noise.
+	// minHybridScore is the minimum RRF score for a result to be included in hybrid search.
+	// Results below this threshold are noise from low-confidence kNN matches.
+	// Based on observed scores: relevant results score 0.025+, noise scores 0.010-0.015.
 	// TODO: make configurable via settings UI
-	minResultScore = 0.005
+	minHybridScore = 0.02
 )

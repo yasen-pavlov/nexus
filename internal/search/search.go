@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"net/http"
 	"strings"
 	"time"
 
@@ -21,7 +21,11 @@ import (
 // ErrNotFound is returned when a document is not found.
 var ErrNotFound = errors.New("document not found")
 
-const defaultIndex = "nexus-documents"
+const (
+	defaultIndex    = "nexus-documents"
+	hybridPipeline  = "nexus-hybrid"
+	rrfRankConstant = 60
+)
 
 // Client wraps the OpenSearch client for document operations.
 type Client struct {
@@ -86,6 +90,47 @@ func (c *Client) EnsureIndex(ctx context.Context, embeddingDimension int) error 
 	}
 
 	c.log.Info("created search index", zap.String("index", c.index), zap.Int("embedding_dim", embeddingDimension))
+
+	if embeddingDimension > 0 {
+		if err := c.ensureHybridPipeline(ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// ensureHybridPipeline creates the RRF search pipeline if it doesn't exist.
+func (c *Client) ensureHybridPipeline(ctx context.Context) error {
+	pipeline := fmt.Sprintf(`{
+		"phase_results_processors": [{
+			"score-ranker-processor": {
+				"combination": {
+					"technique": "rrf",
+					"parameters": {
+						"rank_constant": %d
+					}
+				}
+			}
+		}]
+	}`, rrfRankConstant)
+
+	// Use raw HTTP PUT — the Go client doesn't have a typed search pipeline API
+	path := fmt.Sprintf("/_search/pipeline/%s", hybridPipeline)
+	httpReq, err := opensearch.BuildRequest(http.MethodPut, path, strings.NewReader(pipeline), nil, nil)
+	if err != nil {
+		return fmt.Errorf("search: build pipeline request: %w", err)
+	}
+	httpReq = httpReq.WithContext(ctx)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.os.Client.Perform(httpReq)
+	if err != nil {
+		return fmt.Errorf("search: create hybrid pipeline: %w", err)
+	}
+	resp.Body.Close() //nolint:errcheck // best-effort
+
+	c.log.Info("created hybrid search pipeline", zap.String("pipeline", hybridPipeline))
 	return nil
 }
 
@@ -101,7 +146,6 @@ func (c *Client) IndexDocument(ctx context.Context, doc *model.Document) error {
 	}
 	doc.IndexedAt = time.Now()
 
-	// Convert to a chunk (chunk 0 with full content)
 	chunk := model.Chunk{
 		ID:          docID(doc) + ":0",
 		ParentID:    docID(doc),
@@ -174,6 +218,20 @@ func (c *Client) IndexChunks(ctx context.Context, chunks []model.Chunk) error {
 	return nil
 }
 
+// highlightConfig returns the standard highlight configuration.
+func highlightConfig() map[string]any {
+	return map[string]any{
+		"fields": map[string]any{
+			"content": map[string]any{
+				"fragment_size":       200,
+				"number_of_fragments": 1,
+			},
+		},
+		"pre_tags":  []string{"<mark>"},
+		"post_tags": []string{"</mark>"},
+	}
+}
+
 // Search performs a BM25 full-text search (no vector search).
 func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.SearchResult, error) {
 	if req.Limit <= 0 {
@@ -189,17 +247,8 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 	filters := buildFilterClauses(req)
 
 	query := map[string]any{
-		"query": buildSearchQuery(matchQuery, filters),
-		"highlight": map[string]any{
-			"fields": map[string]any{
-				"content": map[string]any{
-					"fragment_size":       200,
-					"number_of_fragments": 1,
-				},
-			},
-			"pre_tags":  []string{"<mark>"},
-			"post_tags": []string{"</mark>"},
-		},
+		"query":            buildSearchQuery(matchQuery, filters),
+		"highlight":        highlightConfig(),
 		"size":             req.Limit * 3, // over-fetch for dedup
 		"track_total_hits": true,
 	}
@@ -217,82 +266,86 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 		return nil, fmt.Errorf("search: query: %w", err)
 	}
 
-	return c.hitsToResult(resp, req, nil)
+	return c.hitsToResult(resp, req, 0)
 }
 
-// HybridSearch combines BM25 text search with k-NN vector search using RRF.
+// HybridSearch combines BM25 text search with k-NN vector search using
+// OpenSearch's native hybrid query and RRF search pipeline.
 func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, queryEmbedding []float32) (*model.SearchResult, error) {
 	if req.Limit <= 0 {
 		req.Limit = 20
 	}
 	fetchSize := req.Limit * 3
 
-	matchQuery := map[string]any{
+	// BM25 sub-query
+	bm25Query := map[string]any{
 		"multi_match": map[string]any{
 			"query":  req.Query,
 			"fields": []string{"title^2", "content"},
 		},
 	}
 	filters := buildFilterClauses(req)
-
-	// BM25 query with filters
-	bm25Query := map[string]any{
-		"query": buildSearchQuery(matchQuery, filters),
-		"highlight": map[string]any{
-			"fields": map[string]any{
-				"content": map[string]any{
-					"fragment_size":       200,
-					"number_of_fragments": 1,
-				},
+	if len(filters) > 0 {
+		bm25Query = map[string]any{
+			"bool": map[string]any{
+				"must":   bm25Query,
+				"filter": filters,
 			},
-			"pre_tags":  []string{"<mark>"},
-			"post_tags": []string{"</mark>"},
-		},
-		"size": fetchSize,
+		}
 	}
 
-	bm25Body, _ := json.Marshal(bm25Query)
-	bm25Resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
-		Indices: []string{c.index},
-		Body:    bytes.NewReader(bm25Body),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("search: bm25 query: %w", err)
+	// k-NN sub-query with filters applied
+	knnParams := map[string]any{
+		"vector": queryEmbedding,
+		"k":      fetchSize,
 	}
-
-	// k-NN query with minimum score threshold and filters
-	knnMatchQuery := map[string]any{
-		"knn": map[string]any{
-			"embedding": map[string]any{
-				"vector": queryEmbedding,
-				"k":      fetchSize,
+	if len(filters) > 0 {
+		knnParams["filter"] = map[string]any{
+			"bool": map[string]any{
+				"filter": filters,
 			},
-		},
+		}
 	}
 	knnQuery := map[string]any{
-		"query":     buildSearchQuery(knnMatchQuery, filters),
-		"min_score": knnMinScore,
+		"knn": map[string]any{
+			"embedding": knnParams,
+		},
+	}
+
+	query := map[string]any{
+		"query": map[string]any{
+			"hybrid": map[string]any{
+				"queries": []map[string]any{bm25Query, knnQuery},
+			},
+		},
+		"highlight": highlightConfig(),
 		"size":      fetchSize,
 	}
 
-	knnBody, _ := json.Marshal(knnQuery)
-	knnResp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
-		Indices: []string{c.index},
-		Body:    bytes.NewReader(knnBody),
-	})
+	body, err := json.Marshal(query)
 	if err != nil {
-		return nil, fmt.Errorf("search: knn query: %w", err)
+		return nil, fmt.Errorf("search: marshal hybrid query: %w", err)
 	}
 
-	return c.hitsToResult(bm25Resp, req, knnResp)
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+		Params: opensearchapi.SearchParams{
+			SearchPipeline: hybridPipeline,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search: hybrid query: %w", err)
+	}
+
+	return c.hitsToResult(resp, req, minHybridScore)
 }
 
-func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.SearchRequest, knnResp *opensearchapi.SearchResp) (*model.SearchResult, error) {
-
-	// Parse BM25 hits — these are the primary results
+// hitsToResult converts OpenSearch hits into a SearchResult with deduplication by parent document.
+func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRequest, minScore float64) (*model.SearchResult, error) {
 	chunkData := make(map[string]*rankedChunk)
 
-	for rank, hit := range bm25Resp.Hits.Hits {
+	for _, hit := range resp.Hits.Hits {
 		var chunk model.Chunk
 		raw, _ := json.Marshal(hit.Source)
 		if err := json.Unmarshal(raw, &chunk); err != nil {
@@ -304,8 +357,15 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 			headline = contentHL[0]
 		}
 
-		rrfScore := 1.0 / float64(rrfK+rank)
-		if _, exists := chunkData[chunk.ParentID]; !exists {
+		score := float64(hit.Score)
+
+		// Keep the highest-scored chunk per parent document
+		if existing, ok := chunkData[chunk.ParentID]; ok {
+			if score > existing.score {
+				existing.headline = headline
+				existing.score = score
+			}
+		} else {
 			chunkData[chunk.ParentID] = &rankedChunk{
 				parentID: chunk.ParentID,
 				doc: model.Document{
@@ -321,76 +381,19 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 					IndexedAt:  chunk.IndexedAt,
 				},
 				headline: headline,
-				rrfScore: rrfScore,
+				score:    score,
 			}
 		}
 	}
 
-	// Parse k-NN hits with tiered scoring:
-	// - Results also in BM25: full RRF contribution (boost)
-	// - Results only in k-NN: heavily penalized (knnOnlyWeight)
-	// Track which parents came from BM25 to correctly apply tiering
-	// even when multiple chunks of the same parent appear in k-NN.
-	bm25Parents := make(map[string]bool, len(chunkData))
-	for pid := range chunkData {
-		bm25Parents[pid] = true
-	}
-
-	if knnResp != nil {
-		for rank, hit := range knnResp.Hits.Hits {
-			var chunk model.Chunk
-			raw, _ := json.Marshal(hit.Source)
-			if err := json.Unmarshal(raw, &chunk); err != nil {
-				continue
-			}
-
-			rrfScore := 1.0 / float64(rrfK+rank)
-			inBM25 := bm25Parents[chunk.ParentID]
-
-			if !inBM25 {
-				rrfScore *= knnOnlyWeight
-			}
-
-			if existing, ok := chunkData[chunk.ParentID]; ok {
-				existing.rrfScore += rrfScore
-			} else {
-				chunkData[chunk.ParentID] = &rankedChunk{
-					parentID: chunk.ParentID,
-					doc: model.Document{
-						SourceType: chunk.SourceType,
-						SourceName: chunk.SourceName,
-						SourceID:   chunk.SourceID,
-						Title:      chunk.Title,
-						Content:    chunk.Content,
-						Metadata:   chunk.Metadata,
-						URL:        chunk.URL,
-						Visibility: chunk.Visibility,
-						CreatedAt:  chunk.CreatedAt,
-						IndexedAt:  chunk.IndexedAt,
-					},
-					rrfScore: rrfScore,
-				}
-			}
-		}
-	}
-
-	// Sort by RRF score
-	var results []*rankedChunk
+	// Collect results, filtering out low-scoring noise
+	results := make([]*rankedChunk, 0, len(chunkData))
 	for _, rc := range chunkData {
+		if minScore > 0 && rc.score < minScore {
+			continue
+		}
 		results = append(results, rc)
 	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].rrfScore > results[j].rrfScore
-	})
-
-	// Filter out low-relevance results below the minimum score
-	filtered := results[:0]
-	for _, r := range results {
-		if r.rrfScore >= minResultScore {
-			filtered = append(filtered, r)
-		}
-	}
-	results = filtered
 
 	// Compute facets from the filtered result set (before pagination)
 	facets := computeFacets(results)
@@ -410,7 +413,7 @@ func (c *Client) hitsToResult(bm25Resp *opensearchapi.SearchResp, req model.Sear
 	for _, rc := range results {
 		hits = append(hits, model.DocumentHit{
 			Document: rc.doc,
-			Rank:     rc.rrfScore,
+			Rank:     rc.score,
 			Headline: rc.headline,
 		})
 	}
@@ -464,6 +467,12 @@ func (c *Client) RecreateIndex(ctx context.Context, embeddingDimension int) erro
 	})
 	if err != nil {
 		return fmt.Errorf("search: recreate index: %w", err)
+	}
+
+	if embeddingDimension > 0 {
+		if err := c.ensureHybridPipeline(ctx); err != nil {
+			return err
+		}
 	}
 
 	c.log.Info("recreated search index", zap.String("index", c.index), zap.Int("embedding_dim", embeddingDimension))

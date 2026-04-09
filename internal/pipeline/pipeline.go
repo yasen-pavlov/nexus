@@ -15,6 +15,10 @@ import (
 	"go.uber.org/zap"
 )
 
+// minEmbeddingContentLen is the minimum content length (chars) for generating embeddings.
+// Shorter content produces unstable vectors that pollute semantic search results.
+const minEmbeddingContentLen = 50
+
 // EmbedderProvider returns the current embedder (supports hot-reload).
 type EmbedderProvider interface {
 	Get() embedding.Embedder
@@ -109,9 +113,10 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector
 			}
 		}
 
-		// Generate embeddings if available
+		// Generate embeddings if available and content is long enough
+		// Short content (< 50 chars) produces unstable embeddings that match random queries
 		embedder := p.getEmbedder()
-		if embedder != nil {
+		if embedder != nil && len(doc.Content) >= minEmbeddingContentLen {
 			texts := make([]string, len(chunks))
 			for j, c := range chunks {
 				texts[j] = c.Content
