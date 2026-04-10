@@ -12,12 +12,36 @@ import (
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/embedding"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/internal/testutil"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
 )
+
+// configureFSWithExtractor configures a filesystem connector and injects a
+// PlainText extractor — mirroring how the production ConnectorManager wires
+// connectors. Without this, filesystem docs come back with empty content
+// because the new behavior never falls back to raw bytes.
+func configureFSWithExtractor(t *testing.T, name, dir, patterns string) connector.Connector {
+	t.Helper()
+	fsConn, err := connector.Create("filesystem")
+	if err != nil {
+		t.Fatalf("create connector: %v", err)
+	}
+	if err := fsConn.Configure(connector.Config{
+		"name": name, "root_path": dir, "patterns": patterns,
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if extConn, ok := fsConn.(interface {
+		SetExtractor(*extractor.Registry)
+	}); ok {
+		extConn.SetExtractor(extractor.NewRegistry(""))
+	}
+	return fsConn
+}
 
 func newTestDeps(t *testing.T) (*store.Store, *search.Client) {
 	t.Helper()
@@ -77,10 +101,7 @@ func TestPipelineRun_WithEmbedder(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/test.txt", []byte("Document with embeddings for testing"), 0o644) //nolint:errcheck // test
 
-	fsConn, _ := connector.Create("filesystem")
-	_ = fsConn.Configure(connector.Config{
-		"name": "embed-test", "root_path": dir, "patterns": "*.txt",
-	})
+	fsConn := configureFSWithExtractor(t, "embed-test", dir, "*.txt")
 
 	connID := uuid.New()
 	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
@@ -120,17 +141,7 @@ func TestPipelineRun(t *testing.T) {
 	os.WriteFile(dir+"/hello.txt", []byte("Unique xylophone document for verification"), 0o644)     //nolint:errcheck // test file
 	os.WriteFile(dir+"/world.md", []byte("Another document about different topics entirely"), 0o644) //nolint:errcheck // test file
 
-	fsConn, err := connector.Create("filesystem")
-	if err != nil {
-		t.Fatalf("create connector: %v", err)
-	}
-	if err := fsConn.Configure(connector.Config{
-		"name":      "pipeline-test",
-		"root_path": dir,
-		"patterns":  "*.txt,*.md",
-	}); err != nil {
-		t.Fatalf("configure: %v", err)
-	}
+	fsConn := configureFSWithExtractor(t, "pipeline-test", dir, "*.txt,*.md")
 
 	// Cursor + connector must be created in the store first because of the FK
 	connID := uuid.New()

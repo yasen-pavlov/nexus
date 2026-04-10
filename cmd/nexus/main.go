@@ -3,6 +3,11 @@
 //	@description	Personal search and RAG tool — indexes data from multiple sources and provides unified search.
 //	@host			localhost:8080
 //	@BasePath		/api
+//
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				Type "Bearer " followed by the JWT returned from /auth/login.
 
 package main
 

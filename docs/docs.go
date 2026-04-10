@@ -57,6 +57,11 @@ const docTemplate = `{
         },
         "/auth/me": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -122,6 +127,11 @@ const docTemplate = `{
         },
         "/connectors": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -142,6 +152,11 @@ const docTemplate = `{
                 }
             },
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "consumes": [
                     "application/json"
                 ],
@@ -187,6 +202,11 @@ const docTemplate = `{
         },
         "/connectors/{id}": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -219,6 +239,11 @@ const docTemplate = `{
                 }
             },
             "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Updates connector config. Masked secret values (****...) are preserved from the existing config.",
                 "consumes": [
                     "application/json"
@@ -276,6 +301,11 @@ const docTemplate = `{
                 }
             },
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "tags": [
                     "connectors"
                 ],
@@ -304,6 +334,11 @@ const docTemplate = `{
         },
         "/connectors/{id}/auth/code": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Completes Telegram authentication by submitting the code received in the Telegram app.",
                 "consumes": [
                     "application/json"
@@ -354,6 +389,11 @@ const docTemplate = `{
         },
         "/connectors/{id}/auth/start": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Initiates the Telegram MTProto auth flow. Sends a code to the user's Telegram app.",
                 "produces": [
                     "application/json"
@@ -396,6 +436,67 @@ const docTemplate = `{
                 }
             }
         },
+        "/documents/{id}/content": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Streams the original bytes of a document. Dispatches to the source connector via the BinaryFetcher capability. Returns 404 if the connector does not support previews or if the user lacks read permission. Use ?download=1 to force an attachment disposition instead of inline rendering.",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Download or preview a document's binary content",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Set to '1' to force attachment disposition",
+                        "name": "download",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/health": {
             "get": {
                 "produces": [
@@ -420,6 +521,11 @@ const docTemplate = `{
         },
         "/reindex": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Recreates the OpenSearch index with the current embedding dimension, clears all sync cursors, and triggers a full sync for all enabled connectors.",
                 "produces": [
                     "application/json"
@@ -447,6 +553,11 @@ const docTemplate = `{
         },
         "/search": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Performs hybrid search (BM25 + vector) if embeddings are enabled, otherwise BM25-only.",
                 "produces": [
                     "application/json"
@@ -518,6 +629,11 @@ const docTemplate = `{
         },
         "/settings/embedding": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Returns current embedding provider configuration. API keys are masked.",
                 "produces": [
                     "application/json"
@@ -536,6 +652,11 @@ const docTemplate = `{
                 }
             },
             "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Updates the embedding provider. If provider or model changes, automatically triggers a full re-index. Masked API keys (****...) are preserved.",
                 "consumes": [
                     "application/json"
@@ -576,6 +697,11 @@ const docTemplate = `{
         },
         "/settings/rerank": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Returns current reranking provider configuration. API keys are masked.",
                 "produces": [
                     "application/json"
@@ -594,6 +720,11 @@ const docTemplate = `{
                 }
             },
             "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Updates the reranking provider. Masked API keys (****...) are preserved.",
                 "consumes": [
                     "application/json"
@@ -634,6 +765,11 @@ const docTemplate = `{
         },
         "/sync": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -654,6 +790,11 @@ const docTemplate = `{
                 }
             },
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Starts async sync jobs for all enabled connectors. Skips connectors that are already syncing.",
                 "produces": [
                     "application/json"
@@ -677,6 +818,11 @@ const docTemplate = `{
         },
         "/sync/cursors": {
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Clears all sync cursors, forcing a full re-sync on next trigger.",
                 "produces": [
                     "application/json"
@@ -704,8 +850,13 @@ const docTemplate = `{
                 }
             }
         },
-        "/sync/cursors/{connector}": {
+        "/sync/cursors/{id}": {
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -716,8 +867,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Connector name",
-                        "name": "connector",
+                        "description": "Connector UUID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -741,8 +892,13 @@ const docTemplate = `{
                 }
             }
         },
-        "/sync/{connector}": {
+        "/sync/{id}": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Starts an async sync job. Returns immediately with the job state.",
                 "produces": [
                     "application/json"
@@ -754,8 +910,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Connector name",
-                        "name": "connector",
+                        "description": "Connector UUID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -782,8 +938,13 @@ const docTemplate = `{
                 }
             }
         },
-        "/sync/{connector}/progress": {
+        "/sync/{id}/progress": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "Opens a Server-Sent Events stream that pushes SyncJob updates in real-time. Sends an \"event: done\" when the job completes.",
                 "produces": [
                     "text/event-stream"
@@ -795,8 +956,8 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Connector name",
-                        "name": "connector",
+                        "description": "Connector UUID",
+                        "name": "id",
                         "in": "path",
                         "required": true
                     }
@@ -819,6 +980,11 @@ const docTemplate = `{
         },
         "/users": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -839,6 +1005,11 @@ const docTemplate = `{
                 }
             },
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "consumes": [
                     "application/json"
                 ],
@@ -884,6 +1055,11 @@ const docTemplate = `{
         },
         "/users/{id}": {
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "tags": [
                     "users"
                 ],
@@ -918,6 +1094,11 @@ const docTemplate = `{
         },
         "/users/{id}/password": {
             "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "consumes": [
                     "application/json"
                 ],
@@ -1025,11 +1206,17 @@ const docTemplate = `{
                     "type": "object",
                     "additionalProperties": {}
                 },
+                "mime_type": {
+                    "type": "string"
+                },
                 "rank": {
                     "type": "number"
                 },
                 "score_details": {
                     "$ref": "#/definitions/github_com_muty_nexus_internal_model.ScoreDetails"
+                },
+                "size": {
+                    "type": "integer"
                 },
                 "source_id": {
                     "type": "string"
@@ -1376,6 +1563,14 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "description": "Type \"Bearer \" followed by the JWT returned from /auth/login.",
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
         }
     }
 }`

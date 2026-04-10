@@ -234,6 +234,27 @@ a.result-title:hover {
   font-family: monospace;
 }
 
+.result-download {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #58a6ff;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.result-download:hover {
+  background: #21262d;
+  border-color: #58a6ff;
+}
+
+.result-download:active {
+  background: #30363d;
+}
+
 .results-more-hint {
   color: #484f58;
 }

@@ -358,15 +358,16 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		CreatedAt:  createdAt,
 	})
 
-	// Attachment documents
+	// Attachment documents — always emitted, even when extraction fails or is
+	// unsupported. The doc carries empty content in that case but full metadata
+	// (filename, mime type, size) so it remains discoverable and previewable
+	// once an IMAP BinaryFetcher is implemented.
 	for i, att := range attachments {
-		if c.extractor == nil || !c.extractor.CanExtract(att.ContentType) {
-			continue
-		}
-
-		extracted, err := c.extractor.Extract(context.Background(), att.ContentType, att.Data)
-		if err != nil || extracted == "" {
-			continue
+		var extracted string
+		if c.extractor != nil && c.extractor.CanExtract(att.ContentType) {
+			if out, err := c.extractor.Extract(context.Background(), att.ContentType, att.Data); err == nil {
+				extracted = out
+			}
 		}
 
 		attMetadata := map[string]any{
@@ -387,6 +388,8 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 			SourceID:   attSourceID,
 			Title:      att.Filename,
 			Content:    extracted,
+			MimeType:   att.ContentType,
+			Size:       int64(len(att.Data)),
 			Metadata:   attMetadata,
 			URL:        msgURL,
 			Visibility: "private",

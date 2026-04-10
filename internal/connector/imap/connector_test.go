@@ -520,10 +520,12 @@ func TestMessageToDocuments_WithAttachments(t *testing.T) {
 		BodySection: []imapclient.FetchBodySectionBuffer{{Bytes: body}},
 	}
 
-	// Without extractor: only 1 doc (the email itself)
+	// Without extractor: 2 docs — the email body AND the attachment doc with empty
+	// content. Attachments are always emitted (even when extraction is impossible)
+	// so they remain discoverable by metadata and previewable via BinaryFetcher.
 	docs := c.messageToDocuments(msg, "INBOX")
-	if len(docs) != 1 {
-		t.Fatalf("got %d docs without extractor, want 1", len(docs))
+	if len(docs) != 2 {
+		t.Fatalf("got %d docs without extractor, want 2 (email + empty-content attachment)", len(docs))
 	}
 
 	md := docs[0].Metadata
@@ -536,6 +538,24 @@ func TestMessageToDocuments_WithAttachments(t *testing.T) {
 	}
 	if _, ok := md["cc"]; !ok {
 		t.Error("expected cc in metadata")
+	}
+
+	// Verify the attachment doc has empty content but full metadata
+	att := docs[1]
+	if att.Content != "" {
+		t.Errorf("expected empty content for unextractable attachment, got %q", att.Content)
+	}
+	if att.Title != "report.pdf" {
+		t.Errorf("expected attachment title 'report.pdf', got %q", att.Title)
+	}
+	if att.MimeType != "application/pdf" {
+		t.Errorf("expected MimeType 'application/pdf', got %q", att.MimeType)
+	}
+	if att.Size != int64(len("pdf")) {
+		t.Errorf("expected Size %d, got %d", len("pdf"), att.Size)
+	}
+	if att.SourceID != "INBOX:100:attachment:0" {
+		t.Errorf("expected attachment SourceID 'INBOX:100:attachment:0', got %q", att.SourceID)
 	}
 }
 
@@ -582,6 +602,12 @@ func TestMessageToDocuments_WithExtractor(t *testing.T) {
 	}
 	if attMd["parent_subject"] != "With Attachment" {
 		t.Errorf("parent_subject = %v, want 'With Attachment'", attMd["parent_subject"])
+	}
+	if attDoc.MimeType != "text/plain" {
+		t.Errorf("expected attachment MimeType 'text/plain', got %q", attDoc.MimeType)
+	}
+	if attDoc.Size != int64(len("Attachment text content")) {
+		t.Errorf("expected Size %d, got %d", len("Attachment text content"), attDoc.Size)
 	}
 }
 

@@ -82,6 +82,7 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 	for i := range result.Documents {
 		doc := &result.Documents[i]
 		parentID := doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
+		docID := model.DocumentID(doc.SourceType, doc.SourceName, doc.SourceID).String()
 
 		// Chunk the document
 		textChunks := chunking.Split(doc.Content, chunking.DefaultMaxTokens, chunking.DefaultOverlapTokens)
@@ -95,12 +96,15 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 			chunks[j] = model.Chunk{
 				ID:         fmt.Sprintf("%s:%d", parentID, tc.Index),
 				ParentID:   parentID,
+				DocID:      docID,
 				ChunkIndex: tc.Index,
 				Title:      doc.Title,
 				Content:    tc.Text,
 				SourceType: doc.SourceType,
 				SourceName: doc.SourceName,
 				SourceID:   doc.SourceID,
+				MimeType:   doc.MimeType,
+				Size:       doc.Size,
 				Metadata:   doc.Metadata,
 				URL:        doc.URL,
 				Visibility: doc.Visibility,

@@ -41,10 +41,14 @@ definitions:
       metadata:
         additionalProperties: {}
         type: object
+      mime_type:
+        type: string
       rank:
         type: number
       score_details:
         $ref: '#/definitions/github_com_muty_nexus_internal_model.ScoreDetails'
+      size:
+        type: integer
       source_id:
         type: string
       source_name:
@@ -313,6 +317,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_api.userResponse'
+      security:
+      - BearerAuth: []
       summary: Get current user
       tags:
       - auth
@@ -357,6 +363,8 @@ paths:
             items:
               $ref: '#/definitions/internal_api.connectorResponse'
             type: array
+      security:
+      - BearerAuth: []
       summary: List all connectors
       tags:
       - connectors
@@ -385,6 +393,8 @@ paths:
           description: Name already exists
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Create a new connector
       tags:
       - connectors
@@ -403,6 +413,8 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Delete a connector
       tags:
       - connectors
@@ -424,6 +436,8 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Get a connector by ID
       tags:
       - connectors
@@ -463,6 +477,8 @@ paths:
           description: Name already exists
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Update a connector
       tags:
       - connectors
@@ -497,6 +513,8 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Submit Telegram auth code
       tags:
       - connectors
@@ -527,9 +545,53 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Start Telegram authentication
       tags:
       - connectors
+  /documents/{id}/content:
+    get:
+      description: Streams the original bytes of a document. Dispatches to the source
+        connector via the BinaryFetcher capability. Returns 404 if the connector does
+        not support previews or if the user lacks read permission. Use ?download=1
+        to force an attachment disposition instead of inline rendering.
+      parameters:
+      - description: Document UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Set to '1' to force attachment disposition
+        in: query
+        name: download
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Download or preview a document's binary content
+      tags:
+      - documents
   /health:
     get:
       produces:
@@ -560,6 +622,8 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Full re-index
       tags:
       - sync
@@ -608,6 +672,8 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Search across all indexed documents
       tags:
       - search
@@ -622,6 +688,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_api.embeddingSettingsResponse'
+      security:
+      - BearerAuth: []
       summary: Get embedding settings
       tags:
       - settings
@@ -648,6 +716,8 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Update embedding settings
       tags:
       - settings
@@ -662,6 +732,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_api.rerankSettingsResponse'
+      security:
+      - BearerAuth: []
       summary: Get rerank settings
       tags:
       - settings
@@ -687,6 +759,8 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Update rerank settings
       tags:
       - settings
@@ -701,6 +775,8 @@ paths:
             items:
               $ref: '#/definitions/internal_api.SyncJob'
             type: array
+      security:
+      - BearerAuth: []
       summary: List active and recent sync jobs
       tags:
       - sync
@@ -716,16 +792,18 @@ paths:
             items:
               $ref: '#/definitions/internal_api.SyncJob'
             type: array
+      security:
+      - BearerAuth: []
       summary: Sync all enabled connectors
       tags:
       - sync
-  /sync/{connector}:
+  /sync/{id}:
     post:
       description: Starts an async sync job. Returns immediately with the job state.
       parameters:
-      - description: Connector name
+      - description: Connector UUID
         in: path
-        name: connector
+        name: id
         required: true
         type: string
       produces:
@@ -743,17 +821,19 @@ paths:
           description: Sync already running
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Trigger sync for a single connector
       tags:
       - sync
-  /sync/{connector}/progress:
+  /sync/{id}/progress:
     get:
       description: 'Opens a Server-Sent Events stream that pushes SyncJob updates
         in real-time. Sends an "event: done" when the job completes.'
       parameters:
-      - description: Connector name
+      - description: Connector UUID
         in: path
-        name: connector
+        name: id
         required: true
         type: string
       produces:
@@ -767,6 +847,8 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Stream sync progress via SSE
       tags:
       - sync
@@ -786,15 +868,17 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Delete all sync cursors
       tags:
       - sync
-  /sync/cursors/{connector}:
+  /sync/cursors/{id}:
     delete:
       parameters:
-      - description: Connector name
+      - description: Connector UUID
         in: path
-        name: connector
+        name: id
         required: true
         type: string
       produces:
@@ -810,6 +894,8 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Delete a single connector's sync cursor
       tags:
       - sync
@@ -824,6 +910,8 @@ paths:
             items:
               $ref: '#/definitions/internal_api.userResponse'
             type: array
+      security:
+      - BearerAuth: []
       summary: List all users (admin only)
       tags:
       - users
@@ -852,6 +940,8 @@ paths:
           description: Username taken
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Create a new user (admin only)
       tags:
       - users
@@ -874,6 +964,8 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Delete a user (admin only)
       tags:
       - users
@@ -904,7 +996,15 @@ paths:
           description: Forbidden
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
       summary: Change user password (admin or self)
       tags:
       - users
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer " followed by the JWT returned from /auth/login.
+    in: header
+    name: Authorization
+    type: apiKey
 swagger: "2.0"

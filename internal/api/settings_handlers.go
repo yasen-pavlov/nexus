@@ -31,6 +31,7 @@ type embeddingSettingsRequest struct {
 //	@Tags		settings
 //	@Produce	json
 //	@Success	200	{object}	embeddingSettingsResponse
+//	@Security	BearerAuth
 //	@Router		/settings/embedding [get]
 func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	keys := []string{"embedding_provider", "embedding_model", "embedding_api_key", "ollama_url"}
@@ -61,6 +62,7 @@ func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 //	@Param		request	body	embeddingSettingsRequest	true	"Embedding settings"
 //	@Success	200	{object}	embeddingSettingsResponse
 //	@Failure	400	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/settings/embedding [put]
 func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingSettingsRequest
@@ -164,6 +166,7 @@ type rerankSettingsRequest struct {
 //	@Tags		settings
 //	@Produce	json
 //	@Success	200	{object}	rerankSettingsResponse
+//	@Security	BearerAuth
 //	@Router		/settings/rerank [get]
 func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 	keys := []string{"rerank_provider", "rerank_model", "rerank_api_key"}
@@ -193,6 +196,7 @@ func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 //	@Param		request	body	rerankSettingsRequest	true	"Rerank settings"
 //	@Success	200	{object}	rerankSettingsResponse
 //	@Failure	400	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/settings/rerank [put]
 func (h *handler) UpdateRerankSettings(w http.ResponseWriter, r *http.Request) {
 	var req rerankSettingsRequest

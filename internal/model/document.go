@@ -23,6 +23,8 @@ type Document struct {
 	SourceID   string         `json:"source_id"`
 	Title      string         `json:"title"`
 	Content    string         `json:"content"`
+	MimeType   string         `json:"mime_type,omitempty"`
+	Size       int64          `json:"size,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	URL        string         `json:"url,omitempty"`
 	Visibility string         `json:"visibility"`
@@ -34,6 +36,7 @@ type Document struct {
 type Chunk struct {
 	ID          string         `json:"id"`
 	ParentID    string         `json:"parent_id"`
+	DocID       string         `json:"doc_id"`
 	ChunkIndex  int            `json:"chunk_index"`
 	Title       string         `json:"title"`
 	Content     string         `json:"content"`
@@ -42,6 +45,8 @@ type Chunk struct {
 	SourceType  string         `json:"source_type"`
 	SourceName  string         `json:"source_name"`
 	SourceID    string         `json:"source_id"`
+	MimeType    string         `json:"mime_type,omitempty"`
+	Size        int64          `json:"size,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	URL         string         `json:"url,omitempty"`
 	Visibility  string         `json:"visibility"`

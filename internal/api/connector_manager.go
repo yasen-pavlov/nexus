@@ -100,6 +100,21 @@ func (m *ConnectorManager) GetByID(id uuid.UUID) (connector.Connector, *model.Co
 	return e.conn, &cfg, true
 }
 
+// GetByTypeAndName returns the active connector instance matching the given
+// (source_type, source_name) pair. Used by the download endpoint to dispatch
+// from a stored document back to the connector that produced it.
+func (m *ConnectorManager) GetByTypeAndName(typeStr, nameStr string) (connector.Connector, *model.ConnectorConfig, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.connectors {
+		if e.config.Type == typeStr && e.config.Name == nameStr {
+			cfg := e.config
+			return e.conn, &cfg, true
+		}
+	}
+	return nil, nil, false
+}
+
 // ConnectorWithConfig pairs a connector instance with its config.
 type ConnectorWithConfig struct {
 	Conn   connector.Connector

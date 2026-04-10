@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamSyncProgress, listConnectors, listSyncJobs, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters } from './api';
+import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamSyncProgress, listConnectors, listSyncJobs, downloadDocument, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters } from './api';
 import ConnectorManager from './ConnectorManager';
 import SearchFiltersBar from './SearchFilters';
 import Settings from './Settings';
@@ -355,6 +355,18 @@ function App() {
                 <span className="result-date">
                   {new Date(hit.created_at).toLocaleDateString()}
                 </span>
+                {hit.mime_type ? (
+                  <button
+                    type="button"
+                    className="result-download"
+                    title={`Download (${formatBytes(hit.size)})`}
+                    onClick={() => {
+                      downloadDocument(hit.id, hit.title).catch((err) => setError(err.message));
+                    }}
+                  >
+                    ↓ Download
+                  </button>
+                ) : null}
               </div>
             </div>
           ))}
@@ -362,6 +374,18 @@ function App() {
       )}
     </div>
   );
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let n = bytes;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 function SyncProgress({ job, onDismiss }: { job: SyncJob; onDismiss: () => void }) {

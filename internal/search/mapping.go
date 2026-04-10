@@ -32,6 +32,7 @@ func indexMappingJSON(embeddingDimension int) string {
     "properties": {
       "id":           { "type": "keyword" },
       "parent_id":    { "type": "keyword" },
+      "doc_id":       { "type": "keyword" },
       "chunk_index":  { "type": "integer" },
       "source_type":  { "type": "keyword" },
       "source_name":  { "type": "keyword" },
@@ -45,7 +46,9 @@ func indexMappingJSON(embeddingDimension int) string {
       "created_at":   { "type": "date" },
       "indexed_at":   { "type": "date" },
       "owner_id":     { "type": "keyword" },
-      "shared":       { "type": "boolean" }%s
+      "shared":       { "type": "boolean" },
+      "mime_type":    { "type": "keyword" },
+      "size":         { "type": "long" }%s
     }
   }
 }`, knnSetting, embeddingField)

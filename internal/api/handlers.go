@@ -65,6 +65,7 @@ func (h *handler) Health(w http.ResponseWriter, r *http.Request) {
 //	@Param		date_to			query	string	false	"Filter by date (YYYY-MM-DD)"
 //	@Success	200	{object}	model.SearchResult
 //	@Failure	400	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/search [get]
 func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query().Get("q")
@@ -151,6 +152,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 //	@Success	202	{object}	SyncJob
 //	@Failure	404	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Sync already running"
+//	@Security	BearerAuth
 //	@Router		/sync/{id} [post]
 func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -209,6 +211,7 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 //	@Param		id	path	string	true	"Connector UUID"
 //	@Success	200	{string}	string	"SSE stream"
 //	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/sync/{id}/progress [get]
 func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -270,6 +273,7 @@ func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 //	@Tags		sync
 //	@Produce	json
 //	@Success	200	{array}	SyncJob
+//	@Security	BearerAuth
 //	@Router		/sync [get]
 func (h *handler) ListSyncJobs(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
@@ -299,6 +303,7 @@ func (h *handler) ListSyncJobs(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Success	200	{object}	map[string]string
 //	@Failure	500	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/sync/cursors [delete]
 func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.DeleteAllSyncCursors(r.Context()); err != nil {
@@ -317,6 +322,7 @@ func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
 //	@Param		id	path	string	true	"Connector UUID"
 //	@Success	200	{object}	map[string]string
 //	@Failure	500	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/sync/cursors/{id} [delete]
 func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -348,6 +354,7 @@ func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 //	@Tags		sync
 //	@Produce	json
 //	@Success	202	{array}	SyncJob
+//	@Security	BearerAuth
 //	@Router		/sync [post]
 func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
@@ -392,6 +399,7 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Success	202	{object}	map[string]any
 //	@Failure	500	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/reindex [post]
 func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 	// 1. Recreate index with current dimension

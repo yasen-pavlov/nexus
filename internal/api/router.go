@@ -78,6 +78,8 @@ func NewRouter(
 			r.Get("/auth/me", h.Me)
 			r.Get("/search", h.Search)
 
+			r.Get("/documents/{id}/content", h.DownloadDocument)
+
 			r.Get("/sync", h.ListSyncJobs)
 			r.Post("/sync", h.SyncAll)
 			r.Post("/sync/{id}", h.TriggerSync)

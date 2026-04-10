@@ -153,6 +153,7 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 //	@Tags		auth
 //	@Produce	json
 //	@Success	200	{object}	userResponse
+//	@Security	BearerAuth
 //	@Router		/auth/me [get]
 func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
@@ -177,6 +178,7 @@ func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 //	@Success	201	{object}	userResponse
 //	@Failure	400	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Username taken"
+//	@Security	BearerAuth
 //	@Router		/users [post]
 func (h *handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
@@ -225,6 +227,7 @@ func (h *handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 //	@Tags		users
 //	@Produce	json
 //	@Success	200	{array}	userResponse
+//	@Security	BearerAuth
 //	@Router		/users [get]
 func (h *handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := h.store.ListUsers(r.Context())
@@ -249,6 +252,7 @@ func (h *handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 //	@Success	204
 //	@Failure	400	{object}	APIResponse
 //	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/users/{id} [delete]
 func (h *handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -287,6 +291,7 @@ func (h *handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 //	@Success	204
 //	@Failure	400	{object}	APIResponse
 //	@Failure	403	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/users/{id}/password [put]
 func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))

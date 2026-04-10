@@ -375,6 +375,8 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 					SourceID:   chunk.SourceID,
 					Title:      chunk.Title,
 					Content:    chunk.Content,
+					MimeType:   chunk.MimeType,
+					Size:       chunk.Size,
 					Metadata:   chunk.Metadata,
 					URL:        chunk.URL,
 					Visibility: chunk.Visibility,
@@ -469,6 +471,48 @@ func (c *Client) UpdateOwnershipBySource(ctx context.Context, sourceType, source
 	}
 
 	return nil
+}
+
+// GetChunkByDocID returns the first chunk (by chunk_index) belonging to the
+// document identified by docID. Used by the download endpoint to resolve a
+// document UUID into the source triple + ownership/visibility metadata
+// needed to dispatch to a connector's BinaryFetcher.
+func (c *Client) GetChunkByDocID(ctx context.Context, docID string) (*model.Chunk, error) {
+	query := map[string]any{
+		"size": 1,
+		"sort": []map[string]any{
+			{"chunk_index": map[string]any{"order": "asc"}},
+		},
+		"query": map[string]any{
+			"term": map[string]any{
+				"doc_id": docID,
+			},
+		},
+	}
+
+	body, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("search: marshal get-by-doc-id query: %w", err)
+	}
+
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search: get-by-doc-id: %w", err)
+	}
+
+	if len(resp.Hits.Hits) == 0 {
+		return nil, ErrNotFound
+	}
+
+	var chunk model.Chunk
+	raw, _ := json.Marshal(resp.Hits.Hits[0].Source)
+	if err := json.Unmarshal(raw, &chunk); err != nil {
+		return nil, fmt.Errorf("search: unmarshal chunk: %w", err)
+	}
+	return &chunk, nil
 }
 
 // DeleteBySource deletes all documents from a specific source.

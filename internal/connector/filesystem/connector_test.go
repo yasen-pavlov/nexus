@@ -123,9 +123,10 @@ func TestFetch(t *testing.T) {
 	writeFile(t, dir, "sub/nested.txt", "Nested content")
 
 	c := &Connector{
-		name:     "test",
-		rootPath: dir,
-		patterns: []string{"*.txt", "*.md"},
+		name:      "test",
+		rootPath:  dir,
+		patterns:  []string{"*.txt", "*.md"},
+		extractor: extractor.NewRegistry(""), // PlainText only — production always has at least this
 	}
 
 	t.Run("full sync", func(t *testing.T) {
@@ -267,9 +268,24 @@ func TestFetch_WithExtractor_UnsupportedType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// .bin files fall through to raw content since no extractor matches
+	// Unextractable files are still emitted as docs with empty content so they
+	// remain discoverable by metadata (filename, size) and previewable via
+	// the BinaryFetcher. Raw bytes are NEVER stored as if they were text.
 	if len(result.Documents) != 1 {
-		t.Errorf("expected 1 doc (raw fallback), got %d", len(result.Documents))
+		t.Fatalf("expected 1 doc, got %d", len(result.Documents))
+	}
+	doc := result.Documents[0]
+	if doc.Content != "" {
+		t.Errorf("expected empty content for unextractable file, got %q", doc.Content)
+	}
+	if doc.MimeType == "" {
+		t.Errorf("expected MimeType to be set, got empty")
+	}
+	if doc.Size != int64(len("binary data")) {
+		t.Errorf("expected Size %d, got %d", len("binary data"), doc.Size)
+	}
+	if doc.Title != "data.bin" {
+		t.Errorf("expected title 'data.bin', got %q", doc.Title)
 	}
 }
 
@@ -318,6 +334,137 @@ func TestFetch_WithExtractor(t *testing.T) {
 			if doc.Content != "plain text content" {
 				t.Errorf("expected plain text content, got %q", doc.Content)
 			}
+		}
+	}
+}
+
+func TestFetch_PopulatesMimeTypeAndSize(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "hello.txt", "Hello World")
+
+	c := &Connector{
+		name:     "test",
+		rootPath: dir,
+		patterns: []string{"*.txt"},
+	}
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Documents) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(result.Documents))
+	}
+	doc := result.Documents[0]
+	if !strings.HasPrefix(doc.MimeType, "text/plain") {
+		t.Errorf("expected MimeType to start with text/plain, got %q", doc.MimeType)
+	}
+	if doc.Size != int64(len("Hello World")) {
+		t.Errorf("expected Size %d, got %d", len("Hello World"), doc.Size)
+	}
+}
+
+func TestFetchBinary(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "hello.txt", "Hello World")
+	writeFile(t, dir, "sub/nested.txt", "Nested content")
+
+	c := &Connector{
+		name:     "test",
+		rootPath: dir,
+		patterns: []string{"*.txt"},
+	}
+
+	t.Run("returns file bytes", func(t *testing.T) {
+		bc, err := c.FetchBinary(context.Background(), "hello.txt")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer bc.Reader.Close() //nolint:errcheck // test cleanup
+		data, err := readAll(t, bc.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "Hello World" {
+			t.Errorf("expected 'Hello World', got %q", string(data))
+		}
+		if bc.Filename != "hello.txt" {
+			t.Errorf("expected filename hello.txt, got %q", bc.Filename)
+		}
+		if bc.Size != int64(len("Hello World")) {
+			t.Errorf("expected size %d, got %d", len("Hello World"), bc.Size)
+		}
+		if !strings.HasPrefix(bc.MimeType, "text/plain") {
+			t.Errorf("expected text/plain mime, got %q", bc.MimeType)
+		}
+	})
+
+	t.Run("nested path", func(t *testing.T) {
+		bc, err := c.FetchBinary(context.Background(), filepath.Join("sub", "nested.txt"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		defer bc.Reader.Close() //nolint:errcheck // test cleanup
+		data, err := readAll(t, bc.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "Nested content" {
+			t.Errorf("expected 'Nested content', got %q", string(data))
+		}
+	})
+
+	t.Run("path traversal rejected", func(t *testing.T) {
+		// Create a sibling directory with a "secret" file outside the root
+		parent := filepath.Dir(dir)
+		secretPath := filepath.Join(parent, "secret.txt")
+		if err := os.WriteFile(secretPath, []byte("top secret"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(secretPath) //nolint:errcheck // test cleanup
+
+		// Try to escape via ..
+		_, err := c.FetchBinary(context.Background(), "../secret.txt")
+		if err == nil {
+			t.Fatal("expected error for path traversal attempt")
+		}
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		_, err := c.FetchBinary(context.Background(), "nope.txt")
+		if err == nil {
+			t.Fatal("expected error for nonexistent file")
+		}
+	})
+
+	t.Run("empty source id", func(t *testing.T) {
+		_, err := c.FetchBinary(context.Background(), "")
+		if err == nil {
+			t.Fatal("expected error for empty source id")
+		}
+	})
+
+	t.Run("directory rejected", func(t *testing.T) {
+		_, err := c.FetchBinary(context.Background(), "sub")
+		if err == nil {
+			t.Fatal("expected error when source id points to a directory")
+		}
+	})
+}
+
+func readAll(t *testing.T, r interface{ Read(p []byte) (int, error) }) ([]byte, error) {
+	t.Helper()
+	var buf [4096]byte
+	var out []byte
+	for {
+		n, err := r.Read(buf[:])
+		if n > 0 {
+			out = append(out, buf[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				return out, nil
+			}
+			return out, err
 		}
 	}
 }

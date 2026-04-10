@@ -5,6 +5,8 @@ export interface Document {
   source_id: string;
   title: string;
   content: string;
+  mime_type?: string;
+  size?: number;
   metadata: Record<string, unknown>;
   url: string;
   visibility: string;
@@ -129,6 +131,49 @@ async function fetchAPI<T>(url: string, options: RequestInit = {}): Promise<T> {
     throw new Error(body.error);
   }
   return body.data as T;
+}
+
+// downloadDocument fetches a document's binary content as a blob and triggers
+// a browser download. We can't use a plain <a href> because the API requires
+// the Bearer token in the Authorization header, and anchor navigations don't
+// carry custom headers.
+export async function downloadDocument(id: string, suggestedFilename?: string): Promise<void> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`/api/documents/${id}/content?download=1`, { headers });
+  if (res.status === 401) {
+    clearToken();
+    notifyUnauthorized();
+    throw new Error('Unauthorized');
+  }
+  if (!res.ok) {
+    let msg = 'Download failed';
+    try {
+      const body = await res.json();
+      if (body.error) msg = body.error;
+    } catch {
+      // not JSON, leave default
+    }
+    throw new Error(msg);
+  }
+
+  // Prefer the filename the server set in Content-Disposition; fall back to the
+  // caller-supplied suggestion or a generic name.
+  let filename = suggestedFilename || 'download';
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  if (match) filename = match[1];
+
+  const blob = await res.blob();
+  const blobURL = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobURL;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(blobURL);
 }
 
 export async function search(query: string, limit = 20, offset = 0, filters?: SearchFilters): Promise<SearchResult> {

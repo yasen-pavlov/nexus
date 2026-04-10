@@ -121,16 +121,15 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		relPath, _ := filepath.Rel(c.rootPath, path)
 		contentType := detectContentType(d.Name())
 
-		// Extract text content
+		// Try extraction. On failure or unsupported type, the doc is still emitted
+		// with empty content so it remains discoverable by metadata (filename, type)
+		// and previewable via the BinaryFetcher path.
 		var textContent string
 		if c.extractor != nil && c.extractor.CanExtract(contentType) {
 			extracted, err := c.extractor.Extract(ctx, contentType, raw)
-			if err != nil {
-				return nil // skip files we can't extract
+			if err == nil {
+				textContent = extracted
 			}
-			textContent = extracted
-		} else {
-			textContent = string(raw)
 		}
 
 		docs = append(docs, model.Document{
@@ -140,6 +139,8 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			SourceID:   relPath,
 			Title:      d.Name(),
 			Content:    textContent,
+			MimeType:   contentType,
+			Size:       info.Size(),
 			Metadata: map[string]any{
 				"path":         relPath,
 				"size":         info.Size(),
@@ -190,4 +191,54 @@ func detectContentType(filename string) string {
 		ct = "application/octet-stream"
 	}
 	return ct
+}
+
+// FetchBinary implements connector.BinaryFetcher. It opens the file identified
+// by sourceID (a path relative to the connector's root) and returns it as a
+// streaming reader. Path traversal is prevented by resolving symlinks and
+// verifying the result is still under the configured root.
+func (c *Connector) FetchBinary(_ context.Context, sourceID string) (*connector.BinaryContent, error) {
+	if sourceID == "" {
+		return nil, fmt.Errorf("filesystem: empty source id")
+	}
+
+	// Resolve the absolute, symlink-free root once so we have a stable prefix
+	// to compare against. We do the same for the requested file. If either
+	// EvalSymlinks fails (e.g. broken link), we refuse to serve the file rather
+	// than fall back to a less safe check.
+	rootAbs, err := filepath.EvalSymlinks(c.rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("filesystem: resolve root: %w", err)
+	}
+
+	requested := filepath.Join(rootAbs, filepath.Clean("/"+sourceID))
+	resolved, err := filepath.EvalSymlinks(requested)
+	if err != nil {
+		return nil, fmt.Errorf("filesystem: resolve file: %w", err)
+	}
+
+	rel, err := filepath.Rel(rootAbs, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("filesystem: path %q escapes root", sourceID)
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("filesystem: stat: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("filesystem: %q is a directory", sourceID)
+	}
+
+	f, err := os.Open(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("filesystem: open: %w", err)
+	}
+
+	return &connector.BinaryContent{
+		Reader:   f,
+		MimeType: detectContentType(filepath.Base(resolved)),
+		Size:     info.Size(),
+		Filename: filepath.Base(resolved),
+	}, nil
 }

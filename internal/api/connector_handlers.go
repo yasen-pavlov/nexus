@@ -67,12 +67,30 @@ func canModifyConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
 	return cfg.UserID != nil && *cfg.UserID == claims.UserID
 }
 
+// canReadDocument returns true if the user is allowed to read a document with
+// the given ownership metadata. Mirrors canReadConnector but operates on the
+// raw owner_id/shared fields stored on a chunk (since the download endpoint
+// doesn't have a ConnectorConfig in hand).
+func canReadDocument(claims *auth.Claims, ownerID string, shared bool) bool {
+	if claims == nil {
+		return false
+	}
+	if claims.Role == "admin" {
+		return true
+	}
+	if shared {
+		return true
+	}
+	return ownerID != "" && ownerID == claims.UserID.String()
+}
+
 // ListConnectors godoc
 //
 //	@Summary	List all connectors
 //	@Tags		connectors
 //	@Produce	json
 //	@Success	200	{array}	connectorResponse
+//	@Security	BearerAuth
 //	@Router		/connectors [get]
 func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
@@ -105,6 +123,7 @@ func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 //	@Param		id	path	string	true	"Connector UUID"
 //	@Success	200	{object}	connectorResponse
 //	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/connectors/{id} [get]
 func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -148,6 +167,7 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 //	@Success	201	{object}	model.ConnectorConfig
 //	@Failure	400	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Name already exists"
+//	@Security	BearerAuth
 //	@Router		/connectors [post]
 func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	var req createConnectorRequest
@@ -205,6 +225,7 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 //	@Failure	400	{object}	APIResponse
 //	@Failure	404	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Name already exists"
+//	@Security	BearerAuth
 //	@Router		/connectors/{id} [put]
 func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -299,6 +320,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 //	@Param		id	path	string	true	"Connector UUID"
 //	@Success	204
 //	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/connectors/{id} [delete]
 func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))

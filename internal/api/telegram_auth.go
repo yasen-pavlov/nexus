@@ -58,6 +58,7 @@ type telegramAuthCodeRequest struct {
 //	@Success	200	{object}	map[string]string
 //	@Failure	400	{object}	APIResponse
 //	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/connectors/{id}/auth/start [post]
 func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -164,6 +165,7 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 //	@Param		request	body	object	true	"Auth code"
 //	@Success	200	{object}	map[string]string
 //	@Failure	400	{object}	APIResponse
+//	@Security	BearerAuth
 //	@Router		/connectors/{id}/auth/code [post]
 func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))

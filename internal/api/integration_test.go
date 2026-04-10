@@ -2055,3 +2055,350 @@ func TestConnectorManager_InstantiateTelegram(t *testing.T) {
 		t.Errorf("expected 201, got %d; body: %s", w.Code, w.Body.String())
 	}
 }
+
+// --- Document download tests ---
+
+// indexFSChunk indexes a single chunk that points at a filesystem source. Used
+// by the download endpoint tests to set up the OpenSearch state without going
+// through the full sync pipeline.
+func indexFSChunk(t *testing.T, sc *search.Client, sourceName, sourceID, ownerID string, shared bool) string {
+	t.Helper()
+	parentID := "filesystem:" + sourceName + ":" + sourceID
+	docID := model.DocumentID("filesystem", sourceName, sourceID).String()
+	chunk := model.Chunk{
+		ID: parentID + ":0", ParentID: parentID, DocID: docID, ChunkIndex: 0,
+		Title: sourceID, Content: "indexed test content",
+		FullContent: "indexed test content",
+		SourceType:  "filesystem", SourceName: sourceName, SourceID: sourceID,
+		MimeType: "text/plain", Size: 20,
+		Metadata: map[string]any{}, Visibility: "private",
+		OwnerID: ownerID, Shared: shared,
+		CreatedAt: time.Now(), IndexedAt: time.Now(),
+	}
+	if err := sc.IndexChunks(context.Background(), []model.Chunk{chunk}); err != nil {
+		t.Fatalf("index chunk: %v", err)
+	}
+	if err := sc.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	return docID
+}
+
+func TestDownloadDocument_Integration_HappyPath(t *testing.T) {
+	st, sc, cm, router := newTestRouter(t)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/hello.txt", []byte("Hello World"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create + sync the connector via the API so the connector manager picks it up.
+	body := `{"type":"filesystem","name":"dl-happy","config":{"root_path":"` + dir + `","patterns":"*.txt"},"enabled":true,"shared":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create connector: expected 201, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Run the connector synchronously through the pipeline so the chunks land in OpenSearch
+	// before we query. (Triggering /api/sync would be async.)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	conn, cfg, ok := cm.GetByTypeAndName("filesystem", "dl-happy")
+	if !ok {
+		t.Fatal("connector not in manager")
+	}
+	ownerID := ""
+	if cfg.UserID != nil {
+		ownerID = cfg.UserID.String()
+	}
+	if _, err := p.RunWithProgress(context.Background(), cfg.ID, conn, ownerID, cfg.Shared, nil); err != nil {
+		t.Fatalf("pipeline run: %v", err)
+	}
+	if err := sc.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	docID := model.DocumentID("filesystem", "dl-happy", "hello.txt").String()
+
+	// Inline preview
+	req = httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "Hello World" {
+		t.Errorf("expected body 'Hello World', got %q", w.Body.String())
+	}
+	if !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+		t.Errorf("expected text/plain Content-Type, got %q", w.Header().Get("Content-Type"))
+	}
+	if !strings.HasPrefix(w.Header().Get("Content-Disposition"), "inline") {
+		t.Errorf("expected inline disposition, got %q", w.Header().Get("Content-Disposition"))
+	}
+
+	// Force download
+	req = httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content?download=1", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("download: expected 200, got %d", w.Code)
+	}
+	if !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment") {
+		t.Errorf("expected attachment disposition, got %q", w.Header().Get("Content-Disposition"))
+	}
+}
+
+func TestDownloadDocument_Integration_BinaryFile(t *testing.T) {
+	st, sc, cm, router := newTestRouter(t)
+
+	dir := t.TempDir()
+	// Tiny PNG header bytes — enough to be recognized
+	pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D}
+	if err := os.WriteFile(dir+"/image.png", pngBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"type":"filesystem","name":"dl-bin","config":{"root_path":"` + dir + `","patterns":"*.png"},"enabled":true,"shared":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create connector: %d %s", w.Code, w.Body.String())
+	}
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	conn, cfg, _ := cm.GetByTypeAndName("filesystem", "dl-bin")
+	if _, err := p.RunWithProgress(context.Background(), cfg.ID, conn, "", cfg.Shared, nil); err != nil {
+		t.Fatalf("pipeline run: %v", err)
+	}
+	_ = sc.Refresh(context.Background())
+
+	docID := model.DocumentID("filesystem", "dl-bin", "image.png").String()
+	req = httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Equal(w.Body.Bytes(), pngBytes) {
+		t.Errorf("response body does not match png bytes")
+	}
+	if w.Header().Get("Content-Type") != "image/png" {
+		t.Errorf("expected image/png, got %q", w.Header().Get("Content-Type"))
+	}
+}
+
+func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
+	// Build router WITHOUT authWrap so we can test the auth boundary directly.
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+
+	// Index a shared chunk so the doc exists
+	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+
+	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.CreateUser(context.Background(), "bob-dl", "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Doc owned by alice, NOT shared
+	docID := indexFSChunk(t, sc, "alice-fs", "private.txt", alice.ID.String(), false)
+
+	// Bob tries to download → 404 (not 403, to avoid leaking existence)
+	bobToken, err := auth.GenerateToken(testJWTSecret, bob.ID, "bob-dl", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	req.Header.Set("Authorization", "Bearer "+bobToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for cross-user access, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.T) {
+	st, sc, cm, _ := newTestRouter(t)
+	_ = cm
+
+	// Create a shared filesystem connector and sync a file
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/shared.txt", []byte("shared content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "dl-shared",
+		Config: map[string]any{"root_path": dir, "patterns": "*.txt"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	conn, _, _ := cm.GetByTypeAndName("filesystem", "dl-shared")
+	if _, err := p.RunWithProgress(context.Background(), cfg.ID, conn, "", true, nil); err != nil {
+		t.Fatalf("pipeline run: %v", err)
+	}
+	_ = sc.Refresh(context.Background())
+
+	// Build an unwrapped router so we can use a non-admin token
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+
+	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, user.ID, "regular-user-dl", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	docID := model.DocumentID("filesystem", "dl-shared", "shared.txt").String()
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("regular user should access shared doc, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != "shared content" {
+		t.Errorf("expected 'shared content', got %q", w.Body.String())
+	}
+}
+
+func TestDownloadDocument_Integration_PathTraversal(t *testing.T) {
+	st, sc, cm, router := newTestRouter(t)
+
+	// Create a connector pointing at a controlled root
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/legit.txt", []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "dl-traversal",
+		Config: map[string]any{"root_path": dir, "patterns": "*.txt"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually index a chunk with a malicious source_id pointing OUTSIDE the root.
+	// This simulates a chunk that was somehow corrupted or injected — the
+	// connector itself would never produce such a source_id, but the FetchBinary
+	// guard must defend against it regardless.
+	parentID := "filesystem:dl-traversal:../../../etc/passwd"
+	docID := model.DocumentID("filesystem", "dl-traversal", "../../../etc/passwd").String()
+	chunk := model.Chunk{
+		ID: parentID + ":0", ParentID: parentID, DocID: docID, ChunkIndex: 0,
+		Title: "passwd", Content: "",
+		SourceType: "filesystem", SourceName: "dl-traversal", SourceID: "../../../etc/passwd",
+		MimeType: "text/plain", Size: 0,
+		Metadata: map[string]any{}, Visibility: "private", Shared: true,
+		CreatedAt: time.Now(),
+	}
+	if err := sc.IndexChunks(context.Background(), []model.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(context.Background())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code == http.StatusOK {
+		t.Fatalf("path traversal should not return 200 — possible escape! body: %s", w.Body.String())
+	}
+	if w.Code != http.StatusInternalServerError && w.Code != http.StatusNotFound {
+		t.Errorf("expected 500 or 404, got %d", w.Code)
+	}
+	_ = st
+}
+
+func TestDownloadDocument_Integration_PreviewNotSupported(t *testing.T) {
+	_, sc, cm, router := newTestRouter(t)
+
+	// Telegram connector exists but doesn't implement BinaryFetcher
+	cfg := &model.ConnectorConfig{
+		Type: "telegram", Name: "dl-tg",
+		Config: map[string]any{"api_id": "12345", "api_hash": "abc", "phone": "+1234567890"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Index a chunk pointing at the telegram connector
+	parentID := "telegram:dl-tg:msg1"
+	docID := model.DocumentID("telegram", "dl-tg", "msg1").String()
+	chunk := model.Chunk{
+		ID: parentID + ":0", ParentID: parentID, DocID: docID, ChunkIndex: 0,
+		Title: "Some chat", Content: "hello",
+		SourceType: "telegram", SourceName: "dl-tg", SourceID: "msg1",
+		Metadata: map[string]any{}, Visibility: "private", Shared: true,
+		CreatedAt: time.Now(),
+	}
+	if err := sc.IndexChunks(context.Background(), []model.Chunk{chunk}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(context.Background())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+docID+"/content", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for non-fetcher connector, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "preview not supported") {
+		t.Errorf("expected 'preview not supported' message, got %q", w.Body.String())
+	}
+}
+
+func TestDownloadDocument_Integration_DocumentNotFound(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+uuid.New().String()+"/content", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDownloadDocument_Integration_BadUUID(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/not-a-uuid/content", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
