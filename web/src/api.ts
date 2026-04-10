@@ -46,6 +46,7 @@ export interface SyncReport {
 
 export interface SyncJob {
   id: string;
+  connector_id: string;
   connector_name: string;
   connector_type: string;
   status: 'running' | 'completed' | 'failed';
@@ -64,6 +65,8 @@ export interface ConnectorConfig {
   config: Record<string, unknown>;
   enabled: boolean;
   schedule: string;
+  shared: boolean;
+  user_id?: string | null;
   last_run: string | null;
   status: string;
   created_at: string;
@@ -76,6 +79,7 @@ export interface CreateConnectorRequest {
   config: Record<string, unknown>;
   enabled: boolean;
   schedule: string;
+  shared?: boolean;
 }
 
 interface APIResponse<T> {
@@ -83,8 +87,43 @@ interface APIResponse<T> {
   error?: string;
 }
 
-async function fetchAPI<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, options);
+const TOKEN_KEY = 'nexus_jwt';
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+// Listeners notified when the API receives a 401 (e.g., expired/invalid token).
+type UnauthorizedListener = () => void;
+const unauthorizedListeners = new Set<UnauthorizedListener>();
+
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
+}
+
+function notifyUnauthorized(): void {
+  unauthorizedListeners.forEach((fn) => fn());
+}
+
+async function fetchAPI<T>(url: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    clearToken();
+    notifyUnauthorized();
+    throw new Error('Unauthorized');
+  }
   const body: APIResponse<T> = await res.json();
   if (body.error) {
     throw new Error(body.error);
@@ -101,8 +140,8 @@ export async function search(query: string, limit = 20, offset = 0, filters?: Se
   return fetchAPI<SearchResult>(`/api/search?${params}`);
 }
 
-export async function triggerSync(connector: string): Promise<SyncJob> {
-  return fetchAPI<SyncJob>(`/api/sync/${connector}`, { method: 'POST' });
+export async function triggerSync(connectorID: string): Promise<SyncJob> {
+  return fetchAPI<SyncJob>(`/api/sync/${connectorID}`, { method: 'POST' });
 }
 
 export async function syncAll(): Promise<SyncJob[]> {
@@ -113,8 +152,8 @@ export async function deleteAllCursors(): Promise<void> {
   await fetchAPI('/api/sync/cursors', { method: 'DELETE' });
 }
 
-export async function deleteCursor(connector: string): Promise<void> {
-  await fetchAPI(`/api/sync/cursors/${connector}`, { method: 'DELETE' });
+export async function deleteCursor(connectorID: string): Promise<void> {
+  await fetchAPI(`/api/sync/cursors/${connectorID}`, { method: 'DELETE' });
 }
 
 export async function triggerReindex(): Promise<{ message: string; dimension: number; connectors: number }> {
@@ -122,11 +161,17 @@ export async function triggerReindex(): Promise<{ message: string; dimension: nu
 }
 
 export function streamSyncProgress(
-  connector: string,
+  connectorID: string,
   onUpdate: (job: SyncJob) => void,
   onDone: () => void,
 ): () => void {
-  const es = new EventSource(`/api/sync/${connector}/progress`);
+  // EventSource cannot set custom headers, so the token is passed as a query
+  // param. The auth middleware accepts both Authorization and ?token= for SSE.
+  const token = getToken();
+  const url = token
+    ? `/api/sync/${connectorID}/progress?token=${encodeURIComponent(token)}`
+    : `/api/sync/${connectorID}/progress`;
+  const es = new EventSource(url);
   es.onmessage = (e) => onUpdate(JSON.parse(e.data));
   es.addEventListener('done', () => { es.close(); onDone(); });
   es.onerror = () => { es.close(); onDone(); };
@@ -174,7 +219,15 @@ export async function telegramAuthCode(connectorId: string, code: string, passwo
 }
 
 export async function deleteConnector(id: string): Promise<void> {
-  const res = await fetch(`/api/connectors/${id}`, { method: 'DELETE' });
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`/api/connectors/${id}`, { method: 'DELETE', headers });
+  if (res.status === 401) {
+    clearToken();
+    notifyUnauthorized();
+    throw new Error('Unauthorized');
+  }
   if (!res.ok) {
     const body = await res.json();
     throw new Error(body.error || 'Delete failed');
@@ -200,6 +253,96 @@ export async function updateEmbeddingSettings(settings: EmbeddingSettings): Prom
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
   });
+}
+
+// Auth
+
+export interface User {
+  id: string;
+  username: string;
+  role: 'admin' | 'user';
+}
+
+export interface AuthResponse {
+  token: string;
+  user: User;
+}
+
+export interface HealthResponse {
+  status: string;
+  setup_required?: boolean;
+}
+
+export async function getHealth(): Promise<HealthResponse> {
+  return fetchAPI<HealthResponse>('/api/health');
+}
+
+export async function register(username: string, password: string): Promise<AuthResponse> {
+  return fetchAPI<AuthResponse>('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function login(username: string, password: string): Promise<AuthResponse> {
+  return fetchAPI<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export async function getMe(): Promise<User> {
+  return fetchAPI<User>('/api/auth/me');
+}
+
+export async function listUsers(): Promise<User[]> {
+  return fetchAPI<User[]>('/api/users');
+}
+
+export async function createUser(username: string, password: string, role: 'admin' | 'user'): Promise<User> {
+  return fetchAPI<User>('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role }),
+  });
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  const headers = new Headers();
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`/api/users/${id}`, { method: 'DELETE', headers });
+  if (res.status === 401) {
+    clearToken();
+    notifyUnauthorized();
+    throw new Error('Unauthorized');
+  }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json();
+    throw new Error(body.error || 'Delete failed');
+  }
+}
+
+export async function changePassword(userID: string, password: string): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`/api/users/${userID}/password`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ password }),
+  });
+  if (res.status === 401) {
+    clearToken();
+    notifyUnauthorized();
+    throw new Error('Unauthorized');
+  }
+  if (!res.ok && res.status !== 204) {
+    const body = await res.json();
+    throw new Error(body.error || 'Change password failed');
+  }
 }
 
 // Rerank settings

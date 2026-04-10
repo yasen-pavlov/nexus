@@ -16,9 +16,42 @@ import (
 
 var ErrDuplicateName = errors.New("connector name already exists")
 
-func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConfig, error) {
-	query := `SELECT id, type, name, config, enabled, schedule, last_run, created_at, updated_at FROM connector_configs ORDER BY name`
+const connectorCols = `id, type, name, config, enabled, schedule, shared, user_id, last_run, created_at, updated_at`
 
+func (s *Store) scanConnectorConfig(scan func(dest ...any) error) (model.ConnectorConfig, error) {
+	var cfg model.ConnectorConfig
+	var configJSON []byte
+	err := scan(
+		&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule,
+		&cfg.Shared, &cfg.UserID, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt,
+	)
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
+		return cfg, fmt.Errorf("store: unmarshal connector config: %w", err)
+	}
+	decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+	if err != nil {
+		return cfg, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
+	}
+	cfg.Config = decrypted
+	return cfg, nil
+}
+
+// ListConnectorConfigs returns all connector configs (for scheduler, which needs all users' connectors).
+func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConfig, error) {
+	query := `SELECT ` + connectorCols + ` FROM connector_configs ORDER BY name`
+	return s.listConnectorConfigs(ctx, query)
+}
+
+// ListUserConnectorConfigs returns connectors owned by the given user plus shared connectors.
+func (s *Store) ListUserConnectorConfigs(ctx context.Context, userID uuid.UUID) ([]model.ConnectorConfig, error) {
+	query := `SELECT ` + connectorCols + ` FROM connector_configs WHERE user_id = $1 OR shared = true ORDER BY name`
+	return s.listConnectorConfigsWithArg(ctx, query, userID)
+}
+
+func (s *Store) listConnectorConfigs(ctx context.Context, query string) ([]model.ConnectorConfig, error) {
 	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("store: list connector configs: %w", err)
@@ -27,20 +60,35 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 
 	var configs []model.ConnectorConfig
 	for rows.Next() {
-		var cfg model.ConnectorConfig
-		var configJSON []byte
-		err := rows.Scan(&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt)
+		cfg, err := s.scanConnectorConfig(rows.Scan)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan connector config: %w", err)
 		}
-		if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
-			return nil, fmt.Errorf("store: unmarshal connector config: %w", err)
-		}
-		decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
+		configs = append(configs, cfg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list connector configs rows: %w", err)
+	}
+
+	if configs == nil {
+		configs = []model.ConnectorConfig{}
+	}
+	return configs, nil
+}
+
+func (s *Store) listConnectorConfigsWithArg(ctx context.Context, query string, arg any) ([]model.ConnectorConfig, error) {
+	rows, err := s.pool.Query(ctx, query, arg)
+	if err != nil {
+		return nil, fmt.Errorf("store: list connector configs: %w", err)
+	}
+	defer rows.Close()
+
+	var configs []model.ConnectorConfig
+	for rows.Next() {
+		cfg, err := s.scanConnectorConfig(rows.Scan)
 		if err != nil {
-			return nil, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
+			return nil, fmt.Errorf("store: scan connector config: %w", err)
 		}
-		cfg.Config = decrypted
 		configs = append(configs, cfg)
 	}
 	if err := rows.Err(); err != nil {
@@ -54,27 +102,17 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 }
 
 func (s *Store) GetConnectorConfig(ctx context.Context, id uuid.UUID) (*model.ConnectorConfig, error) {
-	query := `SELECT id, type, name, config, enabled, schedule, last_run, created_at, updated_at FROM connector_configs WHERE id = $1`
+	query := `SELECT ` + connectorCols + ` FROM connector_configs WHERE id = $1`
 
-	var cfg model.ConnectorConfig
-	var configJSON []byte
-	err := s.pool.QueryRow(ctx, query, id).Scan(
-		&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt,
-	)
+	cfg, err := s.scanConnectorConfig(func(dest ...any) error {
+		return s.pool.QueryRow(ctx, query, id).Scan(dest...)
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("store: get connector config: %w", err)
 	}
-	if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
-		return nil, fmt.Errorf("store: unmarshal connector config: %w", err)
-	}
-	decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
-	if err != nil {
-		return nil, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
-	}
-	cfg.Config = decrypted
 	return &cfg, nil
 }
 
@@ -95,11 +133,12 @@ func (s *Store) CreateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `INSERT INTO connector_configs (id, type, name, config, enabled, schedule, last_run, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	query := `INSERT INTO connector_configs (id, type, name, config, enabled, schedule, shared, user_id, last_run, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
 
 	_, err = s.pool.Exec(ctx, query,
-		cfg.ID, cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.LastRun, cfg.CreatedAt, cfg.UpdatedAt,
+		cfg.ID, cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule,
+		cfg.Shared, cfg.UserID, cfg.LastRun, cfg.CreatedAt, cfg.UpdatedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -123,10 +162,10 @@ func (s *Store) UpdateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, schedule = $5, updated_at = $6 WHERE id = $7`
+	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, schedule = $5, shared = $6, updated_at = $7 WHERE id = $8`
 
 	result, err := s.pool.Exec(ctx, query,
-		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.UpdatedAt, cfg.ID,
+		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.Shared, cfg.UpdatedAt, cfg.ID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -151,13 +190,11 @@ func (s *Store) UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) er
 }
 
 // EncryptExistingConfigs encrypts any sensitive config fields that are still stored as plaintext.
-// This is a one-time migration for existing data when encryption is first enabled.
 func (s *Store) EncryptExistingConfigs(ctx context.Context) (int, error) {
 	if s.encryptionKey == nil {
 		return 0, nil
 	}
 
-	// Read raw configs without decryption to check for plaintext sensitive fields
 	query := `SELECT id, type, config FROM connector_configs`
 	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
@@ -184,7 +221,6 @@ func (s *Store) EncryptExistingConfigs(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("store: unmarshal config for encryption: %w", err)
 		}
 
-		// Check if any sensitive field is still plaintext
 		fields := crypto.SensitiveFields[connType]
 		needsEncrypt := false
 		for _, field := range fields {
@@ -201,7 +237,6 @@ func (s *Store) EncryptExistingConfigs(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("store: rows error: %w", err)
 	}
 
-	// Encrypt and update each config
 	for _, rc := range toEncrypt {
 		encrypted, err := crypto.EncryptConfig(s.encryptionKey, rc.connType, rc.config)
 		if err != nil {

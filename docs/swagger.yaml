@@ -17,9 +17,13 @@ definitions:
         type: string
       schedule:
         type: string
+      shared:
+        type: boolean
       type:
         type: string
       updated_at:
+        type: string
+      user_id:
         type: string
     type: object
   github_com_muty_nexus_internal_model.DocumentHit:
@@ -39,6 +43,8 @@ definitions:
         type: object
       rank:
         type: number
+      score_details:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.ScoreDetails'
       source_id:
         type: string
       source_name:
@@ -58,6 +64,19 @@ definitions:
         type: integer
       value:
         type: string
+    type: object
+  github_com_muty_nexus_internal_model.ScoreDetails:
+    properties:
+      final:
+        type: number
+      metadata_bonus:
+        type: number
+      recency_factor:
+        type: number
+      reranker:
+        type: number
+      retrieval:
+        type: number
     type: object
   github_com_muty_nexus_internal_model.SearchResult:
     properties:
@@ -86,6 +105,8 @@ definitions:
     properties:
       completed_at:
         type: string
+      connector_id:
+        type: string
       connector_name:
         type: string
       connector_type:
@@ -106,6 +127,18 @@ definitions:
         description: '"running", "completed", "failed"'
         type: string
     type: object
+  internal_api.authResponse:
+    properties:
+      token:
+        type: string
+      user:
+        $ref: '#/definitions/internal_api.userResponse'
+    type: object
+  internal_api.changePasswordRequest:
+    properties:
+      password:
+        type: string
+    type: object
   internal_api.connectorResponse:
     properties:
       config:
@@ -123,11 +156,15 @@ definitions:
         type: string
       schedule:
         type: string
+      shared:
+        type: boolean
       status:
         type: string
       type:
         type: string
       updated_at:
+        type: string
+      user_id:
         type: string
     type: object
   internal_api.createConnectorRequest:
@@ -141,7 +178,18 @@ definitions:
         type: string
       schedule:
         type: string
+      shared:
+        type: boolean
       type:
+        type: string
+    type: object
+  internal_api.createUserRequest:
+    properties:
+      password:
+        type: string
+      role:
+        type: string
+      username:
         type: string
     type: object
   internal_api.embeddingSettingsRequest:
@@ -166,6 +214,38 @@ definitions:
       provider:
         type: string
     type: object
+  internal_api.loginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_api.registerRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
+  internal_api.rerankSettingsRequest:
+    properties:
+      api_key:
+        type: string
+      model:
+        type: string
+      provider:
+        type: string
+    type: object
+  internal_api.rerankSettingsResponse:
+    properties:
+      api_key:
+        type: string
+      model:
+        type: string
+      provider:
+        type: string
+    type: object
   internal_api.updateConnectorRequest:
     properties:
       config:
@@ -177,7 +257,18 @@ definitions:
         type: string
       schedule:
         type: string
+      shared:
+        type: boolean
       type:
+        type: string
+    type: object
+  internal_api.userResponse:
+    properties:
+      id:
+        type: string
+      role:
+        type: string
+      username:
         type: string
     type: object
 host: localhost:8080
@@ -188,6 +279,73 @@ info:
   title: Nexus API
   version: "1.0"
 paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.authResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Login
+      tags:
+      - auth
+  /auth/me:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.userResponse'
+      summary: Get current user
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Only available when no users exist. Creates the first user as admin.
+      parameters:
+      - description: Credentials
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.registerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.authResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "403":
+          description: Registration disabled
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Register first admin user
+      tags:
+      - auth
   /connectors:
     get:
       produces:
@@ -493,6 +651,45 @@ paths:
       summary: Update embedding settings
       tags:
       - settings
+  /settings/rerank:
+    get:
+      description: Returns current reranking provider configuration. API keys are
+        masked.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.rerankSettingsResponse'
+      summary: Get rerank settings
+      tags:
+      - settings
+    put:
+      consumes:
+      - application/json
+      description: Updates the reranking provider. Masked API keys (****...) are preserved.
+      parameters:
+      - description: Rerank settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.rerankSettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.rerankSettingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Update rerank settings
+      tags:
+      - settings
   /sync:
     get:
       produces:
@@ -616,4 +813,98 @@ paths:
       summary: Delete a single connector's sync cursor
       tags:
       - sync
+  /users:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.userResponse'
+            type: array
+      summary: List all users (admin only)
+      tags:
+      - users
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: User details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createUserRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.userResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "409":
+          description: Username taken
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Create a new user (admin only)
+      tags:
+      - users
+  /users/{id}:
+    delete:
+      parameters:
+      - description: User UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Delete a user (admin only)
+      tags:
+      - users
+  /users/{id}/password:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: User UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New password
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.changePasswordRequest'
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      summary: Change user password (admin or self)
+      tags:
+      - users
 swagger: "2.0"

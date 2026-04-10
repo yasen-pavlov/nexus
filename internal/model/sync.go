@@ -1,9 +1,13 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type SyncCursor struct {
-	ConnectorID string         `json:"connector_id"`
+	ConnectorID uuid.UUID      `json:"connector_id"`
 	CursorData  map[string]any `json:"cursor_data"`
 	LastSync    time.Time      `json:"last_sync"`
 	LastStatus  string         `json:"last_status"`

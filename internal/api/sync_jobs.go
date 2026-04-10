@@ -10,6 +10,7 @@ import (
 // SyncJob represents the state of an in-progress or completed sync operation.
 type SyncJob struct {
 	ID            string    `json:"id"`
+	ConnectorID   string    `json:"connector_id"`
 	ConnectorName string    `json:"connector_name"`
 	ConnectorType string    `json:"connector_type"`
 	Status        string    `json:"status"` // "running", "completed", "failed"
@@ -37,9 +38,10 @@ func NewSyncJobManager() *SyncJobManager {
 }
 
 // Start creates a new running sync job and returns it.
-func (m *SyncJobManager) Start(connectorName, connectorType string) *SyncJob {
+func (m *SyncJobManager) Start(connectorID uuid.UUID, connectorName, connectorType string) *SyncJob {
 	job := &SyncJob{
 		ID:            uuid.New().String(),
+		ConnectorID:   connectorID.String(),
 		ConnectorName: connectorName,
 		ConnectorType: connectorType,
 		Status:        "running",
@@ -67,12 +69,13 @@ func (m *SyncJobManager) Get(id string) *SyncJob {
 }
 
 // GetByConnector returns the most recent active (running) job for a connector, or nil.
-func (m *SyncJobManager) GetByConnector(name string) *SyncJob {
+func (m *SyncJobManager) GetByConnector(connectorID uuid.UUID) *SyncJob {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	idStr := connectorID.String()
 	for _, job := range m.jobs {
-		if job.ConnectorName == name && job.Status == "running" {
+		if job.ConnectorID == idStr && job.Status == "running" {
 			cp := *job
 			return &cp
 		}

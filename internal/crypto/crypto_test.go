@@ -36,6 +36,34 @@ func TestNewKey_WrongLength(t *testing.T) {
 	}
 }
 
+func TestEncrypt_InvalidKeyLength(t *testing.T) {
+	// AES only accepts 16, 24, or 32 byte keys. Anything else should fail.
+	_, err := Encrypt([]byte("too-short"), "plaintext")
+	if err == nil {
+		t.Error("expected error for invalid key length")
+	}
+}
+
+func TestIsSensitiveSettingsKey(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{"embedding_api_key", true},
+		{"rerank_api_key", true},
+		{"telegram_session_abc123", true},
+		{"telegram_session_", true},
+		{"embedding_provider", false},
+		{"random_key", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := IsSensitiveSettingsKey(tc.key); got != tc.want {
+			t.Errorf("IsSensitiveSettingsKey(%q) = %v, want %v", tc.key, got, tc.want)
+		}
+	}
+}
+
 func TestEncryptDecrypt_Roundtrip(t *testing.T) {
 	key := testKey(t)
 	plaintext := "my-secret-password"

@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/muty/nexus/internal/model"
 )
 
-func (s *Store) GetSyncCursor(ctx context.Context, connectorID string) (*model.SyncCursor, error) {
+func (s *Store) GetSyncCursor(ctx context.Context, connectorID uuid.UUID) (*model.SyncCursor, error) {
 	query := `SELECT connector_id, cursor_data, last_sync, last_status, items_synced FROM sync_cursors WHERE connector_id = $1`
 	row := s.pool.QueryRow(ctx, query, connectorID)
 
@@ -64,7 +65,7 @@ func (s *Store) DeleteAllSyncCursors(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) DeleteSyncCursor(ctx context.Context, connectorID string) error {
+func (s *Store) DeleteSyncCursor(ctx context.Context, connectorID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM sync_cursors WHERE connector_id = $1`, connectorID)
 	if err != nil {
 		return fmt.Errorf("store: delete sync cursor: %w", err)

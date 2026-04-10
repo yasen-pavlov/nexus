@@ -104,5 +104,17 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_RERANK_MODEL` — reranking model name (provider-specific defaults apply)
 - `NEXUS_RERANK_API_KEY` — API key for reranking (falls back to embedding key if same provider)
 - `NEXUS_ENCRYPTION_KEY` — 64-char hex string (32 bytes) for AES-256-GCM encryption of sensitive connector config fields (empty = disabled)
-- `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run)
+- `NEXUS_JWT_SECRET` — secret used to sign JWT session tokens. If empty, a random one is generated on each boot (which logs everyone out on restart). Set explicitly for stable sessions across restarts.
+- `NEXUS_CORS_ORIGINS` — comma-separated list of allowed CORS origins (default: `http://localhost:5173`)
+- `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run as a shared connector)
 - `NEXUS_FS_PATTERNS` — glob patterns (default: `*.txt,*.md`)
+
+## Authentication and authorization
+
+- Username + password auth with bcrypt-hashed passwords. Sessions are JWT-based (HS256, 24h expiry), signed with `NEXUS_JWT_SECRET`.
+- Two roles: `admin` and `user`. The first user to register becomes admin; subsequent registrations are disabled (admin creates additional users via `/api/users`).
+- The `/api/health` endpoint returns `setup_required: true` when no users exist — the frontend uses this to show the registration form.
+- Connectors are owned by a user (`user_id`) or marked `shared`. The schema enforces `(user_id IS NOT NULL OR shared = true)` so every connector either has an owner or is shared.
+- Search results are scoped per request: a user only sees chunks where `owner_id` matches them OR `shared = true`. The seeded filesystem connector (`NEXUS_FS_ROOT_PATH`) is always created as shared.
+- Connector handlers (`Get`/`Update`/`Delete`/`TriggerSync`/`DeleteCursor`/`StreamProgress`) all enforce ownership: a regular user can only modify their own connectors; admins can modify anything; users can read shared connectors but not mutate them.
+- Admin-only routes: `/api/settings/*`, `/api/reindex`, `/api/sync/cursors`, `/api/users/*`.

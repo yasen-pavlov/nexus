@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/model"
@@ -60,13 +62,43 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager)
 	return st, sc, cm
 }
 
+var testJWTSecret = []byte("test-jwt-secret-for-integration!")
+
+// createTestAdmin creates a test admin user in the DB and returns its UUID and a valid JWT.
+// Username is unique per test to avoid collisions in shared test databases.
+func createTestAdmin(t *testing.T, st *store.Store) (uuid.UUID, string) {
+	t.Helper()
+	username := fmt.Sprintf("testadmin-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+	user, err := st.CreateUser(context.Background(), username, "hash", "admin")
+	if err != nil {
+		t.Fatalf("create test admin: %v", err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, user.ID, user.Username, user.Role)
+	if err != nil {
+		t.Fatalf("generate test token: %v", err)
+	}
+	return user.ID, token
+}
+
+// authWrap wraps a router so unauthenticated requests get an injected admin token.
+// Tests that need to test auth specifically can set their own Authorization header.
+func authWrap(router http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		router.ServeHTTP(w, r)
+	})
+}
+
 func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManager, http.Handler) {
 	t.Helper()
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
-	return st, sc, cm, router
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	_, token := createTestAdmin(t, st)
+	return st, sc, cm, authWrap(router, token)
 }
 
 // --- Search tests ---
@@ -104,12 +136,15 @@ func TestSearchHandler_Integration(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
-	doc := &model.Document{
-		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "search-test.txt",
+	chunk := model.Chunk{
+		ID: "search-test.txt:0", ParentID: "search-test.txt", ChunkIndex: 0,
 		Title: "Search Test", Content: "This document contains searchable integration test content",
-		Metadata: map[string]any{"path": "search-test.txt"}, Visibility: "private", CreatedAt: time.Now(),
+		FullContent: "This document contains searchable integration test content",
+		SourceType:  "filesystem", SourceName: "test", SourceID: "search-test.txt",
+		Metadata: map[string]any{"path": "search-test.txt"}, Visibility: "private",
+		Shared: true, CreatedAt: time.Now(),
 	}
-	if err := sc.IndexDocument(ctx, doc); err != nil {
+	if err := sc.IndexChunks(ctx, []model.Chunk{chunk}); err != nil {
 		t.Fatal(err)
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
@@ -136,12 +171,15 @@ func TestSearchHandler_ScoreDetails(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
-	doc := &model.Document{
-		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "explain-test.txt",
+	chunk := model.Chunk{
+		ID: "explain-test.txt:0", ParentID: "explain-test.txt", ChunkIndex: 0,
 		Title: "Explain Test", Content: "Testing score details breakdown",
-		Metadata: map[string]any{"path": "explain-test.txt"}, Visibility: "private", CreatedAt: time.Now(),
+		FullContent: "Testing score details breakdown",
+		SourceType:  "filesystem", SourceName: "test", SourceID: "explain-test.txt",
+		Metadata: map[string]any{"path": "explain-test.txt"}, Visibility: "private",
+		Shared: true, CreatedAt: time.Now(),
 	}
-	if err := sc.IndexDocument(ctx, doc); err != nil {
+	if err := sc.IndexChunks(ctx, []model.Chunk{chunk}); err != nil {
 		t.Fatal(err)
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
@@ -184,13 +222,16 @@ func TestSearchHandler_NoScoreDetailsWithoutFlag(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
-	doc := &model.Document{
-		ID: uuid.New(), SourceType: "filesystem", SourceName: "test", SourceID: "no-explain.txt",
+	chunk := model.Chunk{
+		ID: "no-explain.txt:0", ParentID: "no-explain.txt", ChunkIndex: 0,
 		Title: "No Explain", Content: "Should not have score details",
-		Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
+		FullContent: "Should not have score details",
+		SourceType:  "filesystem", SourceName: "test", SourceID: "no-explain.txt",
+		Metadata: map[string]any{}, Visibility: "private",
+		Shared: true, CreatedAt: time.Now(),
 	}
-	sc.IndexDocument(ctx, doc) //nolint:errcheck // test
-	sc.Refresh(ctx)            //nolint:errcheck // test
+	sc.IndexChunks(ctx, []model.Chunk{chunk}) //nolint:errcheck // test
+	sc.Refresh(ctx)                           //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 
@@ -214,19 +255,23 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	ctx := context.Background()
 
+	var chunks []model.Chunk
 	for i, content := range []string{
 		"The searchterm appears in this first document about databases",
 		"Another document mentioning searchterm and also discussing servers",
 		"A third document with searchterm covering deployment topics",
 	} {
-		doc := &model.Document{
-			ID: uuid.New(), SourceType: "filesystem", SourceName: "test",
-			SourceID: fmt.Sprintf("param-%d.txt", i), Title: fmt.Sprintf("Doc %d", i), Content: content,
-			Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
-		}
-		sc.IndexDocument(ctx, doc) //nolint:errcheck // test
+		sourceID := fmt.Sprintf("param-%d.txt", i)
+		chunks = append(chunks, model.Chunk{
+			ID: sourceID + ":0", ParentID: sourceID, ChunkIndex: 0,
+			Title: fmt.Sprintf("Doc %d", i), Content: content, FullContent: content,
+			SourceType: "filesystem", SourceName: "test", SourceID: sourceID,
+			Metadata: map[string]any{}, Visibility: "private",
+			Shared: true, CreatedAt: time.Now(),
+		})
 	}
-	sc.Refresh(ctx) //nolint:errcheck // test
+	sc.IndexChunks(ctx, chunks) //nolint:errcheck // test
+	sc.Refresh(ctx)             //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
 
@@ -243,6 +288,111 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	docs, _ := data["documents"].([]any)
 	if len(docs) != 2 {
 		t.Errorf("expected 2 docs with limit=2, got %d", len(docs))
+	}
+}
+
+// TestSearchOwnershipScoping verifies the core security guarantee of Phase 6:
+// users only see their own documents + shared documents in search results.
+func TestSearchOwnershipScoping(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	// Create two users
+	alice, err := st.CreateUser(ctx, "alice", "hash", "user")
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, err := st.CreateUser(ctx, "bob", "hash", "user")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	// Index three chunks: one owned by alice, one owned by bob, one shared
+	makeChunk := func(id, ownerID string, shared bool, content string) model.Chunk {
+		return model.Chunk{
+			ID: id, ParentID: id, ChunkIndex: 0,
+			Title: "Doc " + id, Content: content, FullContent: content,
+			SourceType: "filesystem", SourceName: "test", SourceID: id,
+			Metadata: map[string]any{}, Visibility: "private",
+			OwnerID: ownerID, Shared: shared,
+			CreatedAt: time.Now(), IndexedAt: time.Now(),
+		}
+	}
+	chunks := []model.Chunk{
+		makeChunk("alice-doc", alice.ID.String(), false, "uniqueterm appears in alice's private document"),
+		makeChunk("bob-doc", bob.ID.String(), false, "uniqueterm appears in bob's private document"),
+		makeChunk("shared-doc", "", true, "uniqueterm appears in a shared document"),
+	}
+	if err := sc.IndexChunks(ctx, chunks); err != nil {
+		t.Fatalf("index chunks: %v", err)
+	}
+	sc.Refresh(ctx) //nolint:errcheck // test
+
+
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+
+	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
+		t.Helper()
+		token, err := auth.GenerateToken(testJWTSecret, userID, username, role)
+		if err != nil {
+			t.Fatalf("token: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/search?q=uniqueterm", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("search as %s: expected 200, got %d; body: %s", username, w.Code, w.Body.String())
+		}
+		var resp APIResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		data, _ := resp.Data.(map[string]any)
+		docs, _ := data["documents"].([]any)
+		ids := make([]string, 0, len(docs))
+		for _, d := range docs {
+			doc, _ := d.(map[string]any)
+			if sid, ok := doc["source_id"].(string); ok {
+				ids = append(ids, sid)
+			}
+		}
+		return ids
+	}
+
+	contains := func(ids []string, id string) bool {
+		for _, s := range ids {
+			if s == id {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Alice should see her doc + shared, NOT bob's
+	aliceResults := doSearch(t, alice.ID, "alice", "user")
+	if !contains(aliceResults, "alice-doc") {
+		t.Errorf("alice should see alice-doc, got %v", aliceResults)
+	}
+	if !contains(aliceResults, "shared-doc") {
+		t.Errorf("alice should see shared-doc, got %v", aliceResults)
+	}
+	if contains(aliceResults, "bob-doc") {
+		t.Errorf("alice should NOT see bob-doc, got %v", aliceResults)
+	}
+
+	// Bob should see his doc + shared, NOT alice's
+	bobResults := doSearch(t, bob.ID, "bob", "user")
+	if !contains(bobResults, "bob-doc") {
+		t.Errorf("bob should see bob-doc, got %v", bobResults)
+	}
+	if !contains(bobResults, "shared-doc") {
+		t.Errorf("bob should see shared-doc, got %v", bobResults)
+	}
+	if contains(bobResults, "alice-doc") {
+		t.Errorf("bob should NOT see alice-doc, got %v", bobResults)
 	}
 }
 
@@ -304,8 +454,11 @@ func TestTriggerSyncHandler_Integration(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: expected 201, got %d", w.Code)
 	}
+	var createResp APIResponse
+	json.NewDecoder(w.Body).Decode(&createResp) //nolint:errcheck // test
+	connID := createResp.Data.(map[string]any)["id"].(string)
 
-	req = httptest.NewRequest(http.MethodPost, "/api/sync/sync-test", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/sync/"+connID, nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -332,7 +485,7 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "err-sync",
-		Config: map[string]any{"root_path": dir, "patterns": "*.txt"}, Enabled: true,
+		Config: map[string]any{"root_path": dir, "patterns": "*.txt"}, Enabled: true, Shared: true,
 	}
 	if err := cm.Add(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -346,9 +499,14 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
-	r.Post("/api/sync/{connector}", h.TriggerSync)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, withAdminContext(req))
+		})
+	})
+	r.Post("/api/sync/{id}", h.TriggerSync)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sync/err-sync", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sync/"+cfg.ID.String(), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -360,7 +518,7 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 	// Wait for background goroutine to fail
 	time.Sleep(500 * time.Millisecond)
 
-	job := sjm.GetByConnector("err-sync")
+	job := sjm.GetByConnector(cfg.ID)
 	// Job should have completed (with failure), so GetByConnector returns nil for running
 	if job != nil {
 		t.Errorf("expected no running job, got %v", job.Status)
@@ -533,7 +691,7 @@ func TestSetScheduleObserver(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "obs-test",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true,
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
 	}
 	if err := cm.Add(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -602,6 +760,125 @@ func TestSearchHandler_SearchError(t *testing.T) {
 	}
 }
 
+func TestUpdateConnector_DuplicateName(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Create two connectors
+	dirA := t.TempDir()
+	bodyA := `{"type":"filesystem","name":"first-conn","config":{"root_path":"` + dirA + `","patterns":"*.txt"},"enabled":true}`
+	reqA := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(bodyA))
+	reqA.Header.Set("Content-Type", "application/json")
+	wA := httptest.NewRecorder()
+	router.ServeHTTP(wA, reqA)
+	if wA.Code != http.StatusCreated {
+		t.Fatalf("create A: %d %s", wA.Code, wA.Body.String())
+	}
+
+	dirB := t.TempDir()
+	bodyB := `{"type":"filesystem","name":"second-conn","config":{"root_path":"` + dirB + `","patterns":"*.txt"},"enabled":true}`
+	reqB := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(bodyB))
+	reqB.Header.Set("Content-Type", "application/json")
+	wB := httptest.NewRecorder()
+	router.ServeHTTP(wB, reqB)
+	if wB.Code != http.StatusCreated {
+		t.Fatalf("create B: %d %s", wB.Code, wB.Body.String())
+	}
+	var respB APIResponse
+	json.NewDecoder(wB.Body).Decode(&respB) //nolint:errcheck // test
+	bID := respB.Data.(map[string]any)["id"].(string)
+
+	// Try to rename B to "first-conn" — should 409
+	updateBody := `{"type":"filesystem","name":"first-conn","config":{"root_path":"` + dirB + `","patterns":"*.txt"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/connectors/"+bID, bytes.NewBufferString(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for duplicate rename, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateConnector_NilConfig(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	// Submit without a config field — handler should default to empty map
+	body := `{"type":"filesystem","name":"nilcfg","enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	// Filesystem connector requires root_path so it'll fail validation, but the
+	// handler should at least reach validation rather than panicking on nil map.
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing root_path, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConnectorManager_LoadFromDB_SkipsDisabled(t *testing.T) {
+	st, _, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "disabled-conn",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Enabled: false, Shared: true,
+	}
+	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.LoadFromDB(ctx); err != nil {
+		t.Fatalf("load from db: %v", err)
+	}
+	if _, _, ok := cm.GetByID(cfg.ID); ok {
+		t.Error("disabled connector should not be in the manager")
+	}
+}
+
+func TestConnectorManager_LoadFromDB_StoreError(t *testing.T) {
+	st, _, cm := newTestDeps(t)
+	st.Close()
+	if err := cm.LoadFromDB(context.Background()); err == nil {
+		t.Error("expected error from closed store")
+	}
+}
+
+func TestConnectorManager_Update_DisableRemovesFromMap(t *testing.T) {
+	st, _, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "to-disable",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := cm.GetByID(cfg.ID); !ok {
+		t.Fatal("expected connector to be present after Add")
+	}
+
+	cfg.Enabled = false
+	if err := cm.Update(ctx, cfg); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if _, _, ok := cm.GetByID(cfg.ID); ok {
+		t.Error("expected connector to be removed from manager after disable")
+	}
+	if _, err := st.GetConnectorConfig(ctx, cfg.ID); err != nil {
+		t.Errorf("connector should still exist in DB after disable: %v", err)
+	}
+}
+
+func TestConnectorManager_Remove_NotFound(t *testing.T) {
+	_, _, cm := newTestDeps(t)
+	if err := cm.Remove(context.Background(), uuid.New()); err == nil {
+		t.Error("expected error removing non-existent connector")
+	}
+}
+
 func TestConnectorManager_LoadFromDB_InvalidConfig(t *testing.T) {
 	st, _, cm := newTestDeps(t)
 	ctx := context.Background()
@@ -609,7 +886,7 @@ func TestConnectorManager_LoadFromDB_InvalidConfig(t *testing.T) {
 	// Create a connector with invalid config (nonexistent path) to trigger warning path
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "bad-config",
-		Config: map[string]any{"root_path": "/nonexistent/path/definitely", "patterns": "*.txt"}, Enabled: true,
+		Config: map[string]any{"root_path": "/nonexistent/path/definitely", "patterns": "*.txt"}, Enabled: true, Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -621,8 +898,7 @@ func TestConnectorManager_LoadFromDB_InvalidConfig(t *testing.T) {
 	}
 
 	// The invalid connector should NOT be in the map
-	_, ok := cm.Get("bad-config")
-	if ok {
+	if _, _, ok := cm.GetByID(cfg.ID); ok {
 		t.Error("expected invalid connector to be skipped")
 	}
 }
@@ -633,7 +909,7 @@ func TestConnectorManager_LoadFromDB(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "load-test",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true,
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -643,8 +919,7 @@ func TestConnectorManager_LoadFromDB(t *testing.T) {
 		t.Fatalf("load from db failed: %v", err)
 	}
 
-	_, ok := cm.Get("load-test")
-	if !ok {
+	if _, _, ok := cm.GetByID(cfg.ID); !ok {
 		t.Fatal("expected connector to be loaded")
 	}
 }
@@ -658,8 +933,15 @@ func TestConnectorManager_SeedFromEnv(t *testing.T) {
 		t.Fatalf("seed failed: %v", err)
 	}
 
-	_, ok := cm.Get("filesystem")
-	if !ok {
+	// Look up by name via cm.All() since seeded connector ID isn't exposed
+	found := false
+	for _, entry := range cm.All() {
+		if entry.Config.Name == "filesystem" {
+			found = true
+			break
+		}
+	}
+	if !found {
 		t.Fatal("expected filesystem connector after seeding")
 	}
 
@@ -694,11 +976,12 @@ func TestListConnectors_StoreError(t *testing.T) {
 
 func TestGetConnector_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
+	_, token := createTestAdmin(t, st)
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -710,11 +993,12 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 func TestDeleteConnector_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
+	_, token := createTestAdmin(t, st)
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -857,11 +1141,12 @@ func TestUpdateEmbeddingSettings_BadBody(t *testing.T) {
 
 func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
+	_, token := createTestAdmin(t, st)
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), zap.NewNop())
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -959,7 +1244,11 @@ func TestUpdateEmbeddingSettings_ProviderChange_TriggersReindex(t *testing.T) {
 	cw := httptest.NewRecorder()
 	router.ServeHTTP(cw, connReq)
 
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "reindex-trigger", CursorData: map[string]any{}})
+	// Pull the connector ID out of the response so we can persist a cursor for it
+	var connResp APIResponse
+	json.NewDecoder(cw.Body).Decode(&connResp) //nolint:errcheck // test
+	reindexConnID, _ := uuid.Parse(connResp.Data.(map[string]any)["id"].(string))
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: reindexConnID, CursorData: map[string]any{}})
 
 	// Change to a different model (same provider but different model triggers reindex)
 	body = `{"provider":"ollama","model":"all-minilm","ollama_url":"http://localhost:11434"}`
@@ -1105,9 +1394,54 @@ func TestTelegramAuthStart_MissingConfig(t *testing.T) {
 	}
 }
 
+// telegramAuthSetup creates a real telegram connector and returns its ID. Used
+// by tests that need a connector to exist before exercising the auth code path.
+func telegramAuthSetup(t *testing.T, router http.Handler, name string) string {
+	t.Helper()
+	body := `{"type":"telegram","name":"` + name + `","config":{"api_id":"12345","api_hash":"abc","phone":"+1234567890"},"enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create telegram connector: %d %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	return resp.Data.(map[string]any)["id"].(string)
+}
+
+func TestTelegramAuthCode_NotFound(t *testing.T) {
+	// Random UUID — connector doesn't exist, ownership check returns 404 first.
+	_, _, _, router := newTestRouter(t)
+	body := `{"code":"12345"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for non-existent connector, got %d", w.Code)
+	}
+}
+
+func TestTelegramAuthCode_InvalidID(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/not-a-uuid/auth/code", bytes.NewBufferString(`{"code":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
 func TestTelegramAuthCode_BadBody(t *testing.T) {
 	_, _, _, router := newTestRouter(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString("not json"))
+	connID := telegramAuthSetup(t, router, "auth-code-badbody")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/code", bytes.NewBufferString("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -1118,8 +1452,10 @@ func TestTelegramAuthCode_BadBody(t *testing.T) {
 
 func TestTelegramAuthCode_NoPending(t *testing.T) {
 	_, _, _, router := newTestRouter(t)
+	connID := telegramAuthSetup(t, router, "auth-code-nopending")
+
 	body := `{"code":"12345"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/code", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -1130,8 +1466,10 @@ func TestTelegramAuthCode_NoPending(t *testing.T) {
 
 func TestTelegramAuthCode_MissingCode(t *testing.T) {
 	_, _, _, router := newTestRouter(t)
+	connID := telegramAuthSetup(t, router, "auth-code-missing")
+
 	body := `{}`
-	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+uuid.New().String()+"/auth/code", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+connID+"/auth/code", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -1140,13 +1478,64 @@ func TestTelegramAuthCode_MissingCode(t *testing.T) {
 	}
 }
 
+// TestTelegramAuth_OwnershipEnforced verifies the C1 fix: a non-owner cannot
+// trigger Telegram auth flows on someone else's connector.
+func TestTelegramAuth_OwnershipEnforced(t *testing.T) {
+	router, _ := newAuthTestRouter(t)
+	admin, alice := setupAdminAndUser(t, router)
+
+	// Admin creates a private telegram connector owned by admin.
+	body := `{"type":"telegram","name":"admin-tg","config":{"api_id":"12345","api_hash":"adminhash","phone":"+1111111111"},"enabled":true}`
+	w := doJSON(t, router, http.MethodPost, "/api/connectors/", body, admin.token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create admin tg: %d %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	connID := resp.Data.(map[string]any)["id"].(string)
+
+	// Alice (regular user) tries to start Telegram auth on admin's connector.
+	w = doJSON(t, router, http.MethodPost, "/api/connectors/"+connID+"/auth/start", "", alice.token)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("alice start admin's flow: expected 404, got %d", w.Code)
+	}
+
+	// Alice tries to submit a code on admin's connector.
+	w = doJSON(t, router, http.MethodPost, "/api/connectors/"+connID+"/auth/code", `{"code":"12345"}`, alice.token)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("alice submit code on admin's flow: expected 404, got %d", w.Code)
+	}
+
+	// Admin can still access their own connector's auth endpoints (the start
+	// goroutine will fail in the background since the credentials are fake,
+	// but the synchronous response should still be 200).
+	w = doJSON(t, router, http.MethodPost, "/api/connectors/"+connID+"/auth/start", "", admin.token)
+	if w.Code != http.StatusOK {
+		t.Errorf("admin start own flow: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeleteAllCursors_Integration(t *testing.T) {
-	st, _, _, router := newTestRouter(t)
+	st, _, cm, router := newTestRouter(t)
 	ctx := context.Background()
 
-	// Create some cursors
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "a", CursorData: map[string]any{}})
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "b", CursorData: map[string]any{}})
+	// Create two real connectors and a cursor for each
+	cfgA := &model.ConnectorConfig{
+		Type: "filesystem", Name: "del-all-a",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	cfgB := &model.ConnectorConfig{
+		Type: "filesystem", Name: "del-all-b",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	if err := cm.Add(ctx, cfgA); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.Add(ctx, cfgB); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: cfgA.ID, CursorData: map[string]any{}})
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: cfgB.ID, CursorData: map[string]any{}})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors", nil)
 	w := httptest.NewRecorder()
@@ -1156,25 +1545,38 @@ func TestDeleteAllCursors_Integration(t *testing.T) {
 		t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
 
-	// Verify cursors are gone
-	c, _ := st.GetSyncCursor(ctx, "a")
-	if c != nil {
-		t.Error("cursor 'a' should be deleted")
+	if c, _ := st.GetSyncCursor(ctx, cfgA.ID); c != nil {
+		t.Error("cursor for cfgA should be deleted")
 	}
-	c, _ = st.GetSyncCursor(ctx, "b")
-	if c != nil {
-		t.Error("cursor 'b' should be deleted")
+	if c, _ := st.GetSyncCursor(ctx, cfgB.ID); c != nil {
+		t.Error("cursor for cfgB should be deleted")
 	}
 }
 
 func TestDeleteCursor_Integration(t *testing.T) {
-	st, _, _, router := newTestRouter(t)
+	st, _, cm, router := newTestRouter(t)
 	ctx := context.Background()
 
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "keep", CursorData: map[string]any{}})
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "delete-me", CursorData: map[string]any{}})
+	// Create the connector to be cursor-deleted, plus another one whose cursor must be left alone
+	cfgKeep := &model.ConnectorConfig{
+		Type: "filesystem", Name: "keep",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	cfgDel := &model.ConnectorConfig{
+		Type: "filesystem", Name: "delete-me",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	if err := cm.Add(ctx, cfgKeep); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.Add(ctx, cfgDel); err != nil {
+		t.Fatal(err)
+	}
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/delete-me", nil)
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: cfgKeep.ID, CursorData: map[string]any{}})
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: cfgDel.ID, CursorData: map[string]any{}})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/"+cfgDel.ID.String(), nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -1182,13 +1584,11 @@ func TestDeleteCursor_Integration(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	c, _ := st.GetSyncCursor(ctx, "delete-me")
-	if c != nil {
-		t.Error("cursor 'delete-me' should be deleted")
+	if c, _ := st.GetSyncCursor(ctx, cfgDel.ID); c != nil {
+		t.Error("delete-me cursor should be deleted")
 	}
-	c, _ = st.GetSyncCursor(ctx, "keep")
-	if c == nil {
-		t.Error("cursor 'keep' should still exist")
+	if c, _ := st.GetSyncCursor(ctx, cfgKeep.ID); c == nil {
+		t.Error("keep cursor should still exist")
 	}
 }
 
@@ -1231,11 +1631,14 @@ func TestReindex_Integration(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: expected 201, got %d", w.Code)
 	}
+	var connResp APIResponse
+	json.NewDecoder(w.Body).Decode(&connResp) //nolint:errcheck // test
+	connID, _ := uuid.Parse(connResp.Data.(map[string]any)["id"].(string))
 
-	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: "reindex-test", CursorData: map[string]any{}})
+	_ = st.UpsertSyncCursor(ctx, &model.SyncCursor{ConnectorID: connID, CursorData: map[string]any{}})
 
 	// Verify cursor exists before reindex
-	c, _ := st.GetSyncCursor(ctx, "reindex-test")
+	c, _ := st.GetSyncCursor(ctx, connID)
 	if c == nil {
 		t.Fatal("cursor should exist before reindex")
 	}
@@ -1273,17 +1676,32 @@ func TestDeleteAllCursors_StoreError(t *testing.T) {
 }
 
 func TestDeleteCursor_StoreError(t *testing.T) {
-	st, sc, _ := newTestDeps(t)
+	st, sc, cm := newTestDeps(t)
+
+	// Create a connector so the ownership check passes; then close the store
+	// so the actual DeleteSyncCursor call fails.
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "test",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	sjm := NewSyncJobManager()
-	h := &handler{store: st, search: sc, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
+	h := &handler{store: st, search: sc, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
-	r.Delete("/api/sync/cursors/{connector}", h.DeleteCursor)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, withAdminContext(req))
+		})
+	})
+	r.Delete("/api/sync/cursors/{id}", h.DeleteCursor)
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/test", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/"+cfg.ID.String(), nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -1396,20 +1814,28 @@ func TestStreamSyncProgress_Integration(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: expected 201, got %d", w.Code)
 	}
+	var createResp APIResponse
+	json.NewDecoder(w.Body).Decode(&createResp) //nolint:errcheck // test
+	connID := createResp.Data.(map[string]any)["id"].(string)
 
 	// Trigger sync
-	req = httptest.NewRequest(http.MethodPost, "/api/sync/sse-test", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/sync/"+connID, nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("sync: expected 202, got %d", w.Code)
 	}
 
-	// Start SSE stream via real HTTP server
+	// Start SSE stream via real HTTP server. The router used by the test wraps
+	// requests with an admin token via authWrap, but EventSource (and net/http
+	// Get here) won't get that injection because the wrapper is bound to the
+	// in-process handler. Pass the token via ?token= which the auth middleware
+	// accepts as a fallback (used for SSE in production too).
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/api/sync/sse-test/progress")
+	tok, _ := auth.GenerateToken(testJWTSecret, uuid.New(), "admin", "admin")
+	resp, err := http.Get(srv.URL + "/api/sync/" + connID + "/progress?token=" + tok)
 	if err != nil {
 		t.Fatalf("SSE request failed: %v", err)
 	}
@@ -1423,7 +1849,7 @@ func TestStreamSyncProgress_Integration(t *testing.T) {
 func TestStreamSyncProgress_NotFound_Integration(t *testing.T) {
 	_, _, _, router := newTestRouter(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sync/nonexistent/progress", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/sync/"+uuid.New().String()+"/progress", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

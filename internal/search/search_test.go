@@ -296,6 +296,102 @@ func TestIndexChunks(t *testing.T) {
 	}
 }
 
+func TestUpdateOwnershipBySource(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Index chunks for two sources, plus one chunk on a third source we will not touch.
+	chunks := []model.Chunk{
+		{
+			ID: "fs:owned:a:0", ParentID: "fs:owned:a", Title: "A", Content: "alpha content",
+			SourceType: "filesystem", SourceName: "owned", SourceID: "a",
+			OwnerID:   "user-1",
+			Shared:    false,
+			CreatedAt: now,
+		},
+		{
+			ID: "fs:owned:b:0", ParentID: "fs:owned:b", Title: "B", Content: "beta content",
+			SourceType: "filesystem", SourceName: "owned", SourceID: "b",
+			OwnerID:   "user-1",
+			Shared:    false,
+			CreatedAt: now,
+		},
+		{
+			ID: "fs:other:c:0", ParentID: "fs:other:c", Title: "C", Content: "gamma content",
+			SourceType: "filesystem", SourceName: "other", SourceID: "c",
+			OwnerID:   "user-1",
+			Shared:    false,
+			CreatedAt: now,
+		},
+	}
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatalf("index chunks: %v", err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	visibleTo := func(t *testing.T, owner string) map[string]bool {
+		t.Helper()
+		res, err := c.Search(ctx, model.SearchRequest{Query: "alpha OR beta OR gamma", Limit: 10, OwnerID: owner})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make(map[string]bool)
+		for _, d := range res.Documents {
+			out[d.SourceID] = true
+		}
+		return out
+	}
+
+	// Before any flip: user-1 sees all three (owns them); user-2 sees nothing.
+	if got := visibleTo(t, "user-1"); !got["a"] || !got["b"] || !got["c"] {
+		t.Errorf("baseline: user-1 should own a,b,c, got %+v", got)
+	}
+	if got := visibleTo(t, "user-2"); len(got) != 0 {
+		t.Errorf("baseline: user-2 should see nothing, got %+v", got)
+	}
+
+	// Flip "owned" to shared with no owner.
+	if err := c.UpdateOwnershipBySource(ctx, "filesystem", "owned", "", true); err != nil {
+		t.Fatalf("update ownership: %v", err)
+	}
+
+	// user-2 should now see a and b (via shared) but NOT c (still private under user-1).
+	got := visibleTo(t, "user-2")
+	if !got["a"] || !got["b"] {
+		t.Errorf("user-2 should see a and b after flip to shared, got %+v", got)
+	}
+	if got["c"] {
+		t.Errorf("user-2 should NOT see c (different source, still private), got %+v", got)
+	}
+
+	// Flip back to private and reassign to user-3.
+	if err := c.UpdateOwnershipBySource(ctx, "filesystem", "owned", "user-3", false); err != nil {
+		t.Fatalf("update back: %v", err)
+	}
+
+	// user-3 now owns a and b.
+	got = visibleTo(t, "user-3")
+	if !got["a"] || !got["b"] {
+		t.Errorf("user-3 should now own a and b, got %+v", got)
+	}
+
+	// user-2 should no longer see a and b after they went private.
+	got = visibleTo(t, "user-2")
+	if got["a"] || got["b"] {
+		t.Errorf("user-2 should no longer see a/b after they went private, got %+v", got)
+	}
+
+	// user-1 should still own c (was never touched).
+	got = visibleTo(t, "user-1")
+	if !got["c"] {
+		t.Errorf("user-1 should still own c, got %+v", got)
+	}
+	if got["a"] || got["b"] {
+		t.Errorf("user-1 should no longer see a/b after reassign to user-3, got %+v", got)
+	}
+}
+
 func TestIndexChunks_Empty(t *testing.T) {
 	c := newTestClient(t)
 	if err := c.IndexChunks(context.Background(), nil); err != nil {

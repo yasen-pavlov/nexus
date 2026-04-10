@@ -16,7 +16,7 @@ func TestOperationsOnClosedStore(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("get cursor on closed store", func(t *testing.T) {
-		_, err := st.GetSyncCursor(ctx, "test")
+		_, err := st.GetSyncCursor(ctx, uuid.New())
 		if err == nil {
 			t.Error("expected error on closed store")
 		}
@@ -24,7 +24,7 @@ func TestOperationsOnClosedStore(t *testing.T) {
 
 	t.Run("upsert cursor on closed store", func(t *testing.T) {
 		cursor := &model.SyncCursor{
-			ConnectorID: "test", CursorData: map[string]any{},
+			ConnectorID: uuid.New(), CursorData: map[string]any{},
 			LastSync: time.Now(), LastStatus: "test", ItemsSynced: 0,
 		}
 		err := st.UpsertSyncCursor(ctx, cursor)
@@ -34,7 +34,7 @@ func TestOperationsOnClosedStore(t *testing.T) {
 	})
 
 	t.Run("delete cursor on closed store", func(t *testing.T) {
-		err := st.DeleteSyncCursor(ctx, "test")
+		err := st.DeleteSyncCursor(ctx, uuid.New())
 		if err == nil {
 			t.Error("expected error on closed store")
 		}
@@ -100,6 +100,29 @@ func TestOperationsOnClosedStore(t *testing.T) {
 
 	t.Run("update last_run on closed store", func(t *testing.T) {
 		err := st.UpdateLastRun(ctx, uuid.New(), time.Now())
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("set settings batch on closed store", func(t *testing.T) {
+		err := st.SetSettings(ctx, map[string]string{"a": "1"})
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("delete all sync cursors on closed store", func(t *testing.T) {
+		err := st.DeleteAllSyncCursors(ctx)
+		if err == nil {
+			t.Error("expected error on closed store")
+		}
+	})
+
+	t.Run("encrypt existing settings on closed store", func(t *testing.T) {
+		// SetEncryptionKey is required for the function to actually try to query
+		st.SetEncryptionKey([]byte("01234567890123456789012345678901"))
+		_, err := st.EncryptExistingSettings(ctx)
 		if err == nil {
 			t.Error("expected error on closed store")
 		}

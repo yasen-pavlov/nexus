@@ -12,6 +12,7 @@ import {
   type CreateConnectorRequest,
   type SyncJob,
 } from './api';
+import { useAuth } from './AuthContext';
 
 interface Props {
   onClose: () => void;
@@ -53,6 +54,10 @@ const CONFIG_FIELDS: Record<string, { key: string; label: string; placeholder: s
 };
 
 export default function ConnectorManager({ onClose }: Props) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const canModify = (conn: ConnectorConfig) =>
+    isAdmin || (!!conn.user_id && conn.user_id === user?.id);
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [editing, setEditing] = useState<ConnectorConfig | null>(null);
   const [creating, setCreating] = useState(false);
@@ -102,18 +107,18 @@ export default function ConnectorManager({ onClose }: Props) {
     }
   };
 
-  const handleSync = async (name: string) => {
+  const handleSync = async (conn: ConnectorConfig) => {
     setError('');
     try {
-      const job = await triggerSync(name);
-      setSyncJobs((prev) => ({ ...prev, [name]: job }));
+      const job = await triggerSync(conn.id);
+      setSyncJobs((prev) => ({ ...prev, [conn.name]: job }));
 
       const cleanup = streamSyncProgress(
-        name,
-        (update) => setSyncJobs((prev) => ({ ...prev, [name]: update })),
-        () => { delete cleanupRefs.current[name]; },
+        conn.id,
+        (update) => setSyncJobs((prev) => ({ ...prev, [conn.name]: update })),
+        () => { delete cleanupRefs.current[conn.name]; },
       );
-      cleanupRefs.current[name] = cleanup;
+      cleanupRefs.current[conn.name] = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
     }
@@ -243,10 +248,11 @@ export default function ConnectorManager({ onClose }: Props) {
                 <span className="cm-card-name">{conn.name}</span>
                 <span className="cm-card-type">{conn.type}</span>
                 <span className={`cm-card-status cm-status-${conn.status}`}>{conn.status}</span>
+                {conn.shared && <span className="cm-card-status cm-status-shared">shared</span>}
                 {!conn.enabled && <span className="cm-card-status cm-status-disabled">disabled</span>}
               </div>
               <div className="cm-card-actions">
-                {conn.type === 'telegram' && (
+                {conn.type === 'telegram' && canModify(conn) && (
                   <button
                     className="cm-btn cm-btn-sm cm-btn-primary"
                     onClick={() => handleAuthStart(conn.id)}
@@ -254,25 +260,31 @@ export default function ConnectorManager({ onClose }: Props) {
                     Connect
                   </button>
                 )}
-                <button
-                  className="cm-btn cm-btn-sm"
-                  onClick={() => handleSync(conn.name)}
-                  disabled={syncJobs[conn.name]?.status === 'running' || !conn.enabled}
-                >
-                  {syncJobs[conn.name]?.status === 'running' ? 'Syncing...' : 'Sync'}
-                </button>
-                <button
-                  className="cm-btn cm-btn-sm"
-                  onClick={() => { setEditing(conn); setCreating(false); }}
-                >
-                  Edit
-                </button>
-                <button
-                  className="cm-btn cm-btn-sm cm-btn-danger"
-                  onClick={() => handleDelete(conn.id)}
-                >
-                  Delete
-                </button>
+                {canModify(conn) && (
+                  <button
+                    className="cm-btn cm-btn-sm"
+                    onClick={() => handleSync(conn)}
+                    disabled={syncJobs[conn.name]?.status === 'running' || !conn.enabled}
+                  >
+                    {syncJobs[conn.name]?.status === 'running' ? 'Syncing...' : 'Sync'}
+                  </button>
+                )}
+                {canModify(conn) && (
+                  <button
+                    className="cm-btn cm-btn-sm"
+                    onClick={() => { setEditing(conn); setCreating(false); }}
+                  >
+                    Edit
+                  </button>
+                )}
+                {canModify(conn) && (
+                  <button
+                    className="cm-btn cm-btn-sm cm-btn-danger"
+                    onClick={() => handleDelete(conn.id)}
+                  >
+                    Delete
+                  </button>
+                )}
               </div>
             </div>
             <div className="cm-card-config">
@@ -303,6 +315,7 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
   const [type, setType] = useState(initial?.type || 'filesystem');
   const [name, setName] = useState(initial?.name || '');
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [shared, setShared] = useState(initial?.shared ?? false);
   const [schedule, setSchedule] = useState(initial?.schedule || '');
   const [configValues, setConfigValues] = useState<Record<string, string>>(() => {
     if (initial?.config) {
@@ -325,7 +338,7 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
         config[field.key] = configValues[field.key];
       }
     }
-    onSubmit({ type, name, config, enabled, schedule });
+    onSubmit({ type, name, config, enabled, schedule, shared });
   };
 
   return (
@@ -379,6 +392,17 @@ function ConnectorForm({ initial, onSubmit, onCancel }: FormProps) {
           />
           {' '}Enabled
         </label>
+      </div>
+      <div className="cm-form-row">
+        <label>
+          <input
+            type="checkbox"
+            checked={shared}
+            onChange={(e) => setShared(e.target.checked)}
+          />
+          {' '}Shared
+        </label>
+        <span className="cm-form-hint">When enabled, all users can search documents from this connector. Otherwise, only you can see them.</span>
       </div>
       <div className="cm-form-actions">
         <button type="submit" className="cm-btn cm-btn-primary">

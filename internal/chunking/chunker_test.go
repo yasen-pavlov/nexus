@@ -137,3 +137,48 @@ func TestSplit_VeryLargeOverlap(t *testing.T) {
 		t.Error("expected at least 1 chunk")
 	}
 }
+
+func TestSplit_ByteBoundedSingleWord(t *testing.T) {
+	// A single very long "word" with no whitespace — like a base64 attachment.
+	// Word count is 1 (well under maxTokens) but byte count is huge.
+	bigWord := strings.Repeat("A", MaxChunkBytes*3+50)
+	chunks := Split(bigWord, 500, 100)
+
+	if len(chunks) < 4 {
+		t.Errorf("expected at least 4 byte-bounded chunks, got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if len(c.Text) > MaxChunkBytes {
+			t.Errorf("chunk %d exceeds MaxChunkBytes: %d > %d", i, len(c.Text), MaxChunkBytes)
+		}
+		if c.Index != i {
+			t.Errorf("chunk %d has Index=%d", i, c.Index)
+		}
+	}
+}
+
+func TestSplit_ByteBoundedMixedContent(t *testing.T) {
+	// Realistic email-like content: some normal text followed by a giant base64 blob
+	prose := strings.Repeat("Hello world this is a normal email body. ", 50)
+	blob := strings.Repeat("a", MaxChunkBytes*2)
+	text := prose + blob
+
+	chunks := Split(text, 500, 100)
+	for i, c := range chunks {
+		if len(c.Text) > MaxChunkBytes {
+			t.Errorf("chunk %d exceeds MaxChunkBytes: %d > %d", i, len(c.Text), MaxChunkBytes)
+		}
+	}
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks for blob input, got %d", len(chunks))
+	}
+}
+
+func TestSplit_ShortTextOverByteLimit(t *testing.T) {
+	// Word count well under maxTokens but a single word over MaxChunkBytes
+	bigWord := strings.Repeat("x", MaxChunkBytes*2)
+	chunks := Split(bigWord, 500, 100)
+	if len(chunks) < 2 {
+		t.Errorf("expected at least 2 chunks (byte-bounded), got %d", len(chunks))
+	}
+}

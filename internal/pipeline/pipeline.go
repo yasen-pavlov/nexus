@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/chunking"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/embedding"
@@ -49,23 +50,20 @@ func New(store *store.Store, search *search.Client, embeddings EmbedderProvider,
 // ProgressFunc is called with (total, processed, errors) as documents are indexed.
 type ProgressFunc func(total, processed, errors int)
 
-// Run fetches documents from a connector, chunks them, generates embeddings, and indexes them.
-func (p *Pipeline) Run(ctx context.Context, conn connector.Connector) (*SyncReport, error) {
-	return p.RunWithProgress(ctx, conn, nil)
-}
-
-// RunWithProgress is like Run but calls progress after each document is processed.
-func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector, progress ProgressFunc) (*SyncReport, error) {
+// RunWithProgress fetches documents from a connector, chunks them, generates embeddings, and indexes them.
+// connectorID identifies the connector in the sync_cursors table; ownerID and shared are
+// written to each indexed chunk for search scoping. progress may be nil.
+func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, conn connector.Connector, ownerID string, shared bool, progress ProgressFunc) (*SyncReport, error) {
 	start := time.Now()
-	connID := conn.Name()
+	connName := conn.Name()
 
-	p.log.Info("sync started", zap.String("connector", connID), zap.String("type", conn.Type()))
+	p.log.Info("sync started", zap.String("connector", connName), zap.String("type", conn.Type()))
 
 	if p.store == nil {
 		return nil, fmt.Errorf("pipeline: store not configured")
 	}
 
-	cursor, err := p.store.GetSyncCursor(ctx, connID)
+	cursor, err := p.store.GetSyncCursor(ctx, connectorID)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: get cursor: %w", err)
 	}
@@ -106,6 +104,8 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector
 				Metadata:   doc.Metadata,
 				URL:        doc.URL,
 				Visibility: doc.Visibility,
+				OwnerID:    ownerID,
+				Shared:     shared,
 				CreatedAt:  doc.CreatedAt,
 			}
 			if tc.Index == 0 {
@@ -150,13 +150,16 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector
 	}
 
 	if result.Cursor != nil {
+		// Override whatever the connector set as ConnectorID — it doesn't know
+		// the configured UUID. The store keys cursors by connector UUID.
+		result.Cursor.ConnectorID = connectorID
 		if err := p.store.UpsertSyncCursor(ctx, result.Cursor); err != nil {
 			return nil, fmt.Errorf("pipeline: update cursor: %w", err)
 		}
 	}
 
 	report := &SyncReport{
-		ConnectorName: connID,
+		ConnectorName: connName,
 		ConnectorType: conn.Type(),
 		DocsProcessed: len(result.Documents),
 		Errors:        errCount,
@@ -164,7 +167,7 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, conn connector.Connector
 	}
 
 	p.log.Info("sync completed",
-		zap.String("connector", connID),
+		zap.String("connector", connName),
 		zap.Int("docs", report.DocsProcessed),
 		zap.Int("errors", report.Errors),
 		zap.Duration("duration", report.Duration),

@@ -16,27 +16,41 @@ import (
 
 type mockConnectorGetter struct {
 	mu         sync.RWMutex
-	connectors map[string]connector.Connector
+	connectors map[uuid.UUID]connector.Connector
+	configs    map[uuid.UUID]*model.ConnectorConfig
 }
 
-func (m *mockConnectorGetter) Get(name string) (connector.Connector, bool) {
+func (m *mockConnectorGetter) GetByID(id uuid.UUID) (connector.Connector, *model.ConnectorConfig, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	c, ok := m.connectors[name]
-	return c, ok
+	c, ok := m.connectors[id]
+	if !ok {
+		return nil, nil, false
+	}
+	if cfg, ok := m.configs[id]; ok {
+		return c, cfg, true
+	}
+	return c, &model.ConnectorConfig{ID: id}, true
+}
+
+type pipelineCall struct {
+	connectorID uuid.UUID
+	name        string
+	ownerID     string
+	shared      bool
 }
 
 type mockPipelineRunner struct {
 	mu     sync.Mutex
-	calls  []string
+	calls  []pipelineCall
 	err    error
 	report *pipeline.SyncReport
 }
 
-func (m *mockPipelineRunner) Run(_ context.Context, conn connector.Connector) (*pipeline.SyncReport, error) {
+func (m *mockPipelineRunner) RunWithProgress(_ context.Context, connectorID uuid.UUID, conn connector.Connector, ownerID string, shared bool, _ pipeline.ProgressFunc) (*pipeline.SyncReport, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, conn.Name())
+	m.calls = append(m.calls, pipelineCall{connectorID: connectorID, name: conn.Name(), ownerID: ownerID, shared: shared})
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -46,10 +60,10 @@ func (m *mockPipelineRunner) Run(_ context.Context, conn connector.Connector) (*
 	return &pipeline.SyncReport{ConnectorName: conn.Name(), DocsProcessed: 1}, nil
 }
 
-func (m *mockPipelineRunner) getCalls() []string {
+func (m *mockPipelineRunner) getCalls() []pipelineCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make([]string, len(m.calls))
+	result := make([]pipelineCall, len(m.calls))
 	copy(result, m.calls)
 	return result
 }
@@ -104,8 +118,8 @@ func TestStartAndStop(t *testing.T) {
 			{ID: id, Type: "test", Name: "test-conn", Enabled: true, Schedule: "0 * * * *"},
 		},
 	}
-	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
-		"test-conn": &mockConn{name: "test-conn"},
+	cm := &mockConnectorGetter{connectors: map[uuid.UUID]connector.Connector{
+		id: &mockConn{name: "test-conn"},
 	}}
 
 	s := New(cm, &mockPipelineRunner{}, store, zap.NewNop())
@@ -228,14 +242,15 @@ func TestOnConnectorChanged_InvalidSchedule(t *testing.T) {
 }
 
 func TestRunSync_PipelineError(t *testing.T) {
-	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
-		"err": &mockConn{name: "err"},
+	id := uuid.New()
+	cm := &mockConnectorGetter{connectors: map[uuid.UUID]connector.Connector{
+		id: &mockConn{name: "err"},
 	}}
 	pipe := &mockPipelineRunner{err: fmt.Errorf("pipeline error")}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
 	s.ctx = context.Background()
 
-	s.runSync("err", uuid.New())
+	s.runSync(id)
 
 	if len(pipe.getCalls()) != 1 {
 		t.Errorf("expected 1 pipeline call, got %d", len(pipe.getCalls()))
@@ -243,8 +258,9 @@ func TestRunSync_PipelineError(t *testing.T) {
 }
 
 func TestRunSync_UpdateLastRunError(t *testing.T) {
-	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
-		"test": &mockConn{name: "test"},
+	id := uuid.New()
+	cm := &mockConnectorGetter{connectors: map[uuid.UUID]connector.Connector{
+		id: &mockConn{name: "test"},
 	}}
 	pipe := &mockPipelineRunner{}
 	store := &mockConfigLister{
@@ -253,16 +269,16 @@ func TestRunSync_UpdateLastRunError(t *testing.T) {
 	s := New(cm, pipe, store, zap.NewNop())
 	s.ctx = context.Background()
 
-	s.runSync("test", uuid.New())
+	s.runSync(id)
 	// Should complete without panic even if UpdateLastRun has issues
 }
 
 func TestRunSync_ConnectorNotFound(t *testing.T) {
-	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{}}
+	cm := &mockConnectorGetter{connectors: map[uuid.UUID]connector.Connector{}}
 	pipe := &mockPipelineRunner{}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
 
-	s.runSync("nonexistent", uuid.New())
+	s.runSync(uuid.New())
 
 	if len(pipe.getCalls()) != 0 {
 		t.Error("expected no pipeline calls for missing connector")
@@ -271,24 +287,80 @@ func TestRunSync_ConnectorNotFound(t *testing.T) {
 
 func TestRunSync_Success(t *testing.T) {
 	id := uuid.New()
-	cm := &mockConnectorGetter{connectors: map[string]connector.Connector{
-		"test": &mockConn{name: "test"},
+	cm := &mockConnectorGetter{connectors: map[uuid.UUID]connector.Connector{
+		id: &mockConn{name: "test"},
 	}}
 	pipe := &mockPipelineRunner{}
 	store := &mockConfigLister{}
 	s := New(cm, pipe, store, zap.NewNop())
 	s.ctx = context.Background()
 
-	s.runSync("test", id)
+	s.runSync(id)
 
 	calls := pipe.getCalls()
-	if len(calls) != 1 || calls[0] != "test" {
+	if len(calls) != 1 || calls[0].name != "test" {
 		t.Errorf("expected 1 pipeline call for 'test', got %v", calls)
+	}
+	if calls[0].connectorID != id {
+		t.Errorf("expected connectorID %v, got %v", id, calls[0].connectorID)
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, ok := store.lastRun[id]; !ok {
 		t.Error("expected last_run to be updated")
+	}
+}
+
+func TestRunSync_PropagatesOwnership(t *testing.T) {
+	id := uuid.New()
+	userID := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "owned"}},
+		configs: map[uuid.UUID]*model.ConnectorConfig{
+			id: {ID: id, Name: "owned", UserID: &userID, Shared: false},
+		},
+	}
+	pipe := &mockPipelineRunner{}
+	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	calls := pipe.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].ownerID != userID.String() {
+		t.Errorf("expected ownerID %q, got %q", userID.String(), calls[0].ownerID)
+	}
+	if calls[0].shared != false {
+		t.Errorf("expected shared=false, got %v", calls[0].shared)
+	}
+}
+
+func TestRunSync_PropagatesShared(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "shared-conn"}},
+		configs: map[uuid.UUID]*model.ConnectorConfig{
+			id: {ID: id, Name: "shared-conn", UserID: nil, Shared: true},
+		},
+	}
+	pipe := &mockPipelineRunner{}
+	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	calls := pipe.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].ownerID != "" {
+		t.Errorf("expected empty ownerID for shared connector, got %q", calls[0].ownerID)
+	}
+	if !calls[0].shared {
+		t.Error("expected shared=true")
 	}
 }

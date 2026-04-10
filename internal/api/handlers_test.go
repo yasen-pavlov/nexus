@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
@@ -34,19 +37,36 @@ func (m *mockConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.Fe
 }
 
 func newTestHandler() *handler {
+	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
 	cm := &ConnectorManager{
-		connectors: map[string]connector.Connector{
-			"test-fs": &mockConnector{name: "test-fs", typ: "filesystem"},
+		connectors: map[uuid.UUID]*connectorEntry{
+			testID: {
+				conn:   &mockConnector{name: "test-fs", typ: "filesystem"},
+				config: model.ConnectorConfig{ID: testID, Name: "test-fs", Type: "filesystem", Enabled: true, Shared: true},
+			},
 		},
 		log: zap.NewNop(),
 	}
 	return &handler{
-		cm:       cm,
-		rm:       NewRerankManager(nil, zap.NewNop()),
-		syncJobs: NewSyncJobManager(),
-		pipeline: pipeline.New(nil, nil, nil, zap.NewNop()),
-		log:      zap.NewNop(),
+		cm:        cm,
+		rm:        NewRerankManager(nil, zap.NewNop()),
+		syncJobs:  NewSyncJobManager(),
+		pipeline:  pipeline.New(nil, nil, nil, zap.NewNop()),
+		jwtSecret: []byte("test-secret"),
+		log:       zap.NewNop(),
 	}
+}
+
+// withAdminContext attaches admin claims to a request so handlers that rely on
+// auth context (canRead/canModify) work in unit tests.
+func withAdminContext(req *http.Request) *http.Request {
+	claims := &auth.Claims{
+		UserID:           uuid.New(),
+		Username:         "test-admin",
+		Role:             "admin",
+		RegisteredClaims: jwt.RegisteredClaims{},
+	}
+	return req.WithContext(auth.ContextWithClaims(req.Context(), claims))
 }
 
 func TestHealthHandler(t *testing.T) {
@@ -93,9 +113,9 @@ func TestTriggerSyncHandler_NotFound(t *testing.T) {
 	h := newTestHandler()
 
 	r := chi.NewRouter()
-	r.Post("/api/sync/{connector}", h.TriggerSync)
+	r.Post("/api/sync/{id}", h.TriggerSync)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sync/nonexistent", nil)
+	req := withAdminContext(httptest.NewRequest(http.MethodPost, "/api/sync/"+uuid.New().String(), nil))
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -105,16 +125,30 @@ func TestTriggerSyncHandler_NotFound(t *testing.T) {
 	}
 }
 
-func TestTriggerSyncHandler_Accepted(t *testing.T) {
+func TestTriggerSyncHandler_InvalidID(t *testing.T) {
 	h := newTestHandler()
-	// Need a pipeline for async sync to work — but since it runs in a goroutine,
-	// we just verify the 202 response. Pipeline is nil so the goroutine will fail
-	// silently in the background.
 
 	r := chi.NewRouter()
-	r.Post("/api/sync/{connector}", h.TriggerSync)
+	r.Post("/api/sync/{id}", h.TriggerSync)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sync/test-fs", nil)
+	req := withAdminContext(httptest.NewRequest(http.MethodPost, "/api/sync/not-a-uuid", nil))
+	w := httptest.NewRecorder()
+
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestTriggerSyncHandler_Accepted(t *testing.T) {
+	h := newTestHandler()
+	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+	r := chi.NewRouter()
+	r.Post("/api/sync/{id}", h.TriggerSync)
+
+	req := withAdminContext(httptest.NewRequest(http.MethodPost, "/api/sync/"+testID.String(), nil))
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -142,14 +176,13 @@ func TestTriggerSyncHandler_Accepted(t *testing.T) {
 
 func TestTriggerSyncHandler_Conflict(t *testing.T) {
 	h := newTestHandler()
-
-	// Start a job for test-fs
-	h.syncJobs.Start("test-fs", "filesystem")
+	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	h.syncJobs.Start(testID, "test-fs", "filesystem")
 
 	r := chi.NewRouter()
-	r.Post("/api/sync/{connector}", h.TriggerSync)
+	r.Post("/api/sync/{id}", h.TriggerSync)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sync/test-fs", nil)
+	req := withAdminContext(httptest.NewRequest(http.MethodPost, "/api/sync/"+testID.String(), nil))
 	w := httptest.NewRecorder()
 
 	r.ServeHTTP(w, req)
@@ -161,10 +194,21 @@ func TestTriggerSyncHandler_Conflict(t *testing.T) {
 
 func TestListSyncJobsHandler(t *testing.T) {
 	h := newTestHandler()
-	h.syncJobs.Start("a", "filesystem")
-	h.syncJobs.Start("b", "imap")
+	// ListSyncJobs filters jobs by connector visibility, so we add two extra
+	// shared connectors to the manager and start jobs against them.
+	id1, id2 := uuid.New(), uuid.New()
+	h.cm.connectors[id1] = &connectorEntry{
+		conn:   &mockConnector{name: "a", typ: "filesystem"},
+		config: model.ConnectorConfig{ID: id1, Name: "a", Type: "filesystem", Shared: true},
+	}
+	h.cm.connectors[id2] = &connectorEntry{
+		conn:   &mockConnector{name: "b", typ: "imap"},
+		config: model.ConnectorConfig{ID: id2, Name: "b", Type: "imap", Shared: true},
+	}
+	h.syncJobs.Start(id1, "a", "filesystem")
+	h.syncJobs.Start(id2, "b", "imap")
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sync", nil)
+	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/sync", nil))
 	w := httptest.NewRecorder()
 
 	h.ListSyncJobs(w, req)
@@ -181,6 +225,127 @@ func TestListSyncJobsHandler(t *testing.T) {
 	}
 	if len(resp.Data) != 2 {
 		t.Errorf("got %d jobs, want 2", len(resp.Data))
+	}
+}
+
+func TestGetConnectorHandler_InvalidID(t *testing.T) {
+	h := newTestHandler()
+	r := chi.NewRouter()
+	r.Get("/api/connectors/{id}", h.GetConnector)
+	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/connectors/not-a-uuid", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateConnectorHandler_InvalidID(t *testing.T) {
+	h := newTestHandler()
+	r := chi.NewRouter()
+	r.Put("/api/connectors/{id}", h.UpdateConnector)
+	req := withAdminContext(httptest.NewRequest(http.MethodPut, "/api/connectors/not-a-uuid", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteConnectorHandler_InvalidID(t *testing.T) {
+	h := newTestHandler()
+	r := chi.NewRouter()
+	r.Delete("/api/connectors/{id}", h.DeleteConnector)
+	req := withAdminContext(httptest.NewRequest(http.MethodDelete, "/api/connectors/not-a-uuid", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestStreamSyncProgressHandler_InvalidID(t *testing.T) {
+	h := newTestHandler()
+
+	r := chi.NewRouter()
+	r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
+
+	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/sync/not-a-uuid/progress", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestStreamSyncProgressHandler_NoActiveSync(t *testing.T) {
+	h := newTestHandler()
+	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+	r := chi.NewRouter()
+	r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
+
+	// Connector exists but no sync job is running for it
+	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/sync/"+testID.String()+"/progress", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for no active sync, got %d", w.Code)
+	}
+}
+
+func TestDeleteCursorHandler_InvalidID(t *testing.T) {
+	h := newTestHandler()
+
+	r := chi.NewRouter()
+	r.Delete("/api/sync/cursors/{id}", h.DeleteCursor)
+
+	req := withAdminContext(httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/bad-uuid", nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestDeleteCursorHandler_NotFound(t *testing.T) {
+	h := newTestHandler()
+
+	r := chi.NewRouter()
+	r.Delete("/api/sync/cursors/{id}", h.DeleteCursor)
+
+	req := withAdminContext(httptest.NewRequest(http.MethodDelete, "/api/sync/cursors/"+uuid.New().String(), nil))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// --- canRead/canModify helper edge cases ---
+
+func TestCanReadConnector_NilClaims(t *testing.T) {
+	if canReadConnector(nil, &model.ConnectorConfig{Shared: true}) {
+		t.Error("nil claims should never be allowed to read")
+	}
+}
+
+func TestCanModifyConnector_NilClaims(t *testing.T) {
+	if canModifyConnector(nil, &model.ConnectorConfig{Shared: true}) {
+		t.Error("nil claims should never be allowed to modify")
+	}
+}
+
+func TestCanReadConnector_NonAdminPrivateConnectorWithoutOwner(t *testing.T) {
+	// A private connector with no owner should not be readable by a non-admin user
+	claims := &auth.Claims{UserID: uuid.New(), Role: "user"}
+	cfg := &model.ConnectorConfig{Shared: false, UserID: nil}
+	if canReadConnector(claims, cfg) {
+		t.Error("non-admin user should not read private connector with no owner")
 	}
 }
 

@@ -18,6 +18,12 @@ type Config struct {
 	EmbeddingAPIKey   string `envconfig:"EMBEDDING_API_KEY"`
 	OllamaURL         string `envconfig:"OLLAMA_URL" default:"http://localhost:11434"`
 
+	// Authentication
+	JWTSecret string `envconfig:"JWT_SECRET"` // secret for signing JWT tokens; auto-generated if empty
+
+	// CORS
+	CORSOrigins []string `envconfig:"CORS_ORIGINS" default:"http://localhost:5173"` // comma-separated list of allowed origins
+
 	// Reranking
 	RerankProvider string `envconfig:"RERANK_PROVIDER"` // voyage, cohere (empty = disabled)
 	RerankModel    string `envconfig:"RERANK_MODEL"`

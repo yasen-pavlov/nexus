@@ -14,6 +14,7 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
+	nauth "github.com/muty/nexus/internal/auth"
 	tgconn "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
@@ -22,7 +23,14 @@ import (
 // pendingAuth tracks in-flight Telegram auth flows.
 type pendingAuth struct {
 	mu    sync.Mutex
-	flows map[string]*authFlow
+	flows map[pendingAuthKey]*authFlow
+}
+
+// pendingAuthKey scopes a flow to a specific (connector, user) pair so concurrent
+// flows from different users on the same connector don't interfere.
+type pendingAuthKey struct {
+	connectorID uuid.UUID
+	userID      uuid.UUID
 }
 
 type authFlow struct {
@@ -33,7 +41,7 @@ type authFlow struct {
 	cancel   context.CancelFunc
 }
 
-var pending = &pendingAuth{flows: make(map[string]*authFlow)}
+var pending = &pendingAuth{flows: make(map[pendingAuthKey]*authFlow)}
 
 type telegramAuthCodeRequest struct {
 	Code     string `json:"code"`
@@ -65,6 +73,12 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		return
+	}
+
+	claims := nauth.UserFromContext(r.Context())
+	if !canModifyConnector(claims, cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
 		return
 	}
 
@@ -109,12 +123,13 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 		cancel:   cancel,
 	}
 
+	flowKey := pendingAuthKey{connectorID: id, userID: claims.UserID}
 	pending.mu.Lock()
-	// Cancel any existing flow for this connector
-	if old, ok := pending.flows[id.String()]; ok {
+	// Cancel any existing flow for the same (connector, user) pair
+	if old, ok := pending.flows[flowKey]; ok {
 		old.cancel()
 	}
-	pending.flows[id.String()] = flow
+	pending.flows[flowKey] = flow
 	pending.mu.Unlock()
 
 	// Run auth in background
@@ -151,7 +166,29 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 //	@Failure	400	{object}	APIResponse
 //	@Router		/connectors/{id}/auth/code [post]
 func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+
+	// Verify the caller can modify this connector before progressing the flow.
+	// Otherwise an unauthorized user could submit codes against another user's
+	// pending auth flow.
+	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "connector not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		return
+	}
+	claims := nauth.UserFromContext(r.Context())
+	if !canModifyConnector(claims, cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
 
 	var req telegramAuthCodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -164,8 +201,9 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	flowKey := pendingAuthKey{connectorID: id, userID: claims.UserID}
 	pending.mu.Lock()
-	flow, ok := pending.flows[id]
+	flow, ok := pending.flows[flowKey]
 	pending.mu.Unlock()
 
 	if !ok {
@@ -185,7 +223,7 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	select {
 	case err := <-flow.resultCh:
 		pending.mu.Lock()
-		delete(pending.flows, id)
+		delete(pending.flows, flowKey)
 		pending.mu.Unlock()
 
 		if err != nil {
@@ -194,7 +232,7 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.log.Info("telegram auth successful", zap.String("connector", id))
+		h.log.Info("telegram auth successful", zap.String("connector", id.String()))
 		writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 
 	case <-r.Context().Done():

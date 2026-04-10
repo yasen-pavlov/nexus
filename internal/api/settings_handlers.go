@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"go.uber.org/zap"
 )
@@ -121,19 +122,24 @@ func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
 	}
 
 	// Trigger async sync for all connectors
-	for name, conn := range h.cm.All() {
-		job := h.syncJobs.Start(name, conn.Type())
-		go func(n string, c connector.Connector, jobID string) {
+	for connID, entry := range h.cm.All() {
+		connName := entry.Conn.Name()
+		ownerID := ""
+		if entry.Config.UserID != nil {
+			ownerID = entry.Config.UserID.String()
+		}
+		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			bgCtx := context.Background()
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(bgCtx, c, progress)
+			_, err := h.pipeline.RunWithProgress(bgCtx, cid, c, oid, shared, progress)
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("auto-reindex: sync failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(name, conn, job.ID)
+		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 	}
 
 	h.log.Info("auto-reindex: triggered sync for all connectors")

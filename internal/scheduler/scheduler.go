@@ -15,14 +15,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// ConnectorGetter retrieves active connector instances by name.
+// ConnectorGetter retrieves active connector instances by UUID.
 type ConnectorGetter interface {
-	Get(name string) (connector.Connector, bool)
+	GetByID(id uuid.UUID) (connector.Connector, *model.ConnectorConfig, bool)
 }
 
 // PipelineRunner runs the ingestion pipeline for a connector.
 type PipelineRunner interface {
-	Run(ctx context.Context, conn connector.Connector) (*pipeline.SyncReport, error)
+	RunWithProgress(ctx context.Context, connectorID uuid.UUID, conn connector.Connector, ownerID string, shared bool, progress pipeline.ProgressFunc) (*pipeline.SyncReport, error)
 }
 
 // ConfigLister lists connector configs from the database.
@@ -110,7 +110,7 @@ func (s *Scheduler) addJob(cfg model.ConnectorConfig) {
 	connID := cfg.ID
 
 	eid, err := s.cron.AddFunc(cfg.Schedule, func() {
-		s.runSync(connName, connID)
+		s.runSync(connID)
 	})
 	if err != nil {
 		s.log.Error("failed to add cron job",
@@ -136,15 +136,21 @@ func (s *Scheduler) removeJob(id uuid.UUID) {
 	}
 }
 
-func (s *Scheduler) runSync(name string, id uuid.UUID) {
-	conn, ok := s.cm.Get(name)
+func (s *Scheduler) runSync(id uuid.UUID) {
+	conn, cfg, ok := s.cm.GetByID(id)
 	if !ok {
-		s.log.Warn("scheduled sync skipped: connector not found", zap.String("connector", name))
+		s.log.Warn("scheduled sync skipped: connector not found", zap.String("id", id.String()))
 		return
 	}
 
+	name := cfg.Name
+	ownerID := ""
+	if cfg.UserID != nil {
+		ownerID = cfg.UserID.String()
+	}
+
 	s.log.Info("scheduled sync starting", zap.String("connector", name))
-	report, err := s.pipe.Run(s.ctx, conn)
+	report, err := s.pipe.RunWithProgress(s.ctx, id, conn, ownerID, cfg.Shared, nil)
 	if err != nil {
 		s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(err))
 		return

@@ -69,7 +69,7 @@ func (c *Cohere) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &EmbedError{StatusCode: resp.StatusCode, Provider: "cohere"}
+		return nil, errorFromResponse(resp, "cohere")
 	}
 
 	var result cohereEmbedResponse

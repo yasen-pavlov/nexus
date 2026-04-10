@@ -3,8 +3,10 @@ package embedding
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/muty/nexus/internal/config"
@@ -185,6 +187,35 @@ func TestVoyage_Embed_Error(t *testing.T) {
 	_, err := v.Embed(context.Background(), []string{"hello"})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestVoyage_Embed_ErrorWithBody(t *testing.T) {
+	// 4xx with a JSON body — verify the body is captured into the error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"detail":"input string too long"}`)) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+
+	v := NewVoyage("key", "test", zap.NewNop())
+	v.baseURL = srv.URL
+	_, err := v.Embed(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ee *EmbedError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected EmbedError, got %T", err)
+	}
+	if ee.StatusCode != 400 {
+		t.Errorf("StatusCode = %d, want 400", ee.StatusCode)
+	}
+	if !strings.Contains(ee.Body, "input string too long") {
+		t.Errorf("Body should contain API detail, got %q", ee.Body)
+	}
+	if !strings.Contains(ee.Error(), "input string too long") {
+		t.Errorf("Error() should include body, got %q", ee.Error())
 	}
 }
 

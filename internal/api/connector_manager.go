@@ -21,11 +21,17 @@ type ScheduleObserver interface {
 	OnConnectorRemoved(id uuid.UUID, name string)
 }
 
+// connectorEntry holds a connector instance along with its config metadata.
+type connectorEntry struct {
+	conn   connector.Connector
+	config model.ConnectorConfig
+}
+
 // ConnectorManager manages the lifecycle of connectors, bridging
 // database-persisted configurations with in-memory connector instances.
 type ConnectorManager struct {
 	mu            sync.RWMutex
-	connectors    map[string]connector.Connector
+	connectors    map[uuid.UUID]*connectorEntry
 	store         *store.Store
 	log           *zap.Logger
 	schedObserver ScheduleObserver
@@ -45,7 +51,7 @@ func (m *ConnectorManager) SetExtractor(ext *extractor.Registry) {
 // NewConnectorManager creates a new ConnectorManager.
 func NewConnectorManager(st *store.Store, log *zap.Logger) *ConnectorManager {
 	return &ConnectorManager{
-		connectors: make(map[string]connector.Connector),
+		connectors: make(map[uuid.UUID]*connectorEntry),
 		store:      st,
 		log:        log,
 	}
@@ -75,34 +81,50 @@ func (m *ConnectorManager) LoadFromDB(ctx context.Context) error {
 			)
 			continue
 		}
-		m.connectors[cfg.Name] = conn
+		m.connectors[cfg.ID] = &connectorEntry{conn: conn, config: cfg}
 		m.log.Info("loaded connector", zap.String("name", cfg.Name), zap.String("type", cfg.Type))
 	}
 
 	return nil
 }
 
-// Get returns a connector by name.
-func (m *ConnectorManager) Get(name string) (connector.Connector, bool) {
+// GetByID returns a connector by its config UUID.
+func (m *ConnectorManager) GetByID(id uuid.UUID) (connector.Connector, *model.ConnectorConfig, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	conn, ok := m.connectors[name]
-	return conn, ok
+	e, ok := m.connectors[id]
+	if !ok {
+		return nil, nil, false
+	}
+	cfg := e.config
+	return e.conn, &cfg, true
 }
 
-// All returns a snapshot of all active connectors.
-func (m *ConnectorManager) All() map[string]connector.Connector {
+// ConnectorWithConfig pairs a connector instance with its config.
+type ConnectorWithConfig struct {
+	Conn   connector.Connector
+	Config model.ConnectorConfig
+}
+
+// All returns all active connectors with their configs.
+func (m *ConnectorManager) All() map[uuid.UUID]ConnectorWithConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make(map[string]connector.Connector, len(m.connectors))
-	for k, v := range m.connectors {
-		result[k] = v
+	result := make(map[uuid.UUID]ConnectorWithConfig, len(m.connectors))
+	for id, e := range m.connectors {
+		result[id] = ConnectorWithConfig{Conn: e.conn, Config: e.config}
 	}
 	return result
 }
 
 // Add validates a connector config, saves it to the database, and adds it to the in-memory map.
 func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) error {
+	// Assign the UUID up front so connector instantiation (e.g. the telegram
+	// session storage key) sees the same ID that the persisted row will have.
+	if cfg.ID == uuid.Nil {
+		cfg.ID = uuid.New()
+	}
+
 	conn, err := m.instantiateConnector(*cfg)
 	if err != nil {
 		return err
@@ -114,7 +136,7 @@ func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) 
 
 	if cfg.Enabled {
 		m.mu.Lock()
-		m.connectors[cfg.Name] = conn
+		m.connectors[cfg.ID] = &connectorEntry{conn: conn, config: *cfg}
 		m.mu.Unlock()
 	}
 
@@ -127,12 +149,6 @@ func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) 
 
 // Update validates a connector config, updates it in the database, and refreshes the in-memory map.
 func (m *ConnectorManager) Update(ctx context.Context, cfg *model.ConnectorConfig) error {
-	// Get old config to handle name changes
-	old, err := m.store.GetConnectorConfig(ctx, cfg.ID)
-	if err != nil {
-		return err
-	}
-
 	conn, err := m.instantiateConnector(*cfg)
 	if err != nil {
 		return err
@@ -145,15 +161,10 @@ func (m *ConnectorManager) Update(ctx context.Context, cfg *model.ConnectorConfi
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Remove old name if renamed
-	if old.Name != cfg.Name {
-		delete(m.connectors, old.Name)
-	}
-
 	if cfg.Enabled {
-		m.connectors[cfg.Name] = conn
+		m.connectors[cfg.ID] = &connectorEntry{conn: conn, config: *cfg}
 	} else {
-		delete(m.connectors, cfg.Name)
+		delete(m.connectors, cfg.ID)
 	}
 
 	if m.schedObserver != nil {
@@ -174,13 +185,14 @@ func (m *ConnectorManager) Remove(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	// Clean up sync cursor
-	if err := m.store.DeleteSyncCursor(ctx, cfg.Name); err != nil {
+	// Clean up sync cursor (the FK ON DELETE CASCADE handles it too, but
+	// being explicit avoids relying on schema for correctness).
+	if err := m.store.DeleteSyncCursor(ctx, id); err != nil {
 		m.log.Warn("failed to delete sync cursor", zap.String("name", cfg.Name), zap.Error(err))
 	}
 
 	m.mu.Lock()
-	delete(m.connectors, cfg.Name)
+	delete(m.connectors, id)
 	m.mu.Unlock()
 
 	if m.schedObserver != nil {
@@ -212,6 +224,7 @@ func (m *ConnectorManager) SeedFromEnv(ctx context.Context, appCfg *config.Confi
 		Name:    "filesystem",
 		Config:  map[string]any{"root_path": appCfg.FSRootPath, "patterns": appCfg.FSPatterns},
 		Enabled: true,
+		Shared:  true, // filesystem connector is shared by default
 	}
 
 	if err := m.Add(ctx, cfg); err != nil {

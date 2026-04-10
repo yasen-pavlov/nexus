@@ -43,7 +43,9 @@ func indexMappingJSON(embeddingDimension int) string {
       "url":          { "type": "keyword" },
       "visibility":   { "type": "keyword" },
       "created_at":   { "type": "date" },
-      "indexed_at":   { "type": "date" }%s
+      "indexed_at":   { "type": "date" },
+      "owner_id":     { "type": "keyword" },
+      "shared":       { "type": "boolean" }%s
     }
   }
 }`, knnSetting, embeddingField)

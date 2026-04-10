@@ -9,6 +9,24 @@ var SensitiveFields = map[string][]string{
 	"telegram":  {"api_hash"},
 }
 
+// sensitiveSettingsKeys lists exact keys in the settings table that hold
+// secrets and must be encrypted at rest.
+var sensitiveSettingsKeys = map[string]bool{
+	"embedding_api_key": true,
+	"rerank_api_key":    true,
+}
+
+// IsSensitiveSettingsKey returns true if the given settings key holds a
+// secret that should be encrypted at rest. Keys with the
+// "telegram_session_" prefix store full Telegram session blobs and are
+// always treated as sensitive.
+func IsSensitiveSettingsKey(key string) bool {
+	if sensitiveSettingsKeys[key] {
+		return true
+	}
+	return strings.HasPrefix(key, "telegram_session_")
+}
+
 // EncryptConfig encrypts sensitive fields in a connector config map.
 // Returns a shallow copy with sensitive string values encrypted.
 // If key is nil, returns the config unchanged.

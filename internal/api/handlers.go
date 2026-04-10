@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
@@ -19,14 +21,15 @@ import (
 )
 
 type handler struct {
-	store    *store.Store
-	search   *search.Client
-	pipeline *pipeline.Pipeline
-	em       *EmbeddingManager
-	rm       *RerankManager
-	cm       *ConnectorManager
-	syncJobs *SyncJobManager
-	log      *zap.Logger
+	store     *store.Store
+	search    *search.Client
+	pipeline  *pipeline.Pipeline
+	em        *EmbeddingManager
+	rm        *RerankManager
+	cm        *ConnectorManager
+	syncJobs  *SyncJobManager
+	jwtSecret []byte
+	log       *zap.Logger
 }
 
 // Health godoc
@@ -37,7 +40,14 @@ type handler struct {
 //	@Success	200	{object}	map[string]string
 //	@Router		/health [get]
 func (h *handler) Health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	resp := map[string]any{"status": "ok"}
+	if h.store != nil {
+		count, err := h.store.CountUsers(r.Context())
+		if err == nil && count == 0 {
+			resp["setup_required"] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // Search godoc
@@ -74,6 +84,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		SourceNames: parseCSV(r.URL.Query().Get("source_names")),
 		DateFrom:    r.URL.Query().Get("date_from"),
 		DateTo:      r.URL.Query().Get("date_to"),
+		OwnerID:     auth.UserIDFromContext(r.Context()).String(),
 	}
 
 	// Try hybrid search if embedder is available
@@ -136,26 +147,35 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 //	@Description	Starts an async sync job. Returns immediately with the job state.
 //	@Tags		sync
 //	@Produce	json
-//	@Param		connector	path	string	true	"Connector name"
+//	@Param		id	path	string	true	"Connector UUID"
 //	@Success	202	{object}	SyncJob
 //	@Failure	404	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Sync already running"
-//	@Router		/sync/{connector} [post]
+//	@Router		/sync/{id} [post]
 func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "connector")
-	conn, ok := h.cm.Get(name)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+	conn, cfg, ok := h.cm.GetByID(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, "connector not found: "+name)
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
+	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
 		return
 	}
 
 	// Check if a sync is already running for this connector
-	if existing := h.syncJobs.GetByConnector(name); existing != nil {
-		writeError(w, http.StatusConflict, "sync already running for "+name)
+	if existing := h.syncJobs.GetByConnector(cfg.ID); existing != nil {
+		writeError(w, http.StatusConflict, "sync already running for "+cfg.Name)
 		return
 	}
 
-	job := h.syncJobs.Start(name, conn.Type())
+	job := h.syncJobs.Start(cfg.ID, cfg.Name, conn.Type())
 	snapshot := *job // copy before goroutine can mutate it
 
 	// Run pipeline in background with a detached context
@@ -165,11 +185,15 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 			h.syncJobs.Update(job.ID, total, processed, errors)
 		}
 
-		_, err := h.pipeline.RunWithProgress(ctx, conn, progress)
+		ownerID := ""
+		if cfg.UserID != nil {
+			ownerID = cfg.UserID.String()
+		}
+		_, err := h.pipeline.RunWithProgress(ctx, cfg.ID, conn, ownerID, cfg.Shared, progress)
 		h.syncJobs.Complete(job.ID, err)
 
 		if err != nil {
-			h.log.Error("async sync failed", zap.String("connector", name), zap.Error(err))
+			h.log.Error("async sync failed", zap.String("connector", cfg.Name), zap.Error(err))
 		}
 	}()
 
@@ -182,16 +206,31 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 //	@Description	Opens a Server-Sent Events stream that pushes SyncJob updates in real-time. Sends an "event: done" when the job completes.
 //	@Tags		sync
 //	@Produce	text/event-stream
-//	@Param		connector	path	string	true	"Connector name"
+//	@Param		id	path	string	true	"Connector UUID"
 //	@Success	200	{string}	string	"SSE stream"
 //	@Failure	404	{object}	APIResponse
-//	@Router		/sync/{connector}/progress [get]
+//	@Router		/sync/{id}/progress [get]
 func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "connector")
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
 
-	job := h.syncJobs.GetByConnector(name)
+	_, cfg, ok := h.cm.GetByID(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
+	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
+	job := h.syncJobs.GetByConnector(cfg.ID)
 	if job == nil {
-		writeError(w, http.StatusNotFound, "no active sync for "+name)
+		writeError(w, http.StatusNotFound, "no active sync for "+cfg.Name)
 		return
 	}
 
@@ -232,9 +271,24 @@ func (h *handler) StreamSyncProgress(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Success	200	{array}	SyncJob
 //	@Router		/sync [get]
-func (h *handler) ListSyncJobs(w http.ResponseWriter, _ *http.Request) {
-	jobs := h.syncJobs.Active()
-	writeJSON(w, http.StatusOK, jobs)
+func (h *handler) ListSyncJobs(w http.ResponseWriter, r *http.Request) {
+	claims := auth.UserFromContext(r.Context())
+	all := h.syncJobs.Active()
+	visible := make([]*SyncJob, 0, len(all))
+	for _, job := range all {
+		connID, err := uuid.Parse(job.ConnectorID)
+		if err != nil {
+			continue
+		}
+		_, cfg, ok := h.cm.GetByID(connID)
+		if !ok {
+			continue
+		}
+		if canReadConnector(claims, cfg) {
+			visible = append(visible, job)
+		}
+	}
+	writeJSON(w, http.StatusOK, visible)
 }
 
 // DeleteAllCursors godoc
@@ -260,18 +314,31 @@ func (h *handler) DeleteAllCursors(w http.ResponseWriter, r *http.Request) {
 //	@Summary	Delete a single connector's sync cursor
 //	@Tags		sync
 //	@Produce	json
-//	@Param		connector	path	string	true	"Connector name"
+//	@Param		id	path	string	true	"Connector UUID"
 //	@Success	200	{object}	map[string]string
 //	@Failure	500	{object}	APIResponse
-//	@Router		/sync/cursors/{connector} [delete]
+//	@Router		/sync/cursors/{id} [delete]
 func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "connector")
-	if err := h.store.DeleteSyncCursor(r.Context(), name); err != nil {
-		h.log.Error("delete cursor failed", zap.String("connector", name), zap.Error(err))
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+	_, cfg, ok := h.cm.GetByID(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+	if err := h.store.DeleteSyncCursor(r.Context(), id); err != nil {
+		h.log.Error("delete cursor failed", zap.String("connector", cfg.Name), zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to delete cursor")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "cursor deleted for " + name})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "cursor deleted for " + cfg.Name})
 }
 
 // SyncAll godoc
@@ -282,27 +349,37 @@ func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Success	202	{array}	SyncJob
 //	@Router		/sync [post]
-func (h *handler) SyncAll(w http.ResponseWriter, _ *http.Request) {
-	var jobs []*SyncJob
-	for name, conn := range h.cm.All() {
-		if existing := h.syncJobs.GetByConnector(name); existing != nil {
+func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
+	claims := auth.UserFromContext(r.Context())
+	jobs := []*SyncJob{}
+	for connID, entry := range h.cm.All() {
+		cfg := entry.Config
+		if !canModifyConnector(claims, &cfg) {
+			continue // user cannot trigger sync on this connector
+		}
+		if existing := h.syncJobs.GetByConnector(connID); existing != nil {
 			continue // already running
 		}
-		job := h.syncJobs.Start(name, conn.Type())
+		connName := entry.Conn.Name()
+		ownerID := ""
+		if entry.Config.UserID != nil {
+			ownerID = entry.Config.UserID.String()
+		}
+		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
 		snapshot := *job
 		jobs = append(jobs, &snapshot)
 
-		go func(n string, c connector.Connector, jobID string) {
+		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			ctx := context.Background()
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(ctx, c, progress)
+			_, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("sync all: connector failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(name, conn, job.ID)
+		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 	}
 	writeJSON(w, http.StatusAccepted, jobs)
 }
@@ -334,19 +411,24 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Sync all connectors
 	var count int
-	for name, conn := range h.cm.All() {
-		job := h.syncJobs.Start(name, conn.Type())
-		go func(n string, c connector.Connector, jobID string) {
+	for connID, entry := range h.cm.All() {
+		connName := entry.Conn.Name()
+		ownerID := ""
+		if entry.Config.UserID != nil {
+			ownerID = entry.Config.UserID.String()
+		}
+		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			ctx := context.Background()
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(ctx, c, progress)
+			_, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("reindex: connector failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(name, conn, job.ID)
+		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 		count++
 	}
 

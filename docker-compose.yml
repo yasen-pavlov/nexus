@@ -64,6 +64,12 @@ services:
       NEXUS_FS_ROOT_PATH: /data
       NEXUS_FS_PATTERNS: "*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png"
       NEXUS_ENCRYPTION_KEY: REDACTED_DEV_ENCRYPTION_KEY
+      # JWT signing secret. If unset, a random one is generated on each boot
+      # (which logs everyone out on restart). Set explicitly for stable sessions.
+      NEXUS_JWT_SECRET: change-me-to-a-long-random-string-at-least-32-bytes
+      # CORS allowed origins (comma-separated). Add your domain when serving from
+      # something other than localhost:5173.
+      # NEXUS_CORS_ORIGINS: http://localhost:5173,https://nexus.example.com
       # Embedding configured via Settings UI, or uncomment for env var override:
       # NEXUS_EMBEDDING_PROVIDER: ollama
       # NEXUS_OLLAMA_URL: http://ollama:11434

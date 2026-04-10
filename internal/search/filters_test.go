@@ -40,6 +40,66 @@ func TestBuildFilterClauses_DateFromOnly(t *testing.T) {
 	}
 }
 
+func TestBuildFilterClauses_OwnerID(t *testing.T) {
+	filters := buildFilterClauses(model.SearchRequest{OwnerID: "user-123"})
+	if len(filters) != 1 {
+		t.Fatalf("expected 1 filter, got %d", len(filters))
+	}
+
+	bool1, ok := filters[0]["bool"].(map[string]any)
+	if !ok {
+		t.Fatal("expected bool wrapper for ownership filter")
+	}
+	should, ok := bool1["should"].([]map[string]any)
+	if !ok {
+		t.Fatal("expected should clauses")
+	}
+	if len(should) != 2 {
+		t.Errorf("expected 2 should clauses (owner_id match, shared), got %d", len(should))
+	}
+	if min, _ := bool1["minimum_should_match"].(int); min != 1 {
+		t.Errorf("expected minimum_should_match=1, got %v", bool1["minimum_should_match"])
+	}
+
+	var sawOwner, sawShared bool
+	for _, clause := range should {
+		term, ok := clause["term"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if v, ok := term["owner_id"].(string); ok && v == "user-123" {
+			sawOwner = true
+		}
+		if v, ok := term["shared"].(bool); ok && v {
+			sawShared = true
+		}
+	}
+	if !sawOwner {
+		t.Error("missing owner_id term clause")
+	}
+	if !sawShared {
+		t.Error("missing shared=true clause")
+	}
+}
+
+func TestBuildFilterClauses_OwnerIDEmpty(t *testing.T) {
+	// Empty OwnerID = no ownership filter (e.g., admin-level system query)
+	filters := buildFilterClauses(model.SearchRequest{Query: "anything"})
+	if len(filters) != 0 {
+		t.Errorf("expected no filters for empty OwnerID, got %d", len(filters))
+	}
+}
+
+func TestBuildFilterClauses_OwnerIDPlusSources(t *testing.T) {
+	filters := buildFilterClauses(model.SearchRequest{
+		OwnerID: "user-456",
+		Sources: []string{"paperless"},
+	})
+	if len(filters) != 2 {
+		t.Errorf("expected 2 filters (sources + ownership), got %d", len(filters))
+	}
+}
+
 func TestBuildSearchQuery_NoFilters(t *testing.T) {
 	match := map[string]any{"match_all": map[string]any{}}
 	q := buildSearchQuery(match, nil)

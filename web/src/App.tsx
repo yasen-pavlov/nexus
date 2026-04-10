@@ -3,9 +3,13 @@ import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamS
 import ConnectorManager from './ConnectorManager';
 import SearchFiltersBar from './SearchFilters';
 import Settings from './Settings';
+import Login from './Login';
+import UserManagement from './UserManagement';
+import { useAuth } from './AuthContext';
 import './App.css';
 
 function App() {
+  const { user, loading: authLoading, logout } = useAuth();
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -14,25 +18,31 @@ function App() {
   const [error, setError] = useState('');
   const [showConnectors, setShowConnectors] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUsers, setShowUsers] = useState(false);
+  const isAdmin = user?.role === 'admin';
+  const canModify = (conn: ConnectorConfig) =>
+    isAdmin || (!!conn.user_id && conn.user_id === user?.id);
   const [filters, setFilters] = useState<SearchFilters>({});
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const cleanupRefs = useRef<Record<string, () => void>>({});
 
   const loadConnectors = useCallback(() => {
+    if (!user) return;
     listConnectors().then(setConnectors).catch(() => {});
-  }, []);
+  }, [user]);
 
   useEffect(loadConnectors, [loadConnectors]);
 
   // On mount: load any running sync jobs and resume SSE streams
   useEffect(() => {
+    if (!user) return;
     listSyncJobs().then((jobs) => {
       const running: Record<string, SyncJob> = {};
       for (const job of jobs) {
         if (job.status === 'running') {
           running[job.connector_name] = job;
           const cleanup = streamSyncProgress(
-            job.connector_name,
+            job.connector_id,
             (update) => setSyncJobs((prev) => ({ ...prev, [job.connector_name]: update })),
             () => { delete cleanupRefs.current[job.connector_name]; },
           );
@@ -43,7 +53,7 @@ function App() {
         setSyncJobs(running);
       }
     }).catch(() => {});
-  }, []);
+  }, [user]);
 
   // Cleanup SSE connections on unmount
   useEffect(() => {
@@ -82,21 +92,21 @@ function App() {
     }
   };
 
-  const handleSync = async (connectorName: string) => {
+  const handleSync = async (conn: ConnectorConfig) => {
     setError('');
     try {
-      const job = await triggerSync(connectorName);
-      setSyncJobs((prev) => ({ ...prev, [connectorName]: job }));
+      const job = await triggerSync(conn.id);
+      setSyncJobs((prev) => ({ ...prev, [conn.name]: job }));
 
       // Open SSE stream for progress
       const cleanup = streamSyncProgress(
-        connectorName,
-        (update) => setSyncJobs((prev) => ({ ...prev, [connectorName]: update })),
+        conn.id,
+        (update) => setSyncJobs((prev) => ({ ...prev, [conn.name]: update })),
         () => {
-          delete cleanupRefs.current[connectorName];
+          delete cleanupRefs.current[conn.name];
         },
       );
-      cleanupRefs.current[connectorName] = cleanup;
+      cleanupRefs.current[conn.name] = cleanup;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
     }
@@ -105,12 +115,12 @@ function App() {
   const handleSyncAll = async () => {
     setError('');
     try {
-      const jobs = await syncAll();
+      const jobs = (await syncAll()) ?? [];
       const newJobs: Record<string, SyncJob> = {};
       for (const job of jobs) {
         newJobs[job.connector_name] = job;
         const cleanup = streamSyncProgress(
-          job.connector_name,
+          job.connector_id,
           (update) => setSyncJobs((prev) => ({ ...prev, [job.connector_name]: update })),
           () => { delete cleanupRefs.current[job.connector_name]; },
         );
@@ -142,7 +152,7 @@ function App() {
         if (job.status === 'running') {
           running[job.connector_name] = job;
           const cleanup = streamSyncProgress(
-            job.connector_name,
+            job.connector_id,
             (update) => setSyncJobs((prev) => ({ ...prev, [job.connector_name]: update })),
             () => { delete cleanupRefs.current[job.connector_name]; },
           );
@@ -165,7 +175,15 @@ function App() {
     });
   };
 
-  if (showSettings) {
+  if (authLoading) {
+    return <div className="app"><div className="loading">Loading...</div></div>;
+  }
+
+  if (!user) {
+    return <Login />;
+  }
+
+  if (showSettings && isAdmin) {
     return (
       <div className="app">
         <header className="header">
@@ -173,6 +191,18 @@ function App() {
           <p className="subtitle">Personal Search</p>
         </header>
         <Settings onClose={() => setShowSettings(false)} />
+      </div>
+    );
+  }
+
+  if (showUsers && isAdmin) {
+    return (
+      <div className="app">
+        <header className="header">
+          <h1>Nexus</h1>
+          <p className="subtitle">Personal Search</p>
+        </header>
+        <UserManagement onClose={() => setShowUsers(false)} />
       </div>
     );
   }
@@ -194,6 +224,12 @@ function App() {
       <header className="header">
         <h1>Nexus</h1>
         <p className="subtitle">Personal Search</p>
+        <div className="header-user">
+          <span className="header-username">
+            {user.username}{isAdmin && <span className="header-role"> · admin</span>}
+          </span>
+          <button className="header-logout" onClick={logout}>Sign out</button>
+        </div>
       </header>
 
       <div className="search-container">
@@ -208,53 +244,69 @@ function App() {
       </div>
 
       <div className="controls">
-        {connectors.filter(c => c.enabled).map((conn) => {
+        {connectors.filter(c => c.enabled && canModify(c)).map((conn) => {
           const job = syncJobs[conn.name];
           const isRunning = job?.status === 'running';
           return (
             <button
               key={conn.name}
               className="sync-button"
-              onClick={() => handleSync(conn.name)}
+              onClick={() => handleSync(conn)}
               disabled={isRunning}
             >
               {isRunning ? `Syncing ${conn.name}...` : `Sync ${conn.name}`}
             </button>
           );
         })}
-        <button
-          className="sync-button"
-          onClick={handleSyncAll}
-          disabled={anySyncing}
-        >
-          Sync All
-        </button>
-        <button
-          className="sync-button"
-          onClick={handleResetCursors}
-          disabled={anySyncing}
-        >
-          Reset Cursors
-        </button>
-        <button
-          className="sync-button cm-btn-danger"
-          onClick={handleReindex}
-          disabled={anySyncing}
-        >
-          Re-index
-        </button>
+        {connectors.some(c => c.enabled && canModify(c)) && (
+          <button
+            className="sync-button"
+            onClick={handleSyncAll}
+            disabled={anySyncing}
+          >
+            Sync All
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            className="sync-button"
+            onClick={handleResetCursors}
+            disabled={anySyncing}
+          >
+            Reset Cursors
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            className="sync-button cm-btn-danger"
+            onClick={handleReindex}
+            disabled={anySyncing}
+          >
+            Re-index
+          </button>
+        )}
         <button
           className="sync-button cm-settings-btn"
           onClick={() => setShowConnectors(true)}
         >
           Connectors
         </button>
-        <button
-          className="sync-button cm-settings-btn"
-          onClick={() => setShowSettings(true)}
-        >
-          Settings
-        </button>
+        {isAdmin && (
+          <button
+            className="sync-button cm-settings-btn"
+            onClick={() => setShowSettings(true)}
+          >
+            Settings
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            className="sync-button cm-settings-btn"
+            onClick={() => setShowUsers(true)}
+          >
+            Users
+          </button>
+        )}
       </div>
 
       {Object.entries(syncJobs).map(([name, job]) => (

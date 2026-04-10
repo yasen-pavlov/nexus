@@ -427,6 +427,50 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 	}, nil
 }
 
+// UpdateOwnershipBySource sets the owner_id and shared fields on every chunk
+// belonging to the given source. Used when a connector's ownership flips —
+// e.g., flipping shared from false to true must propagate to chunks already
+// indexed before the flip.
+func (c *Client) UpdateOwnershipBySource(ctx context.Context, sourceType, sourceName, ownerID string, shared bool) error {
+	query := map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"source_type": sourceType}},
+					{"term": map[string]any{"source_name": sourceName}},
+				},
+			},
+		},
+		"script": map[string]any{
+			"source": "ctx._source.owner_id = params.owner_id; ctx._source.shared = params.shared;",
+			"lang":   "painless",
+			"params": map[string]any{
+				"owner_id": ownerID,
+				"shared":   shared,
+			},
+		},
+	}
+
+	body, err := json.Marshal(query)
+	if err != nil {
+		return fmt.Errorf("search: marshal update query: %w", err)
+	}
+
+	refresh := true
+	_, err = c.os.UpdateByQuery(ctx, opensearchapi.UpdateByQueryReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+		Params: opensearchapi.UpdateByQueryParams{
+			Refresh: &refresh,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("search: update ownership by source: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteBySource deletes all documents from a specific source.
 func (c *Client) DeleteBySource(ctx context.Context, sourceType, sourceName string) error {
 	query := map[string]any{

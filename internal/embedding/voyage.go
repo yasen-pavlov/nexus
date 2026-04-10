@@ -62,7 +62,7 @@ func (v *Voyage) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &EmbedError{StatusCode: resp.StatusCode, Provider: "voyage"}
+		return nil, errorFromResponse(resp, "voyage")
 	}
 
 	var result voyageEmbedResponse

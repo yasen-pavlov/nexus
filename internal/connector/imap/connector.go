@@ -191,7 +191,6 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	return &model.FetchResult{
 		Documents: docs,
 		Cursor: &model.SyncCursor{
-			ConnectorID: c.Name(),
 			CursorData:  cursorData,
 			LastSync:    now,
 			LastStatus:  "success",
@@ -297,11 +296,10 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 	}
 
 	textContent, attachments := parseEmailBody(bodyData)
-
-	// If no text extracted from MIME parsing, fall back to raw body
-	if textContent == "" && len(bodyData) > 0 {
-		textContent = string(bodyData)
-	}
+	// If MIME parsing fails to extract any plain text we used to fall back to
+	// the raw RFC822 source. That's almost guaranteed to contain large base64
+	// blobs and other non-text noise — useless for search and prone to blowing
+	// past embedding-API token limits. Skip these messages instead.
 
 	// Build metadata
 	metadata := map[string]any{

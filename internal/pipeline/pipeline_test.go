@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/embedding"
@@ -81,7 +82,15 @@ func TestPipelineRun_WithEmbedder(t *testing.T) {
 		"name": "embed-test", "root_path": dir, "patterns": "*.txt",
 	})
 
-	report, err := p.Run(ctx, fsConn)
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "embed-test",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := p.RunWithProgress(ctx, connID, fsConn, "", false, nil)
 	if err != nil {
 		t.Fatalf("pipeline run failed: %v", err)
 	}
@@ -123,8 +132,17 @@ func TestPipelineRun(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
+	// Cursor + connector must be created in the store first because of the FK
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "pipeline-test",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	// First sync
-	report, err := p.Run(ctx, fsConn)
+	report, err := p.RunWithProgress(ctx, connID, fsConn, "", false, nil)
 	if err != nil {
 		t.Fatalf("pipeline run failed: %v", err)
 	}
@@ -145,8 +163,8 @@ func TestPipelineRun(t *testing.T) {
 		t.Errorf("expected 1 search result for 'xylophone', got %d", result.TotalCount)
 	}
 
-	// Verify cursor was saved
-	cursor, err := st.GetSyncCursor(ctx, "pipeline-test")
+	// Verify cursor was saved keyed by connector UUID
+	cursor, err := st.GetSyncCursor(ctx, connID)
 	if err != nil {
 		t.Fatalf("get cursor failed: %v", err)
 	}
@@ -155,7 +173,7 @@ func TestPipelineRun(t *testing.T) {
 	}
 
 	// Second sync (incremental — no new files)
-	report2, err := p.Run(ctx, fsConn)
+	report2, err := p.RunWithProgress(ctx, connID, fsConn, "", false, nil)
 	if err != nil {
 		t.Fatalf("second pipeline run failed: %v", err)
 	}

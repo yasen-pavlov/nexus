@@ -128,7 +128,6 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	return &model.FetchResult{
 		Documents: docs,
 		Cursor: &model.SyncCursor{
-			ConnectorID: c.Name(),
 			CursorData: map[string]any{
 				"last_message_date": float64(now.Unix()),
 			},

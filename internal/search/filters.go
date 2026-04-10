@@ -31,6 +31,19 @@ func buildFilterClauses(req model.SearchRequest) []map[string]any {
 		})
 	}
 
+	// Ownership filter: user sees their own documents + shared documents
+	if req.OwnerID != "" {
+		filters = append(filters, map[string]any{
+			"bool": map[string]any{
+				"should": []map[string]any{
+					{"term": map[string]any{"owner_id": req.OwnerID}},
+					{"term": map[string]any{"shared": true}},
+				},
+				"minimum_should_match": 1,
+			},
+		})
+	}
+
 	return filters
 }
 

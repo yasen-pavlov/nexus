@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"os"
@@ -81,6 +82,15 @@ func run() error {
 		if n > 0 {
 			log.Info("encrypted existing connector configs", zap.Int("count", n))
 		}
+
+		// Encrypt any existing plaintext sensitive settings (API keys, telegram sessions)
+		ns, err := st.EncryptExistingSettings(ctx)
+		if err != nil {
+			return fmt.Errorf("encrypt existing settings: %w", err)
+		}
+		if ns > 0 {
+			log.Info("encrypted existing sensitive settings", zap.Int("count", ns))
+		}
 	}
 
 	// Set up embedding (DB settings override env vars)
@@ -135,8 +145,18 @@ func run() error {
 		log.Warn("failed to load rerank settings", zap.Error(err))
 	}
 
+	// Set up JWT secret
+	jwtSecret := []byte(cfg.JWTSecret)
+	if len(jwtSecret) == 0 {
+		jwtSecret = make([]byte, 32)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			return fmt.Errorf("generate jwt secret: %w", err)
+		}
+		log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
+	}
+
 	syncJobs := api.NewSyncJobManager()
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, jwtSecret, cfg.CORSOrigins, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

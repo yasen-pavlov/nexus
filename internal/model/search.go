@@ -9,6 +9,7 @@ type SearchRequest struct {
 	SourceNames []string `json:"source_names,omitempty"` // filter by source_name
 	DateFrom    string   `json:"date_from,omitempty"`    // ISO date (e.g., 2025-01-01)
 	DateTo      string   `json:"date_to,omitempty"`      // ISO date
+	OwnerID     string   `json:"-"`                      // set from auth context, not from request
 }
 
 // SearchResult contains search results with optional facets.

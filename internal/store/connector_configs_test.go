@@ -39,6 +39,7 @@ func TestCreateAndGetConnectorConfig(t *testing.T) {
 		Config:   map[string]any{"root_path": "/data", "patterns": "*.txt"},
 		Enabled:  true,
 		Schedule: "*/30 * * * *",
+		Shared:   true,
 	}
 
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
@@ -70,14 +71,19 @@ func TestCreateConnectorConfig_DuplicateName(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	cfg1 := &model.ConnectorConfig{Type: "filesystem", Name: "dupe", Config: map[string]any{}, Enabled: true}
-	cfg2 := &model.ConnectorConfig{Type: "filesystem", Name: "dupe", Config: map[string]any{}, Enabled: true}
+	user, err := st.CreateUser(ctx, "dupe-owner", "hash", "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	cfg1 := &model.ConnectorConfig{Type: "filesystem", Name: "dupe", Config: map[string]any{}, Enabled: true, UserID: &user.ID}
+	cfg2 := &model.ConnectorConfig{Type: "filesystem", Name: "dupe", Config: map[string]any{}, Enabled: true, UserID: &user.ID}
 
 	if err := st.CreateConnectorConfig(ctx, cfg1); err != nil {
 		t.Fatalf("first create failed: %v", err)
 	}
 
-	err := st.CreateConnectorConfig(ctx, cfg2)
+	err = st.CreateConnectorConfig(ctx, cfg2)
 	if err != ErrDuplicateName {
 		t.Errorf("expected ErrDuplicateName, got %v", err)
 	}
@@ -98,7 +104,7 @@ func TestUpdateConnectorConfig(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.ConnectorConfig{
-		Type: "filesystem", Name: "update-test", Config: map[string]any{"root_path": "/old"}, Enabled: true,
+		Type: "filesystem", Name: "update-test", Config: map[string]any{"root_path": "/old"}, Enabled: true, Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatalf("create failed: %v", err)
@@ -142,8 +148,13 @@ func TestUpdateConnectorConfig_DuplicateName(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	cfg1 := &model.ConnectorConfig{Type: "filesystem", Name: "first", Config: map[string]any{}, Enabled: true}
-	cfg2 := &model.ConnectorConfig{Type: "filesystem", Name: "second", Config: map[string]any{}, Enabled: true}
+	user, err := st.CreateUser(ctx, "rename-owner", "hash", "user")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	cfg1 := &model.ConnectorConfig{Type: "filesystem", Name: "first", Config: map[string]any{}, Enabled: true, UserID: &user.ID}
+	cfg2 := &model.ConnectorConfig{Type: "filesystem", Name: "second", Config: map[string]any{}, Enabled: true, UserID: &user.ID}
 	if err := st.CreateConnectorConfig(ctx, cfg1); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +163,7 @@ func TestUpdateConnectorConfig_DuplicateName(t *testing.T) {
 	}
 
 	cfg2.Name = "first" // try to rename to existing name
-	err := st.UpdateConnectorConfig(ctx, cfg2)
+	err = st.UpdateConnectorConfig(ctx, cfg2)
 	if err != ErrDuplicateName {
 		t.Errorf("expected ErrDuplicateName, got %v", err)
 	}
@@ -162,7 +173,7 @@ func TestDeleteConnectorConfig(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	cfg := &model.ConnectorConfig{Type: "filesystem", Name: "delete-me", Config: map[string]any{}, Enabled: true}
+	cfg := &model.ConnectorConfig{Type: "filesystem", Name: "delete-me", Config: map[string]any{}, Enabled: true, Shared: true}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +203,7 @@ func TestListConnectorConfigs(t *testing.T) {
 	ctx := context.Background()
 
 	for _, name := range []string{"bravo", "alpha", "charlie"} {
-		cfg := &model.ConnectorConfig{Type: "filesystem", Name: name, Config: map[string]any{}, Enabled: true}
+		cfg := &model.ConnectorConfig{Type: "filesystem", Name: name, Config: map[string]any{}, Enabled: true, Shared: true}
 		if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +228,7 @@ func TestScheduleRoundTrip(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "sched-test", Config: map[string]any{},
-		Enabled: true, Schedule: "*/15 * * * *",
+		Enabled: true, Schedule: "*/15 * * * *", Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -240,7 +251,7 @@ func TestUpdateLastRun(t *testing.T) {
 	ctx := context.Background()
 
 	cfg := &model.ConnectorConfig{
-		Type: "filesystem", Name: "lastrun-test", Config: map[string]any{}, Enabled: true,
+		Type: "filesystem", Name: "lastrun-test", Config: map[string]any{}, Enabled: true, Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatal(err)
@@ -273,6 +284,7 @@ func TestEncryptExistingConfigs(t *testing.T) {
 		Name:    "encrypt-test",
 		Config:  map[string]any{"server": "imap.example.com", "password": "my-secret"},
 		Enabled: true,
+		Shared:  true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
 		t.Fatalf("create failed: %v", err)
@@ -327,6 +339,110 @@ func TestEncryptExistingConfigs(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("encrypted %d configs on second run, want 0", n)
+	}
+}
+
+func TestListUserConnectorConfigs(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	alice, err := st.CreateUser(ctx, "alice-list", "h", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.CreateUser(ctx, "bob-list", "h", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// alice's private connector
+	aliceCfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "alice-private", Config: map[string]any{}, Enabled: true, UserID: &alice.ID,
+	}
+	if err := st.CreateConnectorConfig(ctx, aliceCfg); err != nil {
+		t.Fatal(err)
+	}
+	// bob's private connector
+	bobCfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "bob-private", Config: map[string]any{}, Enabled: true, UserID: &bob.ID,
+	}
+	if err := st.CreateConnectorConfig(ctx, bobCfg); err != nil {
+		t.Fatal(err)
+	}
+	// shared connector (no owner)
+	sharedCfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "shared", Config: map[string]any{}, Enabled: true, Shared: true,
+	}
+	if err := st.CreateConnectorConfig(ctx, sharedCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceList, err := st.ListUserConnectorConfigs(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("alice list: %v", err)
+	}
+	names := make(map[string]bool)
+	for _, c := range aliceList {
+		names[c.Name] = true
+	}
+	if !names["alice-private"] || !names["shared"] {
+		t.Errorf("alice should see alice-private + shared, got %v", names)
+	}
+	if names["bob-private"] {
+		t.Errorf("alice should NOT see bob-private, got %v", names)
+	}
+
+	bobList, err := st.ListUserConnectorConfigs(ctx, bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names = make(map[string]bool)
+	for _, c := range bobList {
+		names[c.Name] = true
+	}
+	if !names["bob-private"] || !names["shared"] {
+		t.Errorf("bob should see bob-private + shared, got %v", names)
+	}
+	if names["alice-private"] {
+		t.Errorf("bob should NOT see alice-private, got %v", names)
+	}
+}
+
+func TestListUserConnectorConfigs_StoreError(t *testing.T) {
+	st := newClosedStore(t)
+	_, err := st.ListUserConnectorConfigs(context.Background(), uuid.New())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestListUserConnectorConfigs_Empty(t *testing.T) {
+	st := newTestStore(t)
+	configs, err := st.ListUserConnectorConfigs(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configs == nil || len(configs) != 0 {
+		t.Errorf("expected non-nil empty slice, got %v", configs)
+	}
+}
+
+func TestCreateConnectorConfig_OwnerMissingShared(t *testing.T) {
+	// Schema CHECK constraint: must have user_id OR shared=true
+	st := newTestStore(t)
+	cfg := &model.ConnectorConfig{Type: "filesystem", Name: "noowner", Config: map[string]any{}, Enabled: true}
+	err := st.CreateConnectorConfig(context.Background(), cfg)
+	if err == nil {
+		t.Error("expected CHECK constraint violation when no user_id and shared=false")
+	}
+}
+
+func TestUpdateConnectorConfig_StoreError(t *testing.T) {
+	st := newClosedStore(t)
+	cfg := &model.ConnectorConfig{ID: uuid.New(), Type: "filesystem", Name: "x", Config: map[string]any{}, Shared: true}
+	err := st.UpdateConnectorConfig(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error")
 	}
 }
 

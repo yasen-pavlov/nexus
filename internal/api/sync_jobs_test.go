@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 func TestSyncJobManager_StartAndGet(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test-conn", "filesystem")
+	job := m.Start(uuid.New(), "test-conn", "filesystem")
 
 	if job.ID == "" {
 		t.Error("expected non-empty job ID")
@@ -36,9 +37,10 @@ func TestSyncJobManager_StartAndGet(t *testing.T) {
 
 func TestSyncJobManager_GetByConnector(t *testing.T) {
 	m := NewSyncJobManager()
-	m.Start("conn-a", "filesystem")
+	connID := uuid.New()
+	m.Start(connID, "conn-a", "filesystem")
 
-	got := m.GetByConnector("conn-a")
+	got := m.GetByConnector(connID)
 	if got == nil {
 		t.Fatal("GetByConnector returned nil")
 	}
@@ -46,7 +48,7 @@ func TestSyncJobManager_GetByConnector(t *testing.T) {
 		t.Errorf("ConnectorName = %q, want conn-a", got.ConnectorName)
 	}
 
-	got = m.GetByConnector("nonexistent")
+	got = m.GetByConnector(uuid.New())
 	if got != nil {
 		t.Error("expected nil for nonexistent connector")
 	}
@@ -54,10 +56,11 @@ func TestSyncJobManager_GetByConnector(t *testing.T) {
 
 func TestSyncJobManager_GetByConnector_NotRunning(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("conn-a", "filesystem")
+	connID := uuid.New()
+	job := m.Start(connID, "conn-a", "filesystem")
 	m.Complete(job.ID, nil)
 
-	got := m.GetByConnector("conn-a")
+	got := m.GetByConnector(connID)
 	if got != nil {
 		t.Error("expected nil for completed connector")
 	}
@@ -65,7 +68,7 @@ func TestSyncJobManager_GetByConnector_NotRunning(t *testing.T) {
 
 func TestSyncJobManager_Update(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 
 	m.Update(job.ID, 100, 50, 2)
 
@@ -83,7 +86,7 @@ func TestSyncJobManager_Update(t *testing.T) {
 
 func TestSyncJobManager_Complete_Success(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 	m.Update(job.ID, 10, 10, 0)
 	m.Complete(job.ID, nil)
 
@@ -98,7 +101,7 @@ func TestSyncJobManager_Complete_Success(t *testing.T) {
 
 func TestSyncJobManager_Complete_Failure(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 	m.Complete(job.ID, fmt.Errorf("connection lost"))
 
 	got := m.Get(job.ID)
@@ -112,8 +115,8 @@ func TestSyncJobManager_Complete_Failure(t *testing.T) {
 
 func TestSyncJobManager_Active(t *testing.T) {
 	m := NewSyncJobManager()
-	m.Start("a", "filesystem")
-	m.Start("b", "imap")
+	m.Start(uuid.New(), "a", "filesystem")
+	m.Start(uuid.New(), "b", "imap")
 
 	jobs := m.Active()
 	if len(jobs) != 2 {
@@ -123,7 +126,7 @@ func TestSyncJobManager_Active(t *testing.T) {
 
 func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 
 	ch := m.Subscribe(job.ID)
 
@@ -161,7 +164,7 @@ func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
 
 func TestSyncJobManager_Subscribe_CompletedJob(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 	m.Complete(job.ID, nil)
 
 	ch := m.Subscribe(job.ID)
@@ -184,7 +187,7 @@ func TestSyncJobManager_Subscribe_CompletedJob(t *testing.T) {
 
 func TestSyncJobManager_Get_ReturnsSnapshot(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 
 	got1 := m.Get(job.ID)
 	m.Update(job.ID, 100, 50, 0)
@@ -208,10 +211,17 @@ func TestSyncJobManager_Get_NotFound(t *testing.T) {
 
 func TestStreamSyncProgress_Handler(t *testing.T) {
 	h := newTestHandler()
-	job := h.syncJobs.Start("test-fs", "filesystem")
+	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	job := h.syncJobs.Start(testID, "test-fs", "filesystem")
 
 	r := chi.NewRouter()
-	r.Get("/api/sync/{connector}/progress", h.StreamSyncProgress)
+	// Inject admin auth context so canReadConnector passes
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, withAdminContext(req))
+		})
+	})
+	r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
 
 	// Start a test server so we get real HTTP with flushing
 	srv := httptest.NewServer(r)
@@ -225,7 +235,7 @@ func TestStreamSyncProgress_Handler(t *testing.T) {
 		h.syncJobs.Complete(job.ID, nil)
 	}()
 
-	resp, err := http.Get(srv.URL + "/api/sync/test-fs/progress")
+	resp, err := http.Get(srv.URL + "/api/sync/" + testID.String() + "/progress")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -247,9 +257,9 @@ func TestStreamSyncProgress_NotFound(t *testing.T) {
 	h := newTestHandler()
 
 	r := chi.NewRouter()
-	r.Get("/api/sync/{connector}/progress", h.StreamSyncProgress)
+	r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sync/nonexistent/progress", nil)
+	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/sync/"+uuid.New().String()+"/progress", nil))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -266,7 +276,7 @@ func TestSyncJobManager_Notify_NonexistentJob(t *testing.T) {
 
 func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 	m := NewSyncJobManager()
-	job := m.Start("test", "filesystem")
+	job := m.Start(uuid.New(), "test", "filesystem")
 
 	var wg sync.WaitGroup
 	for i := range 100 {
@@ -275,7 +285,7 @@ func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			m.Update(job.ID, 100, n, 0)
 			_ = m.Get(job.ID)
-			_ = m.GetByConnector("test")
+			_ = m.GetByConnector(uuid.New())
 			_ = m.Active()
 		}(i)
 	}

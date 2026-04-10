@@ -45,6 +45,8 @@ type Chunk struct {
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	URL         string         `json:"url,omitempty"`
 	Visibility  string         `json:"visibility"`
+	OwnerID     string         `json:"owner_id,omitempty"`
+	Shared      bool           `json:"shared,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	IndexedAt   time.Time      `json:"indexed_at"`
 }

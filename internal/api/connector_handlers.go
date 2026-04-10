@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
@@ -21,6 +22,7 @@ type createConnectorRequest struct {
 	Config   map[string]any `json:"config"`
 	Enabled  bool           `json:"enabled"`
 	Schedule string         `json:"schedule"`
+	Shared   bool           `json:"shared"`
 }
 
 type updateConnectorRequest struct {
@@ -29,11 +31,40 @@ type updateConnectorRequest struct {
 	Config   map[string]any `json:"config"`
 	Enabled  bool           `json:"enabled"`
 	Schedule string         `json:"schedule"`
+	Shared   bool           `json:"shared"`
 }
 
 type connectorResponse struct {
 	model.ConnectorConfig
 	Status string `json:"status"`
+}
+
+// canReadConnector returns true if the user is allowed to read this connector.
+// Admins can read everything. Users can read their own connectors plus shared.
+func canReadConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
+	if claims == nil {
+		return false
+	}
+	if claims.Role == "admin" {
+		return true
+	}
+	if cfg.Shared {
+		return true
+	}
+	return cfg.UserID != nil && *cfg.UserID == claims.UserID
+}
+
+// canModifyConnector returns true if the user is allowed to mutate this connector.
+// Admins can modify everything. Users can only modify their own connectors.
+// Shared connectors that are not owned by the user are admin-only.
+func canModifyConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
+	if claims == nil {
+		return false
+	}
+	if claims.Role == "admin" {
+		return true
+	}
+	return cfg.UserID != nil && *cfg.UserID == claims.UserID
 }
 
 // ListConnectors godoc
@@ -44,7 +75,8 @@ type connectorResponse struct {
 //	@Success	200	{array}	connectorResponse
 //	@Router		/connectors [get]
 func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
-	configs, err := h.store.ListConnectorConfigs(r.Context())
+	userID := auth.UserIDFromContext(r.Context())
+	configs, err := h.store.ListUserConnectorConfigs(r.Context(), userID)
 	if err != nil {
 		h.log.Error("list connectors failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to list connectors")
@@ -55,7 +87,7 @@ func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 	result := make([]connectorResponse, len(configs))
 	for i, cfg := range configs {
 		status := "inactive"
-		if _, ok := active[cfg.Name]; ok {
+		if _, ok := active[cfg.ID]; ok {
 			status = "active"
 		}
 		cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
@@ -92,8 +124,13 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
 	status := "inactive"
-	if _, ok := h.cm.Get(cfg.Name); ok {
+	if _, _, ok := h.cm.GetByID(id); ok {
 		status = "active"
 	}
 
@@ -129,12 +166,15 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := auth.UserIDFromContext(r.Context())
 	cfg := &model.ConnectorConfig{
 		Type:     req.Type,
 		Name:     req.Name,
 		Config:   req.Config,
 		Enabled:  req.Enabled,
 		Schedule: req.Schedule,
+		Shared:   req.Shared,
+		UserID:   &userID,
 	}
 	if cfg.Config == nil {
 		cfg.Config = map[string]any{}
@@ -189,22 +229,34 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Restore masked secrets from existing config so they aren't overwritten
+	existing, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "connector not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		return
+	}
+
+	if !canModifyConnector(auth.UserFromContext(r.Context()), existing) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
 	cfg := &model.ConnectorConfig{
 		ID:       id,
 		Type:     req.Type,
 		Name:     req.Name,
-		Config:   req.Config,
+		Config:   crypto.RestoreMaskedFields(req.Type, req.Config, existing.Config),
 		Enabled:  req.Enabled,
 		Schedule: req.Schedule,
+		Shared:   req.Shared,
+		UserID:   existing.UserID,
 	}
 	if cfg.Config == nil {
 		cfg.Config = map[string]any{}
-	}
-
-	// Restore masked secrets from existing config so they aren't overwritten
-	existing, err := h.store.GetConnectorConfig(r.Context(), id)
-	if err == nil {
-		cfg.Config = crypto.RestoreMaskedFields(cfg.Type, cfg.Config, existing.Config)
 	}
 
 	if err := h.cm.Update(r.Context(), cfg); err != nil {
@@ -218,6 +270,22 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// If ownership flipped, propagate the change to all chunks already indexed
+	// in OpenSearch — otherwise old chunks keep their stale shared/owner_id and
+	// the visibility change has no effect until the next full re-sync.
+	if existing.Shared != cfg.Shared {
+		ownerID := ""
+		if cfg.UserID != nil {
+			ownerID = cfg.UserID.String()
+		}
+		if err := h.search.UpdateOwnershipBySource(r.Context(), cfg.Type, cfg.Name, ownerID, cfg.Shared); err != nil {
+			h.log.Warn("failed to propagate ownership change to search index",
+				zap.String("connector", cfg.Name),
+				zap.Error(err),
+			)
+		}
 	}
 
 	cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
@@ -236,6 +304,21 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+
+	existing, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "connector not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		return
+	}
+
+	if !canModifyConnector(auth.UserFromContext(r.Context()), existing) {
+		writeError(w, http.StatusNotFound, "connector not found")
 		return
 	}
 
