@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 	opensearch "github.com/opensearch-project/opensearch-go/v4"
 	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"
@@ -33,10 +34,16 @@ type Client struct {
 	log                *zap.Logger
 	index              string
 	embeddingDimension int
+	// languages drives per-field language analyzers on title/content and
+	// the set of fields multi_match searches against. Empty is allowed and
+	// falls back to standard-analyzer-only (pre-stemming) behavior.
+	languages []lang.Language
 }
 
 // New creates a new OpenSearch client and verifies the connection.
-func New(ctx context.Context, url string, log *zap.Logger) (*Client, error) {
+// languages configures the per-field language analyzers on text fields;
+// pass lang.Default() in production and nil in tests that don't care.
+func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Language) (*Client, error) {
 	if log == nil {
 		log = zap.NewNop()
 	}
@@ -55,12 +62,12 @@ func New(ctx context.Context, url string, log *zap.Logger) (*Client, error) {
 	}
 
 	log.Info("connected to OpenSearch", zap.String("url", url))
-	return &Client{os: osClient, log: log, index: defaultIndex}, nil
+	return &Client{os: osClient, log: log, index: defaultIndex, languages: languages}, nil
 }
 
 // NewWithIndex creates a client with a custom index name (for testing).
-func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger) (*Client, error) {
-	c, err := New(ctx, url, log)
+func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger, languages []lang.Language) (*Client, error) {
+	c, err := New(ctx, url, log, languages)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +87,7 @@ func (c *Client) EnsureIndex(ctx context.Context, embeddingDimension int) error 
 		return nil // index already exists
 	}
 
-	mapping := indexMappingJSON(embeddingDimension)
+	mapping := indexMappingJSON(embeddingDimension, c.languages)
 	_, err = c.os.Indices.Create(ctx, opensearchapi.IndicesCreateReq{
 		Index: c.index,
 		Body:  strings.NewReader(mapping),
@@ -232,6 +239,78 @@ func highlightConfig() map[string]any {
 	}
 }
 
+// textSearchFields returns the list of fields a multi_match query should
+// target on title/content. The base "title^2"/"content" pair matches
+// standard-analyzed tokens; one pair per configured language targets the
+// language-specific sub-field produced by indexMappingJSON. With
+// multi_match type=most_fields this accumulates scores across every
+// analyzer that recognizes the query terms.
+func (c *Client) textSearchFields() []string {
+	fields := []string{"title^2", "content"}
+	for _, l := range c.languages {
+		fields = append(fields,
+			"title."+l.Name+"^2",
+			"content."+l.Name,
+		)
+	}
+	return fields
+}
+
+// CheckMappingCurrent compares the existing index's title/content
+// mappings against the ones this client would create. Returns (true, nil)
+// when every configured language has a corresponding sub-field on both
+// title and content; (false, nil) when sub-fields are missing or the
+// base analyzer has drifted. A (false, nil) result means the user should
+// run POST /api/reindex to pick up the new mapping.
+//
+// Callers should treat a non-nil error as non-fatal — this is a
+// diagnostic, not a gate.
+func (c *Client) CheckMappingCurrent(ctx context.Context) (bool, error) {
+	resp, err := c.os.Indices.Mapping.Get(ctx, &opensearchapi.MappingGetReq{
+		Indices: []string{c.index},
+	})
+	if err != nil {
+		return false, fmt.Errorf("search: get mapping: %w", err)
+	}
+
+	// The response shape is { "<index>": { "mappings": { "properties": {...} } } }
+	idx, ok := resp.Indices[c.index]
+	if !ok {
+		return false, fmt.Errorf("search: index %q not in mapping response", c.index)
+	}
+	raw, err := json.Marshal(idx.Mappings)
+	if err != nil {
+		return false, fmt.Errorf("search: marshal mapping: %w", err)
+	}
+	var parsed struct {
+		Properties map[string]struct {
+			Type     string `json:"type"`
+			Analyzer string `json:"analyzer"`
+			Fields   map[string]struct {
+				Type     string `json:"type"`
+				Analyzer string `json:"analyzer"`
+			} `json:"fields"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false, fmt.Errorf("search: parse mapping: %w", err)
+	}
+
+	for _, field := range []string{"title", "content"} {
+		f, ok := parsed.Properties[field]
+		if !ok {
+			return false, nil
+		}
+		for _, l := range c.languages {
+			sub, ok := f.Fields[l.Name]
+			if !ok || sub.Analyzer != l.OpenSearchAnalyzer {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
 // Search performs a BM25 full-text search (no vector search).
 func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.SearchResult, error) {
 	if req.Limit <= 0 {
@@ -240,8 +319,10 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 
 	matchQuery := map[string]any{
 		"multi_match": map[string]any{
-			"query":  req.Query,
-			"fields": []string{"title^2", "content"},
+			"query":   req.Query,
+			"fields":  c.textSearchFields(),
+			"type":    "most_fields",
+			"lenient": true,
 		},
 	}
 	filters := buildFilterClauses(req)
@@ -280,8 +361,10 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 	// BM25 sub-query
 	bm25Query := map[string]any{
 		"multi_match": map[string]any{
-			"query":  req.Query,
-			"fields": []string{"title^2", "content"},
+			"query":   req.Query,
+			"fields":  c.textSearchFields(),
+			"type":    "most_fields",
+			"lenient": true,
 		},
 	}
 	filters := buildFilterClauses(req)
@@ -540,7 +623,7 @@ func (c *Client) RecreateIndex(ctx context.Context, embeddingDimension int) erro
 	_ = c.DeleteIndex(ctx) // ignore error if index doesn't exist
 
 	c.embeddingDimension = embeddingDimension
-	mapping := indexMappingJSON(embeddingDimension)
+	mapping := indexMappingJSON(embeddingDimension, c.languages)
 	_, err := c.os.Indices.Create(ctx, opensearchapi.IndicesCreateReq{
 		Index: c.index,
 		Body:  strings.NewReader(mapping),

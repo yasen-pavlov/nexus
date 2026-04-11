@@ -3,6 +3,8 @@ package extractor
 import (
 	"context"
 	"fmt"
+
+	"github.com/muty/nexus/internal/lang"
 )
 
 // Registry chains multiple extractors, trying each in order.
@@ -11,14 +13,16 @@ type Registry struct {
 }
 
 // NewRegistry creates an extractor registry.
-// If tikaURL is provided and Tika is available, it's added as a fallback extractor.
-func NewRegistry(tikaURL string) *Registry {
+// If tikaURL is provided and Tika is available, it's added as a fallback
+// extractor. languages drives the X-Tika-OCRLanguage header so Tesseract
+// knows which language packs to use when OCR'ing scanned PDFs and images.
+func NewRegistry(tikaURL string, languages []lang.Language) *Registry {
 	r := &Registry{
 		extractors: []Extractor{&PlainText{}},
 	}
 
 	if tikaURL != "" {
-		tika := NewTika(tikaURL)
+		tika := NewTika(tikaURL, languages)
 		if tika.Available(context.Background()) {
 			r.extractors = append(r.extractors, tika)
 		}

@@ -19,6 +19,7 @@ import (
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/rerank"
@@ -50,7 +51,7 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager)
 	t.Cleanup(func() { st.Close() })
 
 	osURL, osIndex := testutil.TestOSConfig(t, "api")
-	sc, err := search.NewWithIndex(context.Background(), osURL, osIndex, nil)
+	sc, err := search.NewWithIndex(context.Background(), osURL, osIndex, nil, lang.Default())
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}

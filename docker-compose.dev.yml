@@ -32,7 +32,9 @@ services:
       retries: 10
 
   tika:
-    image: apache/tika:latest-full
+    build:
+      context: .
+      dockerfile: Dockerfile.tika
     ports:
       - "9998:9998"
     healthcheck:

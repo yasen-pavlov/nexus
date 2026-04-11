@@ -162,9 +162,21 @@ var (
 	// includes `=` (base64 padding, query param separators) and `&`.
 	longURLRe = regexp.MustCompile(`https?://[^\s<>()"]*[A-Za-z0-9_/+%=&-]{60,}[^\s<>()"]*`)
 
-	// quotedReplyHeaderRe matches the "On <date>, <person> wrote:" line that
-	// precedes quoted reply blocks in most clients.
-	quotedReplyHeaderRe = regexp.MustCompile(`(?m)^On .+ wrote:.*$`)
+	// quotedReplyHeaderRes matches the "On <date>, <person> wrote:" line
+	// (and locale-specific variants) that precedes quoted reply blocks in
+	// most clients. These run independently of the configured index
+	// languages — a user may receive a German quoted reply even if their
+	// instance indexes only English, and stripping it is always correct.
+	quotedReplyHeaderRes = []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^On .+ wrote:.*$`),                  // English
+		regexp.MustCompile(`(?m)^Am .+ schrieb .+:.*$`),             // German
+		regexp.MustCompile(`(?m)^Le .+ a écrit\s*:.*$`),             // French
+		regexp.MustCompile(`(?m)^El .+ escribió:.*$`),               // Spanish
+		regexp.MustCompile(`(?m)^Il .+ ha scritto:.*$`),             // Italian
+		regexp.MustCompile(`(?m)^Em .+ escreveu:.*$`),               // Portuguese
+		regexp.MustCompile(`(?m)^Op .+ schreef .+:.*$`),             // Dutch
+		regexp.MustCompile(`(?m)^На .+ (?:в|написа|написал).*:.*$`), // Bulgarian
+	}
 
 	// blankLineRe collapses 3+ consecutive newlines into two.
 	blankLineRe = regexp.MustCompile(`\n{3,}`)
@@ -182,9 +194,12 @@ func cleanEmailText(text string) string {
 	text = trackingURLRe.ReplaceAllString(text, "")
 	text = longURLRe.ReplaceAllString(text, "")
 
-	// Remove the "On <date>, <person> wrote:" header that introduces quoted
-	// replies. The actual quoted lines (starting with `>`) get stripped below.
-	text = quotedReplyHeaderRe.ReplaceAllString(text, "")
+	// Remove the "On <date>, <person> wrote:" header (and locale variants)
+	// that introduces quoted replies. The actual quoted lines (starting
+	// with `>`) get stripped below.
+	for _, re := range quotedReplyHeaderRes {
+		text = re.ReplaceAllString(text, "")
+	}
 
 	// Walk lines: drop quoted-reply lines (starting with `>`), and stop at the
 	// signature delimiter (`-- ` on its own line — RFC 3676 section 4.3).

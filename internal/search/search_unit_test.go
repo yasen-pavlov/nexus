@@ -4,18 +4,19 @@ import (
 	"context"
 	"testing"
 
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 )
 
 func TestNew_ConnectionError(t *testing.T) {
-	_, err := New(context.Background(), "http://localhost:59999", nil)
+	_, err := New(context.Background(), "http://localhost:59999", nil, lang.Default())
 	if err == nil {
 		t.Fatal("expected error for unreachable OpenSearch")
 	}
 }
 
 func TestNewWithIndex_ConnectionError(t *testing.T) {
-	_, err := NewWithIndex(context.Background(), "http://localhost:59999", "test", nil)
+	_, err := NewWithIndex(context.Background(), "http://localhost:59999", "test", nil, lang.Default())
 	if err == nil {
 		t.Fatal("expected error for unreachable OpenSearch")
 	}

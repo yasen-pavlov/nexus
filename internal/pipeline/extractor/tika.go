@@ -8,19 +8,27 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/muty/nexus/internal/lang"
 )
 
 // Tika extracts text content from binary files using an Apache Tika server.
 type Tika struct {
-	url    string
-	client *http.Client
+	url         string
+	client      *http.Client
+	ocrLanguage string // value for X-Tika-OCRLanguage header, e.g. "eng+deu+bul"
 }
 
 // NewTika creates a Tika extractor pointing at the given Tika server URL.
-func NewTika(url string) *Tika {
+// languages configures the X-Tika-OCRLanguage header sent on every
+// extract request so Tesseract uses the right language packs when OCR'ing
+// scanned PDFs and images. An empty list omits the header entirely,
+// leaving Tika to fall back to its default (English only).
+func NewTika(url string, languages []lang.Language) *Tika {
 	return &Tika{
-		url:    strings.TrimRight(url, "/"),
-		client: &http.Client{Timeout: 60 * time.Second},
+		url:         strings.TrimRight(url, "/"),
+		client:      &http.Client{Timeout: 60 * time.Second},
+		ocrLanguage: lang.TesseractHeader(languages),
 	}
 }
 
@@ -44,6 +52,9 @@ func (t *Tika) Extract(ctx context.Context, raw []byte) (string, error) {
 		return "", fmt.Errorf("tika: create request: %w", err)
 	}
 	req.Header.Set("Accept", "text/plain")
+	if t.ocrLanguage != "" {
+		req.Header.Set("X-Tika-OCRLanguage", t.ocrLanguage)
+	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {

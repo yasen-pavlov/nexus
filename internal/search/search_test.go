@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/testutil"
 )
@@ -16,7 +17,7 @@ func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	url, index := testutil.TestOSConfig(t, "search")
 	ctx := context.Background()
-	client, err := NewWithIndex(ctx, url, index, nil)
+	client, err := NewWithIndex(ctx, url, index, nil, lang.Default())
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
@@ -423,7 +424,7 @@ func TestIndexChunks_CancelledContext(t *testing.T) {
 func TestHybridSearch(t *testing.T) {
 	url, index := testutil.TestOSConfig(t, "hybrid")
 	ctx := context.Background()
-	c, err := NewWithIndex(ctx, url, index, nil)
+	c, err := NewWithIndex(ctx, url, index, nil, lang.Default())
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
@@ -514,5 +515,194 @@ func TestRecreateIndex(t *testing.T) {
 	}
 	if len(result.Documents) != 0 {
 		t.Errorf("expected 0 results after recreate, got %d", len(result.Documents))
+	}
+}
+
+// TestLanguageAnalysis_Stemming exercises the per-field language analyzers
+// wired through lang.Default(). Each sub-test indexes a document in one
+// language and issues a query in a different morphological form; with the
+// old standard-analyzer-only mapping none of these would match.
+func TestLanguageAnalysis_Stemming(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		content string
+		query   string
+	}{
+		{
+			name:    "english_commands_to_command",
+			title:   "Docker cheat sheet",
+			content: "Common docker commands for daily use",
+			query:   "command",
+		},
+		{
+			name:    "english_containers_to_container",
+			title:   "Production notes",
+			content: "Running containers in production needs care",
+			query:   "container",
+		},
+		{
+			name:    "german_versicherungen_to_versicherung",
+			title:   "Jahresübersicht",
+			content: "Ihre Versicherung für das Jahr 2026 ist aktiv",
+			query:   "Versicherungen",
+		},
+		{
+			name:    "german_versicherung_to_versicherungen",
+			title:   "Portfolio",
+			content: "Alle Versicherungen auf einen Blick",
+			query:   "Versicherung",
+		},
+		{
+			name:    "bulgarian_sreshta_to_sreshti",
+			title:   "Планове",
+			content: "Имаме среща утре в офиса",
+			query:   "срещи",
+		},
+		{
+			name:    "bulgarian_sreshti_to_sreshta",
+			title:   "Календар",
+			content: "Следващата седмица планираме няколко срещи",
+			query:   "среща",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestClient(t)
+			ctx := context.Background()
+			doc := testDoc(tt.name+".txt", tt.title, tt.content)
+			if err := c.IndexDocument(ctx, doc); err != nil {
+				t.Fatalf("index failed: %v", err)
+			}
+			if err := c.Refresh(ctx); err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Search(ctx, model.SearchRequest{Query: tt.query, Limit: 10})
+			if err != nil {
+				t.Fatalf("search failed: %v", err)
+			}
+			if result.TotalCount == 0 {
+				t.Fatalf("query %q did not match doc with content %q — stemming broken", tt.query, tt.content)
+			}
+		})
+	}
+}
+
+// TestLanguageAnalysis_MixedLanguage verifies that a single chunk
+// containing text in two languages is reachable via queries in either
+// language. This is the smoking-gun test that per-field analyzers work
+// across all languages on every doc (not just the one language the doc
+// "is") — without most_fields accumulating across sub-fields, one of
+// these queries would miss.
+func TestLanguageAnalysis_MixedLanguage(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	doc := testDoc(
+		"mixed.txt",
+		"Work notes",
+		"Notes from today: review docker containers and confirm Ihre Versicherung renewal",
+	)
+	if err := c.IndexDocument(ctx, doc); err != nil {
+		t.Fatalf("index failed: %v", err)
+	}
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, q := range []string{"container", "Versicherungen"} {
+		result, err := c.Search(ctx, model.SearchRequest{Query: q, Limit: 10})
+		if err != nil {
+			t.Fatalf("search %q failed: %v", q, err)
+		}
+		if result.TotalCount == 0 {
+			t.Errorf("query %q did not match the mixed-language doc", q)
+		}
+	}
+}
+
+func TestCheckMappingCurrent_FreshIndex(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	ok, err := c.CheckMappingCurrent(ctx)
+	if err != nil {
+		t.Fatalf("CheckMappingCurrent failed: %v", err)
+	}
+	if !ok {
+		t.Error("expected CheckMappingCurrent to return true on a fresh index built from lang.Default()")
+	}
+}
+
+// TestCheckMappingCurrent_StaleIndex simulates the upgrade scenario: an
+// existing index was created by an older build that didn't know about
+// language sub-fields. A new client configured with lang.Default() pointing
+// at that index should report the mapping as out of date.
+func TestCheckMappingCurrent_StaleIndex(t *testing.T) {
+	url, index := testutil.TestOSConfig(t, "stale-mapping")
+	ctx := context.Background()
+
+	// Step 1: build the index with empty languages — emits the old
+	// standard-analyzer-only mapping, no sub-fields.
+	old, err := NewWithIndex(ctx, url, index, nil, nil)
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	if err := old.EnsureIndex(ctx, 0); err != nil {
+		t.Fatalf("create stale index: %v", err)
+	}
+	t.Cleanup(func() {
+		old.DeleteIndex(context.Background()) //nolint:errcheck // test cleanup
+	})
+
+	// Step 2: a fresh client configured with lang.Default() pointing at
+	// the same index should see the sub-fields as missing.
+	fresh, err := NewWithIndex(ctx, url, index, nil, lang.Default())
+	if err != nil {
+		t.Fatalf("fresh client: %v", err)
+	}
+	ok, err := fresh.CheckMappingCurrent(ctx)
+	if err != nil {
+		t.Fatalf("CheckMappingCurrent failed: %v", err)
+	}
+	if ok {
+		t.Error("expected CheckMappingCurrent to return false on an index without language sub-fields")
+	}
+}
+
+// TestCheckMappingCurrent_WrongAnalyzer covers the branch where a sub-field
+// exists but uses the wrong analyzer — e.g., someone manually edited the
+// mapping or the language list changed but a reindex was skipped.
+func TestCheckMappingCurrent_WrongAnalyzer(t *testing.T) {
+	url, index := testutil.TestOSConfig(t, "wrong-analyzer")
+	ctx := context.Background()
+
+	// Build the index with a different language set (just english) so
+	// content.english exists but content.german/content.bulgarian don't.
+	partial, err := NewWithIndex(ctx, url, index, nil, []lang.Language{
+		{Name: "english", OpenSearchAnalyzer: "english", TesseractCode: "eng"},
+	})
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	if err := partial.EnsureIndex(ctx, 0); err != nil {
+		t.Fatalf("create partial index: %v", err)
+	}
+	t.Cleanup(func() {
+		partial.DeleteIndex(context.Background()) //nolint:errcheck // test cleanup
+	})
+
+	// A fresh client configured with the full Default() list should see
+	// german and bulgarian sub-fields as missing.
+	fresh, err := NewWithIndex(ctx, url, index, nil, lang.Default())
+	if err != nil {
+		t.Fatalf("fresh client: %v", err)
+	}
+	ok, err := fresh.CheckMappingCurrent(ctx)
+	if err != nil {
+		t.Fatalf("CheckMappingCurrent failed: %v", err)
+	}
+	if ok {
+		t.Error("expected CheckMappingCurrent to return false when some language sub-fields are missing")
 	}
 }

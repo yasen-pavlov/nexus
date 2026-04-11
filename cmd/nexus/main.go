@@ -28,6 +28,7 @@ import (
 	_ "github.com/muty/nexus/internal/connector/paperless"
 	_ "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/crypto"
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/scheduler"
@@ -111,17 +112,29 @@ func run() error {
 		log.Info("embedding disabled, using BM25-only search")
 	}
 
+	// Canonical list of languages Nexus analyzes. Drives both OpenSearch
+	// per-field analyzers and the Tika OCR language header. When the
+	// Settings UI lands this becomes a DB-backed setting.
+	languages := lang.Default()
+
 	// Set up OpenSearch
-	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log)
+	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, languages)
 	if err != nil {
 		return fmt.Errorf("init search: %w", err)
 	}
 	if err := searchClient.EnsureIndex(ctx, embeddingDim); err != nil {
 		return fmt.Errorf("ensure search index: %w", err)
 	}
+	// Warn if a pre-existing index is missing the language sub-fields
+	// (upgrade path). Non-fatal: multi_match uses lenient:true so queries
+	// still work, just without the new stemming. The warning points the
+	// admin at /api/reindex to rebuild with the full mapping.
+	if ok, err := searchClient.CheckMappingCurrent(ctx); err == nil && !ok {
+		log.Warn("search index mapping is out of date; run POST /api/reindex to rebuild with per-language analyzers")
+	}
 
 	// Set up content extraction
-	extractorRegistry := extractor.NewRegistry(cfg.TikaURL)
+	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages)
 
 	// Set up connector manager
 	cm := api.NewConnectorManager(st, log)

@@ -167,7 +167,7 @@ func TestType_And_Name(t *testing.T) {
 
 func TestSetExtractor(t *testing.T) {
 	c := &Connector{}
-	reg := extractor.NewRegistry("")
+	reg := extractor.NewRegistry("", nil)
 	c.SetExtractor(reg)
 	if c.extractor != reg {
 		t.Error("SetExtractor did not set the extractor")
@@ -560,7 +560,7 @@ func TestMessageToDocuments_WithAttachments(t *testing.T) {
 }
 
 func TestMessageToDocuments_WithExtractor(t *testing.T) {
-	reg := extractor.NewRegistry("")
+	reg := extractor.NewRegistry("", nil)
 	c := &Connector{name: "test-mail", extractor: reg}
 
 	body := buildMultipartMessage(
@@ -836,6 +836,75 @@ func TestCleanEmailText_RemovesSignature(t *testing.T) {
 func TestCleanEmailText_Empty(t *testing.T) {
 	if got := cleanEmailText(""); got != "" {
 		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestCleanEmailText_MultiLocaleQuotedReplies(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          string
+		wantKeep    string
+		wantDropped string
+	}{
+		{
+			name:        "english",
+			in:          "Looks good.\n\nOn Wed, Apr 9, 2026 at 3:14 PM, Bob <bob@example.com> wrote:\n> Meeting tomorrow?",
+			wantKeep:    "Looks good.",
+			wantDropped: "wrote:",
+		},
+		{
+			name:        "german",
+			in:          "Danke!\n\nAm 09.04.2026 um 15:14 schrieb Hans <hans@example.de>:\n> Treffen wir uns morgen?",
+			wantKeep:    "Danke!",
+			wantDropped: "schrieb",
+		},
+		{
+			name:        "french",
+			in:          "Merci.\n\nLe mercredi 9 avril 2026, Marie <marie@example.fr> a écrit :\n> On se voit demain ?",
+			wantKeep:    "Merci.",
+			wantDropped: "a écrit",
+		},
+		{
+			name:        "spanish",
+			in:          "Perfecto.\n\nEl mié, 9 abr 2026 a las 15:14, Ana <ana@example.es> escribió:\n> ¿Nos vemos mañana?",
+			wantKeep:    "Perfecto.",
+			wantDropped: "escribió",
+		},
+		{
+			name:        "italian",
+			in:          "Ok!\n\nIl giorno mer 9 apr 2026 alle ore 15:14, Luca <luca@example.it> ha scritto:\n> Ci vediamo domani?",
+			wantKeep:    "Ok!",
+			wantDropped: "ha scritto",
+		},
+		{
+			name:        "portuguese",
+			in:          "Obrigado.\n\nEm qua., 9 de abr. de 2026 às 15:14, João <joao@example.pt> escreveu:\n> Nos vemos amanhã?",
+			wantKeep:    "Obrigado.",
+			wantDropped: "escreveu",
+		},
+		{
+			name:        "dutch",
+			in:          "Bedankt.\n\nOp wo 9 apr 2026 om 15:14 schreef Jan <jan@example.nl>:\n> Zien we elkaar morgen?",
+			wantKeep:    "Bedankt.",
+			wantDropped: "schreef",
+		},
+		{
+			name:        "bulgarian",
+			in:          "Звучи добре.\n\nНа ср, 9.04.2026 г., 15:14 ч. Иван <ivan@example.bg> написа:\n> Ще се видим ли утре?",
+			wantKeep:    "Звучи добре.",
+			wantDropped: "написа",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := cleanEmailText(tt.in)
+			if !strings.Contains(out, tt.wantKeep) {
+				t.Errorf("expected body %q preserved, got %q", tt.wantKeep, out)
+			}
+			if strings.Contains(out, tt.wantDropped) {
+				t.Errorf("expected reply header %q removed, got %q", tt.wantDropped, out)
+			}
+		})
 	}
 }
 

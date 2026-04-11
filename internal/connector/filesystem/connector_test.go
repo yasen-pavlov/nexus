@@ -126,7 +126,7 @@ func TestFetch(t *testing.T) {
 		name:      "test",
 		rootPath:  dir,
 		patterns:  []string{"*.txt", "*.md"},
-		extractor: extractor.NewRegistry(""), // PlainText only — production always has at least this
+		extractor: extractor.NewRegistry("", nil), // PlainText only — production always has at least this
 	}
 
 	t.Run("full sync", func(t *testing.T) {
@@ -244,7 +244,7 @@ func TestSetExtractor(t *testing.T) {
 	if c.extractor != nil {
 		t.Error("expected nil extractor initially")
 	}
-	reg := extractor.NewRegistry("")
+	reg := extractor.NewRegistry("", nil)
 	c.SetExtractor(reg)
 	if c.extractor == nil {
 		t.Error("expected extractor to be set")
@@ -253,7 +253,7 @@ func TestSetExtractor(t *testing.T) {
 
 func TestFetch_WithExtractor_UnsupportedType(t *testing.T) {
 	// Tika not available — registry only has PlainText
-	reg := extractor.NewRegistry("")
+	reg := extractor.NewRegistry("", nil)
 	dir := t.TempDir()
 	writeFile(t, dir, "data.bin", "binary data")
 
@@ -304,7 +304,7 @@ func TestFetch_WithExtractor(t *testing.T) {
 	writeFile(t, dir, "doc.pdf", "fake pdf bytes")
 	writeFile(t, dir, "notes.txt", "plain text content")
 
-	reg := extractor.NewRegistry(tikaSrv.URL)
+	reg := extractor.NewRegistry(tikaSrv.URL, nil)
 	c := &Connector{
 		name:      "test",
 		rootPath:  dir,

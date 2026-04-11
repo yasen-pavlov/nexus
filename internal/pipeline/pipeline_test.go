@@ -11,6 +11,7 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/embedding"
+	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/search"
@@ -38,7 +39,7 @@ func configureFSWithExtractor(t *testing.T, name, dir, patterns string) connecto
 	if extConn, ok := fsConn.(interface {
 		SetExtractor(*extractor.Registry)
 	}); ok {
-		extConn.SetExtractor(extractor.NewRegistry(""))
+		extConn.SetExtractor(extractor.NewRegistry("", nil))
 	}
 	return fsConn
 }
@@ -53,7 +54,7 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client) {
 	t.Cleanup(func() { st.Close() })
 
 	osURL, osIndex := testutil.TestOSConfig(t, "pipeline")
-	sc, err := search.NewWithIndex(context.Background(), osURL, osIndex, nil)
+	sc, err := search.NewWithIndex(context.Background(), osURL, osIndex, nil, lang.Default())
 	if err != nil {
 		t.Skipf("OpenSearch not available: %v", err)
 	}
