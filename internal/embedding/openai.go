@@ -42,7 +42,9 @@ type openAIEmbedResponse struct {
 	} `json:"data"`
 }
 
-func (o *OpenAI) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+// Embed implements Embedder. The inputType parameter is ignored — OpenAI's
+// embedding API doesn't have a query/document distinction.
+func (o *OpenAI) Embed(ctx context.Context, texts []string, _ string) ([][]float32, error) {
 	body, err := json.Marshal(openAIEmbedRequest{Model: o.model, Input: texts})
 	if err != nil {
 		return nil, fmt.Errorf("openai: marshal request: %w", err)

@@ -758,21 +758,84 @@ func TestParseEmailBody_PreferPlainOverHTML(t *testing.T) {
 }
 
 func TestStripHTML(t *testing.T) {
+	// The DOM-aware stripper preserves paragraph structure with newlines but
+	// drops <script>/<style>/<head> entirely and unwraps anchor hrefs.
 	tests := []struct {
-		name, input, want string
+		name, input, wantContains, wantNotContains string
 	}{
-		{"simple tags", "<p>Hello</p>", "Hello"},
-		{"nested tags", "<div><p>Hello <b>world</b></p></div>", "Hello world"},
-		{"whitespace", "<p>Hello</p>  <p>World</p>", "Hello World"},
-		{"empty", "", ""},
-		{"no tags", "Just text", "Just text"},
+		{"simple tags", "<p>Hello</p>", "Hello", "<"},
+		{"nested tags", "<div><p>Hello <b>world</b></p></div>", "Hello world", "<"},
+		{"two paragraphs", "<p>Hello</p><p>World</p>", "Hello", ""},
+		{"empty", "", "", ""},
+		{"no tags", "Just text", "Just text", ""},
+		{"drops script", "<p>Hello</p><script>var x = 1;</script><p>World</p>", "Hello", "var x"},
+		{"drops style", "<style>.x{color:red}</style><p>Hello</p>", "Hello", "color:red"},
+		{"drops head", "<html><head><title>Subj</title></head><body><p>Body</p></body></html>", "Body", "Subj"},
+		{"unwraps anchor href", `<p>Click <a href="https://track.example.com/abc">here</a>.</p>`, "here", "track.example.com"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := stripHTML(tt.input); got != tt.want {
-				t.Errorf("stripHTML(%q) = %q, want %q", tt.input, got, tt.want)
+			got := stripHTML(tt.input)
+			if tt.wantContains != "" && !strings.Contains(got, tt.wantContains) {
+				t.Errorf("stripHTML(%q) = %q, want to contain %q", tt.input, got, tt.wantContains)
+			}
+			if tt.wantNotContains != "" && strings.Contains(got, tt.wantNotContains) {
+				t.Errorf("stripHTML(%q) = %q, should NOT contain %q", tt.input, got, tt.wantNotContains)
 			}
 		})
+	}
+}
+
+func TestCleanEmailText_StripsTrackingURLs(t *testing.T) {
+	in := "Hello!\n\nClick https://click.mailgun.com/abc123 to confirm.\nThanks."
+	out := cleanEmailText(in)
+	if strings.Contains(out, "click.mailgun.com") {
+		t.Errorf("expected tracking URL stripped, got %q", out)
+	}
+	if !strings.Contains(out, "Hello!") || !strings.Contains(out, "Thanks.") {
+		t.Errorf("expected surrounding text preserved, got %q", out)
+	}
+}
+
+func TestCleanEmailText_StripsLongOpaqueURLs(t *testing.T) {
+	in := "See: https://example.com/r?a=eyJ1cmwiOiJodHRwczovL3RyYWNrLmV4YW1wbGUuY29tL2FiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6MDEyMzQ1Njc4OWFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6IiwidWlkIjoiMTIzNDUifQ end."
+	out := cleanEmailText(in)
+	if strings.Contains(out, "eyJ1") {
+		t.Errorf("expected long opaque URL stripped, got %q", out)
+	}
+	if !strings.Contains(out, "See:") || !strings.Contains(out, "end.") {
+		t.Errorf("expected surrounding text preserved, got %q", out)
+	}
+}
+
+func TestCleanEmailText_RemovesQuotedReplies(t *testing.T) {
+	in := "Sounds good, agreed.\n\nOn Wed, Apr 9, 2026 at 3:14 PM, Bob <bob@example.com> wrote:\n> Should we meet tomorrow?\n> I'm free at 2pm.\n> -Bob"
+	out := cleanEmailText(in)
+	if !strings.Contains(out, "Sounds good") {
+		t.Errorf("expected reply text preserved, got %q", out)
+	}
+	if strings.Contains(out, "wrote:") {
+		t.Errorf("expected 'wrote:' header removed, got %q", out)
+	}
+	if strings.Contains(out, "tomorrow") {
+		t.Errorf("expected quoted reply lines removed, got %q", out)
+	}
+}
+
+func TestCleanEmailText_RemovesSignature(t *testing.T) {
+	in := "Body of the email.\nMore body.\n\n-- \nJohn Doe\njohn@example.com\nVP of Stuff"
+	out := cleanEmailText(in)
+	if !strings.Contains(out, "Body of the email") || !strings.Contains(out, "More body") {
+		t.Errorf("expected body preserved, got %q", out)
+	}
+	if strings.Contains(out, "John Doe") || strings.Contains(out, "VP of Stuff") {
+		t.Errorf("expected signature removed, got %q", out)
+	}
+}
+
+func TestCleanEmailText_Empty(t *testing.T) {
+	if got := cleanEmailText(""); got != "" {
+		t.Errorf("expected empty string, got %q", got)
 	}
 }
 

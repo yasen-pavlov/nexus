@@ -74,7 +74,7 @@ type mockEmbedder struct {
 	dim int
 }
 
-func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+func (m *mockEmbedder) Embed(_ context.Context, texts []string, _ string) ([][]float32, error) {
 	result := make([][]float32, len(texts))
 	for i := range texts {
 		result[i] = make([]float32, m.dim)
@@ -190,5 +190,69 @@ func TestPipelineRun(t *testing.T) {
 	}
 	if report2.DocsProcessed != 0 {
 		t.Errorf("expected 0 docs on incremental sync, got %d", report2.DocsProcessed)
+	}
+}
+
+func TestCountAlphabeticTokens(t *testing.T) {
+	tests := []struct {
+		text string
+		want int
+	}{
+		{"", 0},
+		{"a b c", 0}, // single-letter tokens don't count
+		{"the quick brown fox", 4},
+		{"hello, world!", 2},                       // punctuation doesn't break count
+		{"http://example.com/path?query=foo", 0},   // URL is one token of mostly non-alpha
+		{"abc def ghi 123 456", 3},                 // numbers don't count
+		{"Привет как дела", 3},                     // Cyrillic counts
+		{"a1 b2 c3 dd ee", 2},                      // tokens with <2 alphas don't count
+		{"docker compose up -d", 3},                // "-d" doesn't count, others do
+	}
+	for _, tt := range tests {
+		if got := countAlphabeticTokens(tt.text); got != tt.want {
+			t.Errorf("countAlphabeticTokens(%q) = %d, want %d", tt.text, got, tt.want)
+		}
+	}
+}
+
+func TestPipelineRun_LowInfoChunkSkipsEmbedding(t *testing.T) {
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+
+	// Recreate index with k-NN enabled (dim=3 for the mock)
+	sc.DeleteIndex(ctx)    //nolint:errcheck // test
+	sc.EnsureIndex(ctx, 3) //nolint:errcheck // test
+
+	provider := &mockEmbedderProvider{embedder: &mockEmbedder{dim: 3}}
+	p := New(st, sc, provider, zap.NewNop())
+
+	// Two docs: one with substantive content, one with low-info content
+	// (just URLs and short tokens). The low-info one should NOT get an embedding.
+	dir := t.TempDir()
+	os.WriteFile(dir+"/sub.txt", []byte("This is a substantive document with many real words that should be embedded normally."), 0o644) //nolint:errcheck // test
+	os.WriteFile(dir+"/junk.txt", []byte("ok ty https://x.com/a/b a 1 b 2"), 0o644)                                                          //nolint:errcheck // test
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "gate-test",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fsConn := configureFSWithExtractor(t, "gate-test", dir, "*.txt")
+
+	if _, err := p.RunWithProgress(ctx, connID, fsConn, "", false, nil); err != nil {
+		t.Fatalf("pipeline run failed: %v", err)
+	}
+	sc.Refresh(ctx) //nolint:errcheck // test
+
+	// Both docs should be searchable via BM25 (the low-info one is still indexed)
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "substantive", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TotalCount != 1 {
+		t.Errorf("expected substantive doc to be findable via BM25, got %d results", result.TotalCount)
 	}
 }

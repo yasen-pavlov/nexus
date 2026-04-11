@@ -32,11 +32,11 @@ func NewRetryEmbedder(inner Embedder, log *zap.Logger) *RetryEmbedder {
 	}
 }
 
-func (r *RetryEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (r *RetryEmbedder) Embed(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
 	var lastErr error
 
 	for attempt := range r.maxRetries + 1 {
-		result, err := r.inner.Embed(ctx, texts)
+		result, err := r.inner.Embed(ctx, texts, inputType)
 		if err == nil {
 			return result, nil
 		}

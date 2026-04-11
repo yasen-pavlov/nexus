@@ -38,7 +38,9 @@ type ollamaEmbedResponse struct {
 	Embeddings [][]float32 `json:"embeddings"`
 }
 
-func (o *Ollama) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+// Embed implements Embedder. The inputType parameter is ignored — Ollama
+// embedding models don't have a query/document distinction in their API.
+func (o *Ollama) Embed(ctx context.Context, texts []string, _ string) ([][]float32, error) {
 	body, err := json.Marshal(ollamaEmbedRequest{Model: o.model, Input: texts})
 	if err != nil {
 		return nil, fmt.Errorf("ollama: marshal request: %w", err)

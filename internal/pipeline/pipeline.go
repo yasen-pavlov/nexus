@@ -4,6 +4,8 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,9 +18,25 @@ import (
 	"go.uber.org/zap"
 )
 
-// minEmbeddingContentLen is the minimum content length (chars) for generating embeddings.
-// Shorter content produces unstable vectors that pollute semantic search results.
-const minEmbeddingContentLen = 50
+// minEmbeddingContentLen is a cost-saving char-count cap on which chunks get
+// an embedding API call. Currently disabled (0) — the real noise filter is
+// minEmbeddingAlphabeticTokens below, which is content-aware in a way char
+// count never can be. Set non-zero only if you need to save embedding API
+// spend on very short chunks.
+const minEmbeddingContentLen = 0
+
+// minEmbeddingAlphabeticTokens skips embedding for chunks whose content has
+// fewer than this many alphabetic tokens (whitespace-separated tokens with at
+// least 2 alphabetic characters). The chunk is still indexed for BM25 search;
+// it just doesn't contribute a vector to the kNN side of hybrid search.
+//
+// Why: low-information chunks produce noisy embeddings that cluster broadly
+// in vector space and dominate kNN results for unrelated queries (the
+// "noise hub" problem). The fix is to never embed them in the first place.
+// 10 tokens is roughly "a meaningful sentence" — short chat acknowledgments
+// ("ok", "thanks!"), URL-only chunks, and base64-only fragments will fall
+// below this threshold and get skipped.
+const minEmbeddingAlphabeticTokens = 10
 
 // EmbedderProvider returns the current embedder (supports hot-reload).
 type EmbedderProvider interface {
@@ -117,24 +135,32 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 			}
 		}
 
-		// Generate embeddings if available and content is long enough
-		// Short content (< 50 chars) produces unstable embeddings that match random queries
+		// Generate embeddings for chunks that pass the noise gate. Chunks with
+		// low alphabetic-token count get indexed for BM25 only — they don't
+		// contribute a vector to kNN search. See minEmbeddingAlphabeticTokens
+		// for the rationale (noise hubs in embedding space).
 		embedder := p.getEmbedder()
 		if embedder != nil && len(doc.Content) >= minEmbeddingContentLen {
-			texts := make([]string, len(chunks))
+			var embedTexts []string
+			var embedIndices []int // index into chunks for each text we send
 			for j, c := range chunks {
-				texts[j] = c.Content
+				if countAlphabeticTokens(c.Content) >= minEmbeddingAlphabeticTokens {
+					embedTexts = append(embedTexts, c.Content)
+					embedIndices = append(embedIndices, j)
+				}
 			}
 
-			embeddings, err := embedder.Embed(ctx, texts)
-			if err != nil {
-				p.log.Warn("embedding failed, indexing without vectors",
-					zap.String("source_id", doc.SourceID),
-					zap.Error(err),
-				)
-			} else if len(embeddings) == len(chunks) {
-				for j := range chunks {
-					chunks[j].Embedding = embeddings[j]
+			if len(embedTexts) > 0 {
+				embeddings, err := embedder.Embed(ctx, embedTexts, embedding.InputTypeDocument)
+				if err != nil {
+					p.log.Warn("embedding failed, indexing without vectors",
+						zap.String("source_id", doc.SourceID),
+						zap.Error(err),
+					)
+				} else if len(embeddings) == len(embedTexts) {
+					for k, idx := range embedIndices {
+						chunks[idx].Embedding = embeddings[k]
+					}
 				}
 			}
 		}
@@ -185,4 +211,34 @@ func (p *Pipeline) getEmbedder() embedding.Embedder {
 		return nil
 	}
 	return p.embeddings.Get()
+}
+
+// urlStripRe matches URLs so they can be removed before counting alphabetic
+// tokens. URLs are noise for the noise gate — a chunk that's "just a URL"
+// has zero real semantic content.
+var urlStripRe = regexp.MustCompile(`https?://\S+`)
+
+// countAlphabeticTokens returns the number of whitespace-separated tokens
+// in text (after URL stripping) that contain at least 2 alphabetic
+// characters. This filters out pure URLs, hashes, base64 blobs, numeric IDs,
+// and isolated punctuation — the kinds of "content" that produce noisy
+// embeddings without contributing real semantic signal.
+func countAlphabeticTokens(text string) int {
+	text = urlStripRe.ReplaceAllString(text, " ")
+	var count int
+	for _, token := range strings.Fields(text) {
+		alpha := 0
+		for _, r := range token {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= 'À' && r <= 'ÿ') || // basic Latin-1 supplement
+				r >= 0x0100 { // any non-ASCII letter — Cyrillic, CJK, etc.
+				alpha++
+				if alpha >= 2 {
+					count++
+					break
+				}
+			}
+		}
+	}
+	return count
 }

@@ -16,7 +16,7 @@ type mockEmbedder struct {
 	dim       int
 }
 
-func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+func (m *mockEmbedder) Embed(_ context.Context, texts []string, _ string) ([][]float32, error) {
 	m.calls++
 	if m.calls <= m.failUntil {
 		return nil, m.err
@@ -43,7 +43,7 @@ func TestRetry_SuccessFirstAttempt(t *testing.T) {
 	mock := &mockEmbedder{dim: 128}
 	r := newTestRetry(mock)
 
-	result, err := r.Embed(context.Background(), []string{"hello"})
+	result, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRetry_SuccessAfterRetry_429(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	result, err := r.Embed(context.Background(), []string{"hello"})
+	result, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRetry_SuccessAfterRetry_500(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	result, err := r.Embed(context.Background(), []string{"hello"})
+	result, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRetry_NoRetryOn400(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	_, err := r.Embed(context.Background(), []string{"hello"})
+	_, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -120,7 +120,7 @@ func TestRetry_NoRetryOn401(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	_, err := r.Embed(context.Background(), []string{"hello"})
+	_, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -137,7 +137,7 @@ func TestRetry_NoRetryOnContextCancelled(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	_, err := r.Embed(context.Background(), []string{"hello"})
+	_, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}
@@ -154,7 +154,7 @@ func TestRetry_MaxRetriesExhausted(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	_, err := r.Embed(context.Background(), []string{"hello"})
+	_, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error after max retries")
 	}
@@ -177,7 +177,7 @@ func TestRetry_NetworkErrorIsRetryable(t *testing.T) {
 	}
 	r := newTestRetry(mock)
 
-	result, err := r.Embed(context.Background(), []string{"hello"})
+	result, err := r.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestRetry_ContextCancelledDuringBackoff(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := r.Embed(ctx, []string{"hello"})
+	_, err := r.Embed(ctx, []string{"hello"}, InputTypeDocument)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got %v", err)
 	}

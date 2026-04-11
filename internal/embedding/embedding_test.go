@@ -80,7 +80,7 @@ func TestOllama_Embed(t *testing.T) {
 	defer srv.Close()
 
 	o := NewOllama(srv.URL, "test", zap.NewNop())
-	embeddings, err := o.Embed(context.Background(), []string{"hello", "world"})
+	embeddings, err := o.Embed(context.Background(), []string{"hello", "world"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("embed failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestOllama_Embed_Error(t *testing.T) {
 	defer srv.Close()
 
 	o := NewOllama(srv.URL, "test", zap.NewNop())
-	_, err := o.Embed(context.Background(), []string{"hello"})
+	_, err := o.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -104,7 +104,7 @@ func TestOllama_Embed_Error(t *testing.T) {
 
 func TestOllama_Embed_ConnectionError(t *testing.T) {
 	o := NewOllama("http://localhost:59999", "test", zap.NewNop())
-	_, err := o.Embed(context.Background(), []string{"hello"})
+	_, err := o.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -129,7 +129,7 @@ func TestOpenAI_Embed(t *testing.T) {
 	o := NewOpenAI("test-key", "test", zap.NewNop())
 	o.baseURL = srv.URL
 
-	embeddings, err := o.Embed(context.Background(), []string{"hello", "world"})
+	embeddings, err := o.Embed(context.Background(), []string{"hello", "world"}, InputTypeDocument)
 	if err != nil {
 		t.Fatalf("embed failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestOpenAI_Embed_Error(t *testing.T) {
 
 	o := NewOpenAI("key", "test", zap.NewNop())
 	o.baseURL = srv.URL
-	_, err := o.Embed(context.Background(), []string{"hello"})
+	_, err := o.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -155,7 +155,11 @@ func TestOpenAI_Embed_Error(t *testing.T) {
 // --- Voyage tests ---
 
 func TestVoyage_Embed(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var receivedInputType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req voyageEmbedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedInputType = req.InputType
 		json.NewEncoder(w).Encode(voyageEmbedResponse{ //nolint:errcheck // test
 			Data: []struct {
 				Embedding []float32 `json:"embedding"`
@@ -167,12 +171,40 @@ func TestVoyage_Embed(t *testing.T) {
 	v := NewVoyage("key", "test", zap.NewNop())
 	v.baseURL = srv.URL
 
-	embeddings, err := v.Embed(context.Background(), []string{"hello"})
+	embeddings, err := v.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(embeddings) != 1 {
 		t.Fatalf("expected 1 embedding, got %d", len(embeddings))
+	}
+	if receivedInputType != "document" {
+		t.Errorf("expected input_type=document in request, got %q", receivedInputType)
+	}
+}
+
+func TestVoyage_Embed_QueryInputType(t *testing.T) {
+	var receivedInputType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req voyageEmbedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedInputType = req.InputType
+		json.NewEncoder(w).Encode(voyageEmbedResponse{ //nolint:errcheck // test
+			Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: []float32{0.1, 0.2}}},
+		})
+	}))
+	defer srv.Close()
+
+	v := NewVoyage("key", "test", zap.NewNop())
+	v.baseURL = srv.URL
+
+	if _, err := v.Embed(context.Background(), []string{"hello"}, InputTypeQuery); err != nil {
+		t.Fatal(err)
+	}
+	if receivedInputType != "query" {
+		t.Errorf("expected input_type=query in request, got %q", receivedInputType)
 	}
 }
 
@@ -184,7 +216,7 @@ func TestVoyage_Embed_Error(t *testing.T) {
 
 	v := NewVoyage("key", "test", zap.NewNop())
 	v.baseURL = srv.URL
-	_, err := v.Embed(context.Background(), []string{"hello"})
+	_, err := v.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -200,7 +232,7 @@ func TestVoyage_Embed_ErrorWithBody(t *testing.T) {
 
 	v := NewVoyage("key", "test", zap.NewNop())
 	v.baseURL = srv.URL
-	_, err := v.Embed(context.Background(), []string{"hello"})
+	_, err := v.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -234,7 +266,7 @@ func TestCohere_Embed(t *testing.T) {
 	c := NewCohere("key", "test", zap.NewNop())
 	c.baseURL = srv.URL
 
-	embeddings, err := c.Embed(context.Background(), []string{"hello"})
+	embeddings, err := c.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +283,7 @@ func TestCohere_Embed_Error(t *testing.T) {
 
 	c := NewCohere("key", "test", zap.NewNop())
 	c.baseURL = srv.URL
-	_, err := c.Embed(context.Background(), []string{"hello"})
+	_, err := c.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -300,7 +332,7 @@ func TestOpenAI_Dimension(t *testing.T) {
 }
 
 func TestVoyage_Dimension(t *testing.T) {
-	tests := map[string]int{"voyage-3-large": 1024, "voyage-3": 1024, "voyage-3-lite": 512, "unknown": 1024}
+	tests := map[string]int{"voyage-4-large": 1024, "voyage-3-large": 1024, "voyage-3": 1024, "voyage-3-lite": 512, "unknown": 1024}
 	for model, dim := range tests {
 		if NewVoyage("k", model, zap.NewNop()).Dimension() != dim {
 			t.Errorf("model %s: expected %d", model, dim)

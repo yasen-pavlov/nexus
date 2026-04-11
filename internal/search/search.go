@@ -266,7 +266,7 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 		return nil, fmt.Errorf("search: query: %w", err)
 	}
 
-	return c.hitsToResult(resp, req, 0)
+	return c.hitsToResult(resp, req)
 }
 
 // HybridSearch combines BM25 text search with k-NN vector search using
@@ -338,11 +338,14 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 		return nil, fmt.Errorf("search: hybrid query: %w", err)
 	}
 
-	return c.hitsToResult(resp, req, minHybridScore)
+	return c.hitsToResult(resp, req)
 }
 
-// hitsToResult converts OpenSearch hits into a SearchResult with deduplication by parent document.
-func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRequest, minScore float64) (*model.SearchResult, error) {
+// hitsToResult converts OpenSearch hits into a SearchResult with deduplication
+// by parent document. Returns the FULL deduped result set without applying
+// offset/limit pagination — pagination lives in the handler, after the
+// rerank/decay/bonus stages, so the reranker sees the full candidate pool.
+func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRequest) (*model.SearchResult, error) {
 	chunkData := make(map[string]*rankedChunk)
 
 	for _, hit := range resp.Hits.Hits {
@@ -389,30 +392,18 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 		}
 	}
 
-	// Collect results, filtering out low-scoring noise
+	// Collect all deduped results — no score-floor filtering here (would be
+	// filtering on RRF rank-fusion scores, which isn't meaningful — see the
+	// rankedChunk comment in ranking.go).
 	results := make([]*rankedChunk, 0, len(chunkData))
 	for _, rc := range chunkData {
-		if minScore > 0 && rc.score < minScore {
-			continue
-		}
 		results = append(results, rc)
 	}
 
-	// Compute facets from the filtered result set (before pagination)
+	// Compute facets from the full deduped result set
 	facets := computeFacets(results)
 
-	// Apply offset and limit
-	totalCount := len(results)
-	if req.Offset > 0 && req.Offset < len(results) {
-		results = results[req.Offset:]
-	} else if req.Offset >= len(results) {
-		results = nil
-	}
-	if len(results) > req.Limit {
-		results = results[:req.Limit]
-	}
-
-	var hits []model.DocumentHit
+	hits := make([]model.DocumentHit, 0, len(results))
 	for _, rc := range results {
 		hits = append(hits, model.DocumentHit{
 			Document: rc.doc,
@@ -423,7 +414,7 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 
 	return &model.SearchResult{
 		Documents:  hits,
-		TotalCount: totalCount,
+		TotalCount: len(hits),
 		Query:      req.Query,
 		Facets:     facets,
 	}, nil

@@ -32,8 +32,9 @@ func NewVoyage(apiKey, model string, log *zap.Logger) *Voyage {
 }
 
 type voyageEmbedRequest struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Model     string   `json:"model"`
+	Input     []string `json:"input"`
+	InputType string   `json:"input_type,omitempty"`
 }
 
 type voyageEmbedResponse struct {
@@ -42,8 +43,15 @@ type voyageEmbedResponse struct {
 	} `json:"data"`
 }
 
-func (v *Voyage) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	body, err := json.Marshal(voyageEmbedRequest{Model: v.model, Input: texts})
+func (v *Voyage) Embed(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
+	// Voyage uses "document" / "query" — same strings as our InputType constants,
+	// so no translation needed. Empty string is also accepted by Voyage (treated
+	// as un-typed) but our callers should always pass one of the constants.
+	body, err := json.Marshal(voyageEmbedRequest{
+		Model:     v.model,
+		Input:     texts,
+		InputType: inputType,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("voyage: marshal request: %w", err)
 	}
@@ -79,6 +87,8 @@ func (v *Voyage) Embed(ctx context.Context, texts []string) ([][]float32, error)
 
 func (v *Voyage) Dimension() int {
 	switch v.model {
+	case "voyage-4-large":
+		return 1024
 	case "voyage-3-large":
 		return 1024
 	case "voyage-3":

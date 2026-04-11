@@ -12,11 +12,27 @@ import (
 // Embedder generates vector embeddings from text.
 type Embedder interface {
 	// Embed generates embeddings for one or more texts.
-	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	//
+	// inputType is a hint about how the embedding will be used:
+	//   - "document" — text is being indexed for later retrieval
+	//   - "query"    — text is a search query
+	//
+	// Providers that distinguish the two (Voyage, Cohere) prepend different
+	// instructions / use different model heads internally, which materially
+	// improves retrieval quality. Providers that don't (Ollama, OpenAI) ignore
+	// the parameter.
+	Embed(ctx context.Context, texts []string, inputType string) ([][]float32, error)
 
 	// Dimension returns the embedding vector dimension.
 	Dimension() int
 }
+
+// Input type constants for Embed. These are stable strings — providers map
+// them internally to whatever their API expects.
+const (
+	InputTypeDocument = "document"
+	InputTypeQuery    = "query"
+)
 
 // New creates an Embedder based on the configured provider.
 // Returns nil if no provider is configured (embeddings disabled).
@@ -44,7 +60,7 @@ func New(cfg *config.Config, log *zap.Logger) (Embedder, error) {
 	case "voyage":
 		model := cfg.EmbeddingModel
 		if model == "" {
-			model = "voyage-3-large"
+			model = "voyage-4-large"
 		}
 		if cfg.EmbeddingAPIKey == "" {
 			return nil, fmt.Errorf("embedding: NEXUS_EMBEDDING_API_KEY required for voyage provider")

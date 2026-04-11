@@ -44,11 +44,21 @@ type cohereEmbedResponse struct {
 	} `json:"embeddings"`
 }
 
-func (c *Cohere) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+// Embed implements Embedder. The inputType parameter is mapped to Cohere's
+// own input_type constants: "document"→"search_document", "query"→"search_query".
+// Anything else falls back to "search_document" for backward compatibility.
+func (c *Cohere) Embed(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
+	cohereInputType := "search_document"
+	switch inputType {
+	case InputTypeQuery:
+		cohereInputType = "search_query"
+	case InputTypeDocument:
+		cohereInputType = "search_document"
+	}
 	body, err := json.Marshal(cohereEmbedRequest{
 		Model:          c.model,
 		Texts:          texts,
-		InputType:      "search_document",
+		InputType:      cohereInputType,
 		EmbeddingTypes: []string{"float"},
 	})
 	if err != nil {

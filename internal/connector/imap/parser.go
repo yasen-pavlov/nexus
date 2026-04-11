@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/emersion/go-message/mail"
+	"golang.org/x/net/html"
 )
 
 // attachment represents an email attachment.
@@ -81,17 +82,129 @@ func parseEmailBody(raw []byte) (string, []attachment) {
 		content = stripHTML(htmlText)
 	}
 
+	// Email-specific cleaning: strip tracking URLs, quoted replies, signatures.
+	// This applies to both the plain-text and HTML-stripped paths because plain
+	// text emails also contain trackers, signatures, etc.
+	content = cleanEmailText(content)
+
 	return strings.TrimSpace(content), attachments
+}
+
+// stripHTML walks the HTML DOM and extracts the user-visible text. It drops
+// entire <style>, <script>, <head>, and <noscript> subtrees (which would
+// otherwise contribute massive amounts of CSS / JS / metadata noise to the
+// embedding) and unwraps <a> elements (keeping the link text but dropping the
+// href, which in marketing emails is almost always a base64-encoded tracking
+// redirect that has no semantic value).
+func stripHTML(htmlContent string) string {
+	doc, err := html.Parse(strings.NewReader(htmlContent))
+	if err != nil {
+		// Parsing failed (shouldn't happen — html.Parse is permissive) — fall
+		// back to the old regex stripper so we still extract something.
+		return stripHTMLRegex(htmlContent)
+	}
+
+	var sb strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "style", "script", "head", "noscript":
+				return // skip entire subtree
+			case "br":
+				sb.WriteByte('\n')
+			case "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6":
+				sb.WriteByte('\n')
+			}
+		}
+		if n.Type == html.TextNode {
+			sb.WriteString(n.Data)
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+		// Add a trailing newline after block-level elements so paragraphs
+		// don't get smashed together.
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6":
+				sb.WriteByte('\n')
+			}
+		}
+	}
+	walk(doc)
+
+	text := sb.String()
+	text = whitespaceRe.ReplaceAllString(text, " ")
+	return strings.TrimSpace(text)
+}
+
+// stripHTMLRegex is a fallback for when html.Parse somehow fails. It's the
+// original naive regex implementation — kept only as a safety net.
+func stripHTMLRegex(htmlContent string) string {
+	text := htmlTagRe.ReplaceAllString(htmlContent, " ")
+	text = whitespaceRe.ReplaceAllString(text, " ")
+	return strings.TrimSpace(text)
 }
 
 var (
 	htmlTagRe    = regexp.MustCompile(`<[^>]*>`)
-	whitespaceRe = regexp.MustCompile(`\s{2,}`)
+	whitespaceRe = regexp.MustCompile(`[ \t]{2,}`)
+
+	// trackingURLRe matches common tracking-link domain patterns. Many marketing
+	// emails route every link through a redirector with a base64-encoded path,
+	// and those URLs end up in chunks where they dominate the content.
+	trackingURLRe = regexp.MustCompile(`https?://[^\s<>()]*(?:track|click|email|mc|sg|sl|t\.co|list-manage|sendgrid|mailgun|sparkpost|mandrillapp|cmail|mailchi|hubspot|salesforce|pardot|marketo)[^\s<>()]*`)
+
+	// longURLRe matches any URL whose path/query contains a 60+ char opaque
+	// blob — base64, hashes, JWT-like tokens. This catches the long-tail of
+	// tracking links that don't match a known domain. The character class
+	// includes `=` (base64 padding, query param separators) and `&`.
+	longURLRe = regexp.MustCompile(`https?://[^\s<>()"]*[A-Za-z0-9_/+%=&-]{60,}[^\s<>()"]*`)
+
+	// quotedReplyHeaderRe matches the "On <date>, <person> wrote:" line that
+	// precedes quoted reply blocks in most clients.
+	quotedReplyHeaderRe = regexp.MustCompile(`(?m)^On .+ wrote:.*$`)
+
+	// blankLineRe collapses 3+ consecutive newlines into two.
+	blankLineRe = regexp.MustCompile(`\n{3,}`)
 )
 
-// stripHTML removes HTML tags and collapses whitespace.
-func stripHTML(html string) string {
-	text := htmlTagRe.ReplaceAllString(html, " ")
+// cleanEmailText applies email-specific text cleaning to remove tracking URLs,
+// quoted reply blocks, and signature blocks. It runs on both the plain-text
+// and HTML-stripped paths in parseEmailBody — both contain this kind of noise.
+func cleanEmailText(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Strip tracking URLs (specific domains) first, then long opaque URLs.
+	text = trackingURLRe.ReplaceAllString(text, "")
+	text = longURLRe.ReplaceAllString(text, "")
+
+	// Remove the "On <date>, <person> wrote:" header that introduces quoted
+	// replies. The actual quoted lines (starting with `>`) get stripped below.
+	text = quotedReplyHeaderRe.ReplaceAllString(text, "")
+
+	// Walk lines: drop quoted-reply lines (starting with `>`), and stop at the
+	// signature delimiter (`-- ` on its own line — RFC 3676 section 4.3).
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimRight(line, " \t")
+		if trimmed == "-- " || trimmed == "--" {
+			break // signature block — drop everything from here on
+		}
+		stripped := strings.TrimLeft(trimmed, " \t")
+		if strings.HasPrefix(stripped, ">") {
+			continue // quoted reply line
+		}
+		out = append(out, trimmed)
+	}
+	text = strings.Join(out, "\n")
+
+	// Collapse repeated blank lines and intra-line whitespace.
+	text = blankLineRe.ReplaceAllString(text, "\n\n")
 	text = whitespaceRe.ReplaceAllString(text, " ")
+
 	return strings.TrimSpace(text)
 }

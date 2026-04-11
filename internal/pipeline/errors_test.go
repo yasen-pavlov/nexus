@@ -75,7 +75,7 @@ func (s *stubConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.Fe
 // failingEmbedder implements the embedding.Embedder interface but always fails.
 type failingEmbedder struct{ dim int }
 
-func (f *failingEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+func (f *failingEmbedder) Embed(_ context.Context, _ []string, _ string) ([][]float32, error) {
 	return nil, fmt.Errorf("embed: simulated failure")
 }
 func (f *failingEmbedder) Dimension() int { return f.dim }

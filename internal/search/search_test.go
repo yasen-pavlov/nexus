@@ -91,7 +91,13 @@ func TestSearch_Highlighting(t *testing.T) {
 	}
 }
 
-func TestSearch_Pagination(t *testing.T) {
+// TestSearch_ReturnsAllDedupedResults verifies that the search-package layer
+// returns the FULL deduped result set, without applying offset/limit
+// pagination. Pagination has moved to the handler layer (after rerank /
+// decay / bonus) so the reranker sees the full candidate pool. Handler-level
+// pagination behavior is covered by integration tests in
+// internal/api/integration_test.go.
+func TestSearch_ReturnsAllDedupedResults(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
 
@@ -109,6 +115,8 @@ func TestSearch_Pagination(t *testing.T) {
 	}
 	c.Refresh(ctx) //nolint:errcheck // test
 
+	// Even with Limit=2 set on the request, the search layer returns all 3
+	// matching docs — pagination is the handler's job now.
 	result, err := c.Search(ctx, model.SearchRequest{Query: "searching", Limit: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -116,16 +124,17 @@ func TestSearch_Pagination(t *testing.T) {
 	if result.TotalCount != 3 {
 		t.Errorf("expected total 3, got %d", result.TotalCount)
 	}
-	if len(result.Documents) != 2 {
-		t.Errorf("expected 2 docs with limit=2, got %d", len(result.Documents))
+	if len(result.Documents) != 3 {
+		t.Errorf("expected 3 docs (search layer no longer paginates), got %d", len(result.Documents))
 	}
 
+	// Same with offset — the search layer ignores it.
 	result2, err := c.Search(ctx, model.SearchRequest{Query: "searching", Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result2.Documents) != 1 {
-		t.Errorf("expected 1 doc with offset=2, got %d", len(result2.Documents))
+	if len(result2.Documents) != 3 {
+		t.Errorf("expected 3 docs (offset is the handler's job), got %d", len(result2.Documents))
 	}
 }
 

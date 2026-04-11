@@ -21,6 +21,7 @@ import (
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/rerank"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/internal/testutil"
@@ -30,7 +31,7 @@ import (
 
 type mockEmbedder struct{ dim int }
 
-func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+func (m *mockEmbedder) Embed(_ context.Context, texts []string, _ string) ([][]float32, error) {
 	result := make([][]float32, len(texts))
 	for i := range texts {
 		result[i] = make([]float32, m.dim)
@@ -288,6 +289,94 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	docs, _ := data["documents"].([]any)
 	if len(docs) != 2 {
 		t.Errorf("expected 2 docs with limit=2, got %d", len(docs))
+	}
+}
+
+// stubReranker is a deterministic mock that scores docs by index. Used to
+// exercise the post-rerank score floor without hitting a real provider.
+type stubReranker struct{ scores []float64 }
+
+func (s *stubReranker) Rerank(_ context.Context, _ string, docs []string) ([]rerank.Result, error) {
+	results := make([]rerank.Result, len(docs))
+	for i := range docs {
+		score := 0.0
+		if i < len(s.scores) {
+			score = s.scores[i]
+		}
+		results[i] = rerank.Result{Index: i, Score: score}
+	}
+	return results, nil
+}
+
+// TestSearchHandler_RerankFloor_Integration verifies that documents with
+// reranker scores below search.RerankMinScore are dropped after the rerank
+// stage. The high-scoring docs survive; low-scoring noise is filtered out.
+func TestSearchHandler_RerankFloor_Integration(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	ctx := context.Background()
+
+	// Three chunks all matching "rerankfloor". The stub reranker scores them
+	// 0.9, 0.5, 0.01 in the order they come back from search. With the
+	// production floor of 0.4, only the 0.01 doc should be filtered out.
+	chunks := []model.Chunk{
+		{
+			ID: "rf-1.txt:0", ParentID: "rf-1.txt", ChunkIndex: 0,
+			Title: "RF One", Content: "rerankfloor relevant content one",
+			FullContent: "rerankfloor relevant content one",
+			SourceType:  "filesystem", SourceName: "test", SourceID: "rf-1.txt",
+			Metadata: map[string]any{}, Visibility: "private",
+			Shared: true, CreatedAt: time.Now(),
+		},
+		{
+			ID: "rf-2.txt:0", ParentID: "rf-2.txt", ChunkIndex: 0,
+			Title: "RF Two", Content: "rerankfloor relevant content two",
+			FullContent: "rerankfloor relevant content two",
+			SourceType:  "filesystem", SourceName: "test", SourceID: "rf-2.txt",
+			Metadata: map[string]any{}, Visibility: "private",
+			Shared: true, CreatedAt: time.Now(),
+		},
+		{
+			ID: "rf-3.txt:0", ParentID: "rf-3.txt", ChunkIndex: 0,
+			Title: "RF Three", Content: "rerankfloor relevant content three",
+			FullContent: "rerankfloor relevant content three",
+			SourceType:  "filesystem", SourceName: "test", SourceID: "rf-3.txt",
+			Metadata: map[string]any{}, Visibility: "private",
+			Shared: true, CreatedAt: time.Now(),
+		},
+	}
+	if err := sc.IndexChunks(ctx, chunks); err != nil {
+		t.Fatal(err)
+	}
+	sc.Refresh(ctx) //nolint:errcheck // test
+
+	rm := NewRerankManager(st, zap.NewNop())
+	rm.Set(&stubReranker{scores: []float64{0.9, 0.5, 0.01}})
+
+	h := &handler{
+		search: sc, cm: cm,
+		em:  NewEmbeddingManager(st, zap.NewNop()),
+		rm:  rm,
+		log: zap.NewNop(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rerankfloor", nil)
+	w := httptest.NewRecorder()
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	tc, _ := data["total_count"].(float64)
+	if tc != 2 {
+		t.Errorf("expected total_count=2 (one doc filtered by rerank floor), got %v", tc)
+	}
+	docs, _ := data["documents"].([]any)
+	if len(docs) != 2 {
+		t.Errorf("expected 2 docs after rerank floor, got %d", len(docs))
 	}
 }
 

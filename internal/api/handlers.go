@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/connector"
+	"github.com/muty/nexus/internal/embedding"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/rerank"
@@ -76,6 +78,12 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	req := model.SearchRequest{
 		Query:       query,
@@ -88,11 +96,14 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		OwnerID:     auth.UserIDFromContext(r.Context()).String(),
 	}
 
-	// Try hybrid search if embedder is available
+	// Stage 1: retrieve candidates. Hybrid (BM25 + kNN) when embedder is
+	// available, otherwise BM25 only. The retrieve stage returns the FULL
+	// deduped candidate pool — pagination happens at the end of this pipeline,
+	// not here, so the reranker sees the full pool.
 	var result *model.SearchResult
 	embedder := h.em.Get()
 	if embedder != nil {
-		embeddings, err := embedder.Embed(r.Context(), []string{query})
+		embeddings, err := embedder.Embed(r.Context(), []string{query}, embedding.InputTypeQuery)
 		if err == nil && len(embeddings) > 0 {
 			result, err = h.search.HybridSearch(r.Context(), req, embeddings[0])
 			if err != nil {
@@ -100,8 +111,6 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	// Fallback: BM25-only
 	if result == nil {
 		var err error
 		result, err = h.search.Search(r.Context(), req)
@@ -112,7 +121,8 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Initialize score details if explain mode is on
+	// Stage 2: optional explain — capture the raw retrieval score before
+	// reranking rewrites it.
 	explain := r.URL.Query().Get("score_details") == "true"
 	if explain {
 		for i := range result.Documents {
@@ -122,7 +132,9 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Rerank results if a reranker is available
+	// Stage 3: rerank. Reorders documents by Voyage rerank-2 relevance score
+	// and rewrites Rank with the new score. No-op when no reranker is configured.
+	rerankerActive := h.rm.Get() != nil
 	result = h.rerankResults(r.Context(), query, result)
 
 	if explain {
@@ -133,11 +145,37 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply recency decay — boost recent documents, source-specific half-lives
+	// Stage 4: rerank floor. Drop docs below the relevance threshold. Only
+	// fires when a reranker actually ran — without one, Rank is the raw RRF
+	// score which isn't a meaningful relevance number to threshold against.
+	if rerankerActive {
+		filtered := result.Documents[:0]
+		for _, hit := range result.Documents {
+			if hit.Rank >= search.RerankMinScore {
+				filtered = append(filtered, hit)
+			}
+		}
+		result.Documents = filtered
+	}
+
+	// Stage 5: recency decay — boost recent documents, source-specific half-lives.
 	search.ApplyRecencyDecay(result)
 
-	// Apply metadata bonus — boost results matching query terms in structured metadata
+	// Stage 6: metadata bonus — boost results whose structured metadata matches
+	// query terms (filename, sender, tags, etc.).
 	search.ApplyMetadataBonus(result, query)
+
+	// Stage 7: pagination. TotalCount reflects the post-filter total so callers
+	// know how many results are available across pages.
+	result.TotalCount = len(result.Documents)
+	if req.Offset > 0 && req.Offset < len(result.Documents) {
+		result.Documents = result.Documents[req.Offset:]
+	} else if req.Offset >= len(result.Documents) {
+		result.Documents = nil
+	}
+	if len(result.Documents) > req.Limit {
+		result.Documents = result.Documents[:req.Limit]
+	}
 
 	writeJSON(w, http.StatusOK, result)
 }
@@ -454,6 +492,14 @@ func (h *handler) rerankResults(ctx context.Context, query string, result *model
 		return result
 	}
 
+	// Drop near-duplicate docs before sending them to the reranker. This is
+	// common when an email newsletter is split into many chunks that share
+	// long boilerplate prefixes — without dedup, the reranker spends API
+	// budget reranking 12 copies of the same Hello Developer footer. We use
+	// a cheap content-prefix fingerprint; the input is already in pre-rerank
+	// rank order, so the first occurrence of each fingerprint wins.
+	result.Documents = dedupeNearDuplicates(result.Documents)
+
 	texts := make([]string, len(result.Documents))
 	for i, doc := range result.Documents {
 		texts[i] = doc.Title + " " + doc.Content
@@ -466,6 +512,36 @@ func (h *handler) rerankResults(ctx context.Context, query string, result *model
 	}
 
 	return reorderByRerankScores(result, ranked)
+}
+
+// dedupeNearDuplicates drops documents whose first 200 chars of
+// (title + content) are identical to an earlier doc in the slice. The first
+// occurrence wins because the input is sorted by pre-rerank rank already.
+// This is a conservative heuristic — it only catches exact prefix matches —
+// but it's enough to remove the common case of one newsletter producing
+// multiple chunks that all share the same boilerplate header.
+func dedupeNearDuplicates(docs []model.DocumentHit) []model.DocumentHit {
+	if len(docs) <= 1 {
+		return docs
+	}
+	const fingerprintLen = 200
+	seen := make(map[uint64]struct{}, len(docs))
+	out := docs[:0]
+	for _, doc := range docs {
+		text := strings.ToLower(strings.TrimSpace(doc.Title + " " + doc.Content))
+		if len(text) > fingerprintLen {
+			text = text[:fingerprintLen]
+		}
+		h := fnv.New64a()
+		h.Write([]byte(text)) //nolint:errcheck // hash.Hash64.Write never returns an error
+		fp := h.Sum64()
+		if _, ok := seen[fp]; ok {
+			continue
+		}
+		seen[fp] = struct{}{}
+		out = append(out, doc)
+	}
+	return out
 }
 
 func reorderByRerankScores(result *model.SearchResult, ranked []rerank.Result) *model.SearchResult {

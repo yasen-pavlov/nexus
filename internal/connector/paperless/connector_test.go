@@ -324,3 +324,131 @@ func TestFetch_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
+
+func TestFetch_LookupHTTPError(t *testing.T) {
+	// Tags endpoint returns 500 — Fetch should propagate the error.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	if _, err := c.Fetch(context.Background(), nil); err == nil {
+		t.Fatal("expected error from 500 on tags lookup")
+	}
+}
+
+func TestFetch_LookupBadJSON(t *testing.T) {
+	// Tags endpoint returns malformed JSON — fetchLookup should error out.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("not json")) //nolint:errcheck // test
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	if _, err := c.Fetch(context.Background(), nil); err == nil {
+		t.Fatal("expected error from malformed JSON")
+	}
+}
+
+func TestFetch_DocumentsHTTPError(t *testing.T) {
+	// Lookups succeed but documents endpoint returns 500.
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	if _, err := c.Fetch(context.Background(), nil); err == nil {
+		t.Fatal("expected error from 500 on documents fetch")
+	}
+}
+
+func TestFetch_DocumentsBadJSON(t *testing.T) {
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("not json")) //nolint:errcheck // test
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	if _, err := c.Fetch(context.Background(), nil); err == nil {
+		t.Fatal("expected error from malformed documents JSON")
+	}
+}
+
+func TestFetch_LookupPagination(t *testing.T) {
+	// Lookup page 1 has a Next pointer to page 2 — verify fetchLookup follows it.
+	mux := http.NewServeMux()
+	page2URL := ""
+	tagPage := 0
+	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		tagPage++
+		if tagPage == 1 {
+			next := page2URL
+			json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck // test
+				Results: []lookupItem{{ID: 1, Name: "tag-one"}},
+				Next:    &next,
+			})
+		} else {
+			json.NewEncoder(w).Encode(lookupResponse{ //nolint:errcheck // test
+				Results: []lookupItem{{ID: 2, Name: "tag-two"}},
+			})
+		}
+	})
+	for _, path := range []string{"/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		now := time.Now()
+		json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
+			Results: []paperlessDoc{
+				{ID: 1, Title: "Doc", Tags: []int{1, 2}, Added: now, Modified: now},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	page2URL = srv.URL + "/api/tags/?page=2"
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Documents) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(result.Documents))
+	}
+	tags, _ := result.Documents[0].Metadata["tags"].([]string)
+	if len(tags) != 2 {
+		t.Errorf("expected both tags resolved across pages, got %v", tags)
+	}
+	if tagPage != 2 {
+		t.Errorf("expected 2 lookup pages fetched, got %d", tagPage)
+	}
+}

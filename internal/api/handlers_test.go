@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -424,6 +425,73 @@ func TestRerankResults_NoReranker(t *testing.T) {
 	reranked := h.rerankResults(context.Background(), "test", result)
 	if reranked.Documents[0].Title != "A" {
 		t.Error("should return original order when no reranker")
+	}
+}
+
+// recordingReranker captures the texts it received so a test can verify which
+// docs reached the reranker.
+type recordingReranker struct{ received []string }
+
+func (r *recordingReranker) Rerank(_ context.Context, _ string, docs []string) ([]rerank.Result, error) {
+	r.received = append(r.received, docs...)
+	results := make([]rerank.Result, len(docs))
+	for i := range docs {
+		results[i] = rerank.Result{Index: i, Score: 1.0}
+	}
+	return results, nil
+}
+
+func TestRerankResults_DedupesNearDuplicates(t *testing.T) {
+	rec := &recordingReranker{}
+	rm := NewRerankManager(nil, zap.NewNop())
+	rm.Set(rec)
+	h := &handler{rm: rm, log: zap.NewNop()}
+
+	// Three docs: 1 and 3 are exact duplicates (same title + same first 200
+	// chars of content). 2 is unique. After dedup, only 2 should reach the
+	// reranker.
+	dup := strings.Repeat("identical newsletter prefix that is more than two hundred characters long ", 5)
+	result := &model.SearchResult{
+		Documents: []model.DocumentHit{
+			{Document: model.Document{Title: "Hello Developer", Content: dup}, Rank: 0.9},
+			{Document: model.Document{Title: "Different Doc", Content: "totally different content here"}, Rank: 0.8},
+			{Document: model.Document{Title: "Hello Developer", Content: dup}, Rank: 0.7},
+		},
+	}
+
+	reranked := h.rerankResults(context.Background(), "test", result)
+	if len(rec.received) != 2 {
+		t.Errorf("expected reranker to receive 2 deduped docs, got %d", len(rec.received))
+	}
+	if len(reranked.Documents) != 2 {
+		t.Errorf("expected 2 docs after dedup, got %d", len(reranked.Documents))
+	}
+}
+
+func TestDedupeNearDuplicates_KeepsFirst(t *testing.T) {
+	docs := []model.DocumentHit{
+		{Document: model.Document{Title: "X", Content: "same content"}, Rank: 0.9},
+		{Document: model.Document{Title: "X", Content: "same content"}, Rank: 0.5},
+		{Document: model.Document{Title: "Y", Content: "different content"}, Rank: 0.4},
+	}
+	out := dedupeNearDuplicates(docs)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 docs after dedup, got %d", len(out))
+	}
+	if out[0].Rank != 0.9 {
+		t.Errorf("expected first occurrence (rank 0.9) to win, got rank %f", out[0].Rank)
+	}
+}
+
+func TestDedupeNearDuplicates_PreservesUnique(t *testing.T) {
+	docs := []model.DocumentHit{
+		{Document: model.Document{Title: "A", Content: "alpha"}},
+		{Document: model.Document{Title: "B", Content: "beta"}},
+		{Document: model.Document{Title: "C", Content: "gamma"}},
+	}
+	out := dedupeNearDuplicates(docs)
+	if len(out) != 3 {
+		t.Errorf("expected 3 unique docs preserved, got %d", len(out))
 	}
 }
 

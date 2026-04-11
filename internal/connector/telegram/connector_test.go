@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,14 +238,18 @@ func TestProcessDialogs_GroupChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processDialogs failed: %v", err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("expected 2 docs, got %d", len(docs))
+	// Both messages are within the conversation window gap → one window doc.
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc (windowed), got %d", len(docs))
 	}
-	if docs[0].Content != "Hello group!" {
-		t.Errorf("expected 'Hello group!', got %q", docs[0].Content)
+	if !strings.Contains(docs[0].Content, "Hello group!") || !strings.Contains(docs[0].Content, "Second message") {
+		t.Errorf("expected window to contain both messages, got %q", docs[0].Content)
 	}
 	if docs[0].SourceType != "telegram" {
 		t.Errorf("expected source_type 'telegram', got %q", docs[0].SourceType)
+	}
+	if docs[0].Metadata["message_count"] != 2 {
+		t.Errorf("expected message_count=2, got %v", docs[0].Metadata["message_count"])
 	}
 }
 
@@ -537,8 +543,105 @@ func TestChatHelpers(t *testing.T) {
 	if chatTitle(channel) != "Chan" {
 		t.Error("wrong channel title")
 	}
+	if chatIdentifier(channel) != "456" {
+		t.Error("wrong channel id")
+	}
 	if chatToInputPeer(channel) == nil {
 		t.Error("expected non-nil channel peer")
+	}
+
+	// Unknown chat type — exercises the default branches.
+	unknown := &tg.ChatForbidden{ID: 999}
+	if chatTitle(unknown) != "Unknown" {
+		t.Errorf("expected 'Unknown' for unsupported chat type, got %q", chatTitle(unknown))
+	}
+	if chatIdentifier(unknown) != "0" {
+		t.Errorf("expected '0' for unsupported chat type, got %q", chatIdentifier(unknown))
+	}
+	if chatToInputPeer(unknown) != nil {
+		t.Error("expected nil input peer for unsupported chat type")
+	}
+}
+
+func TestUserDisplayName_FallbackToID(t *testing.T) {
+	u := &tg.User{ID: 42}
+	got := userDisplayName(u)
+	if got != "User 42" {
+		t.Errorf("expected 'User 42', got %q", got)
+	}
+}
+
+func TestDBSessionStorage_NotFound(t *testing.T) {
+	store := make(map[string]string)
+	getSetting := func(_ context.Context, key string) (string, error) {
+		return store[key], nil
+	}
+	setSetting := func(_ context.Context, key, value string) error {
+		store[key] = value
+		return nil
+	}
+	s := NewDBSessionStorage("missing_key", getSetting, setSetting)
+
+	if _, err := s.LoadSession(context.Background()); err == nil {
+		t.Error("expected ErrNotFound for missing key")
+	}
+	if s.HasSession(context.Background()) {
+		t.Error("expected HasSession=false for missing key")
+	}
+}
+
+func TestDBSessionStorage_GetError(t *testing.T) {
+	getSetting := func(_ context.Context, _ string) (string, error) {
+		return "", errors.New("db error")
+	}
+	setSetting := func(_ context.Context, _, _ string) error {
+		return nil
+	}
+	s := NewDBSessionStorage("k", getSetting, setSetting)
+	if _, err := s.LoadSession(context.Background()); err == nil {
+		t.Error("expected error from getSetting failure")
+	}
+}
+
+func TestDBSessionStorage_BadBase64(t *testing.T) {
+	store := map[string]string{"k": "not-valid-base64-!@#$"}
+	getSetting := func(_ context.Context, key string) (string, error) {
+		return store[key], nil
+	}
+	setSetting := func(_ context.Context, _, _ string) error {
+		return nil
+	}
+	s := NewDBSessionStorage("k", getSetting, setSetting)
+	if _, err := s.LoadSession(context.Background()); err == nil {
+		t.Error("expected base64 decode error")
+	}
+}
+
+func TestDBSessionStorage_Cached(t *testing.T) {
+	calls := 0
+	store := make(map[string]string)
+	getSetting := func(_ context.Context, key string) (string, error) {
+		calls++
+		return store[key], nil
+	}
+	setSetting := func(_ context.Context, key, value string) error {
+		store[key] = value
+		return nil
+	}
+	s := NewDBSessionStorage("k", getSetting, setSetting)
+	if err := s.StoreSession(context.Background(), []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	// First load: cache hit (s.data was set during StoreSession)
+	if _, err := s.LoadSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Second load: also cache hit
+	if _, err := s.LoadSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Errorf("expected 0 getSetting calls (data cached after StoreSession), got %d", calls)
 	}
 }
 
@@ -557,5 +660,134 @@ func TestHelpers(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("userDisplayName(%q,%q,%q) = %q, want %q", tt.first, tt.last, tt.username, got, tt.want)
 		}
+	}
+}
+
+// --- Conversation windowing tests ---
+
+func TestWindowMessages_GroupsByTimeGap(t *testing.T) {
+	c := &Connector{name: "test"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	records := []messageRecord{
+		{ID: 1, Text: "first", Date: base},
+		{ID: 2, Text: "second", Date: base.Add(5 * time.Minute)},            // same window (5 min gap)
+		{ID: 3, Text: "third", Date: base.Add(10 * time.Minute)},            // same window
+		{ID: 4, Text: "fourth", Date: base.Add(2 * time.Hour)},              // new window (2h gap > 30 min)
+		{ID: 5, Text: "fifth", Date: base.Add(2*time.Hour + 5*time.Minute)}, // same as fourth
+	}
+
+	docs := c.windowMessages(records, "Test Chat", "100")
+
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 windows, got %d", len(docs))
+	}
+	if mc := docs[0].Metadata["message_count"]; mc != 3 {
+		t.Errorf("first window: expected 3 messages, got %v", mc)
+	}
+	if mc := docs[1].Metadata["message_count"]; mc != 2 {
+		t.Errorf("second window: expected 2 messages, got %v", mc)
+	}
+	if !strings.Contains(docs[0].Content, "first") || !strings.Contains(docs[0].Content, "third") {
+		t.Errorf("first window content: %q", docs[0].Content)
+	}
+}
+
+func TestWindowMessages_RespectsCharCap(t *testing.T) {
+	c := &Connector{name: "test"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	// Each message is 1000 chars, so adding 3 of them in a row should split
+	// after the second (2000 + 1000 > 2000 cap).
+	bigText := strings.Repeat("a", 1000)
+	records := []messageRecord{
+		{ID: 1, Text: bigText, Date: base},
+		{ID: 2, Text: bigText, Date: base.Add(1 * time.Minute)},
+		{ID: 3, Text: bigText, Date: base.Add(2 * time.Minute)},
+		{ID: 4, Text: bigText, Date: base.Add(3 * time.Minute)},
+	}
+
+	docs := c.windowMessages(records, "Test", "100")
+	if len(docs) < 2 {
+		t.Errorf("expected multiple windows due to char cap, got %d", len(docs))
+	}
+}
+
+func TestWindowMessages_SingleMessage(t *testing.T) {
+	c := &Connector{name: "test"}
+	records := []messageRecord{
+		{ID: 1, Text: "lonely message", Date: time.Now()},
+	}
+	docs := c.windowMessages(records, "Test", "100")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc for 1 message, got %d", len(docs))
+	}
+	if docs[0].Content != "lonely message" {
+		t.Errorf("expected content 'lonely message', got %q", docs[0].Content)
+	}
+	if mc := docs[0].Metadata["message_count"]; mc != 1 {
+		t.Errorf("expected message_count=1, got %v", mc)
+	}
+}
+
+func TestWindowMessages_SortsChronologically(t *testing.T) {
+	c := &Connector{name: "test"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	// Input in reverse-chrono (newest first), as Telegram returns
+	records := []messageRecord{
+		{ID: 3, Text: "third", Date: base.Add(10 * time.Minute)},
+		{ID: 2, Text: "second", Date: base.Add(5 * time.Minute)},
+		{ID: 1, Text: "first", Date: base},
+	}
+	docs := c.windowMessages(records, "Test", "100")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(docs))
+	}
+	// Output should be in chronological order
+	expected := "first\nsecond\nthird"
+	if docs[0].Content != expected {
+		t.Errorf("expected content %q, got %q", expected, docs[0].Content)
+	}
+}
+
+func TestWindowMessages_EmptyInput(t *testing.T) {
+	c := &Connector{name: "test"}
+	docs := c.windowMessages(nil, "Test", "100")
+	if len(docs) != 0 {
+		t.Errorf("expected 0 docs for empty input, got %d", len(docs))
+	}
+}
+
+func TestWindowMessages_DocMetadata(t *testing.T) {
+	c := &Connector{name: "test"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+	records := []messageRecord{
+		{ID: 100, Text: "hi", Date: base},
+		{ID: 101, Text: "there", Date: base.Add(1 * time.Minute)},
+	}
+	docs := c.windowMessages(records, "Friends", "42")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(docs))
+	}
+	d := docs[0]
+	if d.SourceID != "42:100-101" {
+		t.Errorf("source_id = %q, want '42:100-101'", d.SourceID)
+	}
+	if d.Title != "Friends" {
+		t.Errorf("title = %q, want 'Friends'", d.Title)
+	}
+	if d.Metadata["chat_name"] != "Friends" {
+		t.Errorf("chat_name = %v", d.Metadata["chat_name"])
+	}
+	if d.Metadata["first_message_id"] != 100 {
+		t.Errorf("first_message_id = %v", d.Metadata["first_message_id"])
+	}
+	if d.Metadata["last_message_id"] != 101 {
+		t.Errorf("last_message_id = %v", d.Metadata["last_message_id"])
+	}
+	// CreatedAt should be the latest message's date
+	if !d.CreatedAt.Equal(base.Add(1 * time.Minute)) {
+		t.Errorf("CreatedAt = %v, want latest message date", d.CreatedAt)
 	}
 }
