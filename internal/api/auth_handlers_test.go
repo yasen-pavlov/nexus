@@ -27,7 +27,7 @@ func newAuthTestRouter(t *testing.T) (http.Handler, func() *http.Request) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 	makeReq := func() *http.Request { return nil }
 	return router, makeReq
 }
@@ -626,7 +626,7 @@ func TestUpdateConnector_SharedFlagPropagates(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	aliceToken, _ := auth.GenerateToken(testJWTSecret, alice.ID, alice.Username, alice.Role)
 	bobToken, _ := auth.GenerateToken(testJWTSecret, bob.ID, bob.Username, bob.Role)
@@ -691,7 +691,7 @@ func TestRegister_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	// CountUsers will fail on closed store → 500
 	w := doJSON(t, router, http.MethodPost, "/api/auth/register", `{"username":"x","password":"password123"}`, "")
@@ -706,7 +706,7 @@ func TestLogin_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	// GetUserByUsername fails on closed store → handler returns 401 (invalid credentials)
 	// because it cannot distinguish missing user from store error.
@@ -726,7 +726,7 @@ func TestCreateUser_StoreError(t *testing.T) {
 	st.Close()
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	w := doJSON(t, closedRouter, http.MethodPost, "/api/users", `{"username":"newuser","password":"password123","role":"user"}`, admin.token)
 	if w.Code != http.StatusInternalServerError {
@@ -742,7 +742,7 @@ func TestListUsers_StoreError(t *testing.T) {
 	st.Close()
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	w := doJSON(t, closedRouter, http.MethodGet, "/api/users", "", admin.token)
 	if w.Code != http.StatusInternalServerError {
@@ -758,7 +758,7 @@ func TestDeleteUser_StoreError(t *testing.T) {
 	st.Close()
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	w := doJSON(t, closedRouter, http.MethodDelete, "/api/users/"+uuid.New().String(), "", admin.token)
 	if w.Code != http.StatusInternalServerError {
@@ -774,7 +774,7 @@ func TestChangePassword_StoreError(t *testing.T) {
 	st.Close()
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	w := doJSON(t, closedRouter, http.MethodPut, "/api/users/"+uuid.New().String()+"/password", `{"password":"newpassword456"}`, admin.token)
 	if w.Code != http.StatusInternalServerError {

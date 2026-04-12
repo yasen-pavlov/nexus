@@ -33,6 +33,7 @@ import (
 	"github.com/muty/nexus/internal/pipeline/extractor"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/search"
+	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
@@ -136,9 +137,19 @@ func run() error {
 	// Set up content extraction
 	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages)
 
+	// Set up binary content cache. Connectors that opt in via
+	// connector.CacheAware (IMAP lazy, Telegram eager) will receive this
+	// during instantiation. Eviction runs every hour.
+	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
+	if err != nil {
+		return fmt.Errorf("init binary store: %w", err)
+	}
+	go binaryStore.RunEviction(ctx, storage.DefaultCacheConfig, time.Hour)
+
 	// Set up connector manager
 	cm := api.NewConnectorManager(st, log)
 	cm.SetExtractor(extractorRegistry)
+	cm.SetBinaryStore(binaryStore)
 
 	if err := cm.LoadFromDB(ctx); err != nil {
 		return fmt.Errorf("load connectors from db: %w", err)
@@ -174,7 +185,7 @@ func run() error {
 	}
 
 	syncJobs := api.NewSyncJobManager()
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, jwtSecret, cfg.CORSOrigins, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, jwtSecret, cfg.CORSOrigins, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/http"
@@ -18,20 +19,22 @@ import (
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/rerank"
 	"github.com/muty/nexus/internal/search"
+	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
 
 type handler struct {
-	store     *store.Store
-	search    *search.Client
-	pipeline  *pipeline.Pipeline
-	em        *EmbeddingManager
-	rm        *RerankManager
-	cm        *ConnectorManager
-	syncJobs  *SyncJobManager
-	jwtSecret []byte
-	log       *zap.Logger
+	store       *store.Store
+	search      *search.Client
+	pipeline    *pipeline.Pipeline
+	em          *EmbeddingManager
+	rm          *RerankManager
+	cm          *ConnectorManager
+	syncJobs    *SyncJobManager
+	binaryStore *storage.BinaryStore
+	jwtSecret   []byte
+	log         *zap.Logger
 }
 
 // Health godoc
@@ -498,6 +501,153 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 		"message":    "reindex started",
 		"dimension":  dim,
 		"connectors": count,
+	})
+}
+
+// GetStorageStats godoc
+//
+//	@Summary		Binary cache stats per connector
+//	@Description	Returns per-source-type/name aggregates of cached binaries (count, total bytes). Admin only.
+//	@Tags			settings
+//	@Produce		json
+//	@Success		200	{object}	APIResponse{data=[]model.BinaryStoreStats}
+//	@Failure		500	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/storage/stats [get]
+func (h *handler) GetStorageStats(w http.ResponseWriter, r *http.Request) {
+	if h.binaryStore == nil {
+		writeJSON(w, http.StatusOK, []model.BinaryStoreStats{})
+		return
+	}
+	stats, err := h.binaryStore.Stats(r.Context())
+	if err != nil {
+		h.log.Error("storage stats failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to fetch storage stats")
+		return
+	}
+	if stats == nil {
+		stats = []model.BinaryStoreStats{}
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// summarizeStats folds a list of per-source stats into a single
+// deleted_count / bytes_freed pair for the cache-delete endpoints'
+// response body.
+func summarizeStats(stats []model.BinaryStoreStats) (int64, int64) {
+	var count, total int64
+	for _, s := range stats {
+		count += s.Count
+		total += s.TotalSize
+	}
+	return count, total
+}
+
+// DeleteStorageCache godoc
+//
+//	@Summary		Wipe the entire binary cache
+//	@Description	Deletes every cached blob across all connectors. Admin only. Eager-cached data (Telegram) will be re-populated on next sync only if the upstream media is still available; use with care.
+//	@Tags			settings
+//	@Produce		json
+//	@Success		200	{object}	map[string]any
+//	@Failure		500	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/storage/cache [delete]
+func (h *handler) DeleteStorageCache(w http.ResponseWriter, r *http.Request) {
+	if h.binaryStore == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"deleted_count": 0, "bytes_freed": 0})
+		return
+	}
+	// Capture size before deletion so the response can report what was
+	// freed. Stats-then-delete is racy with concurrent Puts, but this is
+	// an admin operation that the admin just triggered, so close enough.
+	stats, err := h.binaryStore.Stats(r.Context())
+	if err != nil {
+		h.log.Error("storage cache delete: stats failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to summarize cache before delete")
+		return
+	}
+	if err := h.binaryStore.DeleteAll(r.Context()); err != nil {
+		h.log.Error("storage cache delete: wipe failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to wipe cache")
+		return
+	}
+	count, bytesFreed := summarizeStats(stats)
+	h.log.Info("storage cache wiped", zap.Int64("deleted_count", count), zap.Int64("bytes_freed", bytesFreed))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted_count": count,
+		"bytes_freed":   bytesFreed,
+	})
+}
+
+// DeleteStorageCacheByConnector godoc
+//
+//	@Summary		Wipe the binary cache for a single connector
+//	@Description	Deletes every cached blob for the connector identified by path ID. Admin only. Safe for lazy-mode connectors — they'll repopulate the cache on next preview. Eager-mode connectors lose cached data that may not be re-fetchable if the upstream source has expired.
+//	@Tags			settings
+//	@Param			id	path	string	true	"Connector UUID"
+//	@Produce		json
+//	@Success		200	{object}	map[string]any
+//	@Failure		400	{object}	APIResponse
+//	@Failure		404	{object}	APIResponse
+//	@Failure		500	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/storage/cache/{id} [delete]
+func (h *handler) DeleteStorageCacheByConnector(w http.ResponseWriter, r *http.Request) {
+	if h.binaryStore == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"deleted_count": 0, "bytes_freed": 0})
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "connector not found")
+			return
+		}
+		h.log.Error("storage cache delete: get connector failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to resolve connector")
+		return
+	}
+
+	// Snapshot stats for this source before deletion so we can report
+	// what was freed. Only the matching aggregate is relevant.
+	stats, err := h.binaryStore.Stats(r.Context())
+	if err != nil {
+		h.log.Error("storage cache delete: stats failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to summarize cache before delete")
+		return
+	}
+	var filtered []model.BinaryStoreStats
+	for _, s := range stats {
+		if s.SourceType == cfg.Type && s.SourceName == cfg.Name {
+			filtered = append(filtered, s)
+		}
+	}
+
+	if err := h.binaryStore.DeleteBySource(r.Context(), cfg.Type, cfg.Name); err != nil {
+		h.log.Error("storage cache delete by connector failed",
+			zap.String("type", cfg.Type),
+			zap.String("name", cfg.Name),
+			zap.Error(err),
+		)
+		writeError(w, http.StatusInternalServerError, "failed to wipe connector cache")
+		return
+	}
+	count, bytesFreed := summarizeStats(filtered)
+	h.log.Info("storage cache wiped for connector",
+		zap.String("type", cfg.Type),
+		zap.String("name", cfg.Name),
+		zap.Int64("deleted_count", count),
+		zap.Int64("bytes_freed", bytesFreed),
+	)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted_count": count,
+		"bytes_freed":   bytesFreed,
 	})
 }
 

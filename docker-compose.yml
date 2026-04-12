@@ -66,6 +66,9 @@ services:
       NEXUS_FS_ROOT_PATH: /data
       NEXUS_FS_PATTERNS: "*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png"
       NEXUS_ENCRYPTION_KEY: REDACTED_DEV_ENCRYPTION_KEY
+      # Binary content cache. Mounted as a named volume so attachments /
+      # Telegram media survive container rebuilds.
+      NEXUS_BINARY_STORE_PATH: /var/lib/nexus/binaries
       # JWT signing secret. If unset, a random one is generated on each boot
       # (which logs everyone out on restart). Set explicitly for stable sessions.
       NEXUS_JWT_SECRET: change-me-to-a-long-random-string-at-least-32-bytes
@@ -83,6 +86,7 @@ services:
       # NEXUS_RERANK_MODEL: rerank-2
     volumes:
       - ./testdata:/data:ro
+      - nexus-binaries:/var/lib/nexus/binaries
     depends_on:
       db:
         condition: service_healthy
@@ -93,3 +97,4 @@ volumes:
   pgdata:
   osdata:
   ollama-data:
+  nexus-binaries:

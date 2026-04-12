@@ -35,6 +35,11 @@ type Config struct {
 	// Filesystem connector
 	FSRootPath string `envconfig:"FS_ROOT_PATH"`
 	FSPatterns string `envconfig:"FS_PATTERNS" default:"*.txt,*.md"`
+
+	// Binary content cache — stores attachments/media for connectors where
+	// re-fetch is slow (IMAP) or unreliable (Telegram media expiry).
+	// Mount this as a Docker volume in production to persist across restarts.
+	BinaryStorePath string `envconfig:"BINARY_STORE_PATH" default:"data/binaries"`
 }
 
 func Load() (*Config, error) {

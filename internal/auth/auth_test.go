@@ -1,12 +1,38 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestContextWithClaims_RoundTrip(t *testing.T) {
+	userID := uuid.New()
+	claims := &Claims{UserID: userID, Username: "alice", Role: "admin"}
+	ctx := ContextWithClaims(context.Background(), claims)
+
+	got := UserFromContext(ctx)
+	if got == nil || got.UserID != userID || got.Role != "admin" {
+		t.Errorf("round-trip failed: got %+v, want userID=%s role=admin", got, userID)
+	}
+
+	// UserIDFromContext convenience helper exercises the same path.
+	if id := UserIDFromContext(ctx); id != userID {
+		t.Errorf("UserIDFromContext = %s, want %s", id, userID)
+	}
+
+	// Empty context returns nil claims and nil UUID — exercises the
+	// not-present branch in UserIDFromContext.
+	if got := UserFromContext(context.Background()); got != nil {
+		t.Errorf("empty context should return nil claims, got %+v", got)
+	}
+	if got := UserIDFromContext(context.Background()); got != uuid.Nil {
+		t.Errorf("empty context should return uuid.Nil, got %s", got)
+	}
+}
 
 var testSecret = []byte("test-secret-key-for-jwt-testing!")
 

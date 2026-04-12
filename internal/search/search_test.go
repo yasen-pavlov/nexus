@@ -4,6 +4,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -515,6 +516,57 @@ func TestRecreateIndex(t *testing.T) {
 	}
 	if len(result.Documents) != 0 {
 		t.Errorf("expected 0 results after recreate, got %d", len(result.Documents))
+	}
+}
+
+// TestGetChunkByDocID_HappyPath verifies the download-endpoint's
+// doc-UUID → chunk resolver. Indexes two chunks for one doc and
+// expects the chunk-index-0 chunk back ordered correctly.
+func TestGetChunkByDocID_HappyPath(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	docID := "fs:test:preview-me"
+	chunks := []model.Chunk{
+		{
+			ID: docID + ":0", ParentID: docID, DocID: "abc-uuid", ChunkIndex: 0,
+			Title: "Preview me", Content: "first chunk",
+			SourceType: "filesystem", SourceName: "test", SourceID: "preview-me",
+			OwnerID: "user-1", Shared: false, CreatedAt: time.Now(),
+		},
+		{
+			ID: docID + ":1", ParentID: docID, DocID: "abc-uuid", ChunkIndex: 1,
+			Title: "Preview me", Content: "second chunk",
+			SourceType: "filesystem", SourceName: "test", SourceID: "preview-me",
+			OwnerID: "user-1", Shared: false, CreatedAt: time.Now(),
+		},
+	}
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.GetChunkByDocID(ctx, "abc-uuid")
+	if err != nil {
+		t.Fatalf("GetChunkByDocID: %v", err)
+	}
+	if got.ChunkIndex != 0 {
+		t.Errorf("got chunk_index=%d, want 0 (lowest)", got.ChunkIndex)
+	}
+	if got.SourceID != "preview-me" || got.OwnerID != "user-1" {
+		t.Errorf("wrong chunk returned: %+v", got)
+	}
+}
+
+func TestGetChunkByDocID_NotFound(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	_, err := c.GetChunkByDocID(ctx, "no-such-uuid")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
 	}
 }
 

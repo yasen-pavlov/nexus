@@ -11,6 +11,7 @@ import (
 	tgconn "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
@@ -36,6 +37,7 @@ type ConnectorManager struct {
 	log           *zap.Logger
 	schedObserver ScheduleObserver
 	extractor     *extractor.Registry
+	binaryStore   *storage.BinaryStore
 }
 
 // SetScheduleObserver sets the observer that is notified when connector schedules change.
@@ -46,6 +48,13 @@ func (m *ConnectorManager) SetScheduleObserver(obs ScheduleObserver) {
 // SetExtractor sets the content extractor registry for filesystem connectors.
 func (m *ConnectorManager) SetExtractor(ext *extractor.Registry) {
 	m.extractor = ext
+}
+
+// SetBinaryStore sets the binary content cache. Connectors that
+// implement connector.CacheAware receive it (and their resolved cache
+// policy) during instantiation.
+func (m *ConnectorManager) SetBinaryStore(bs *storage.BinaryStore) {
+	m.binaryStore = bs
 }
 
 // NewConnectorManager creates a new ConnectorManager.
@@ -206,6 +215,18 @@ func (m *ConnectorManager) Remove(ctx context.Context, id uuid.UUID) error {
 		m.log.Warn("failed to delete sync cursor", zap.String("name", cfg.Name), zap.Error(err))
 	}
 
+	// Clean up cached binaries for this connector — keyed by
+	// (source_type, source_name), matching search.DeleteBySource.
+	if m.binaryStore != nil {
+		if err := m.binaryStore.DeleteBySource(ctx, cfg.Type, cfg.Name); err != nil {
+			m.log.Warn("failed to delete cached binaries",
+				zap.String("type", cfg.Type),
+				zap.String("name", cfg.Name),
+				zap.Error(err),
+			)
+		}
+	}
+
 	m.mu.Lock()
 	delete(m.connectors, id)
 	m.mu.Unlock()
@@ -287,6 +308,17 @@ func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (conn
 			sessionKey := fmt.Sprintf("telegram_session_%s", cfg.ID.String())
 			session := tgconn.NewDBSessionStorage(sessionKey, m.store.GetSetting, m.store.SetSetting)
 			tgConn.SetSession(session)
+		}
+	}
+
+	// Inject binary cache + resolved per-connector policy for
+	// connectors that opt in via CacheAware. Connectors that don't
+	// implement it (filesystem, paperless) never touch the cache and
+	// always re-fetch from source.
+	if m.binaryStore != nil {
+		if ca, ok := conn.(connector.CacheAware); ok {
+			cacheCfg := storage.ResolveCacheConfig(cfg.Type, cfg.Config)
+			ca.SetBinaryStore(m.binaryStore, connector.CacheConfig{Mode: string(cacheCfg.Mode)})
 		}
 	}
 

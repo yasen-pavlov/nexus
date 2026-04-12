@@ -46,3 +46,32 @@ type BinaryFetcher interface {
 	// The caller is responsible for closing the returned Reader.
 	FetchBinary(ctx context.Context, sourceID string) (*BinaryContent, error)
 }
+
+// BinaryStoreAPI is the subset of internal/storage.BinaryStore methods that
+// cache-aware connectors call. Declared here so internal/connector doesn't
+// depend on internal/storage (which depends transitively on internal/store)
+// and so fakes are trivial to write in tests.
+type BinaryStoreAPI interface {
+	Put(ctx context.Context, sourceType, sourceName, sourceID string, r io.Reader, size int64) error
+	Get(ctx context.Context, sourceType, sourceName, sourceID string) (io.ReadCloser, error)
+	Exists(ctx context.Context, sourceType, sourceName, sourceID string) (bool, error)
+}
+
+// CacheConfig is the runtime cache policy for a connector instance.
+// Mirrors storage.CacheConfig but lives here so connectors don't need
+// to import internal/storage. The ConnectorManager translates
+// storage.CacheConfig to this struct when injecting.
+type CacheConfig struct {
+	// Mode is "none", "lazy", or "eager". Connectors consult this to
+	// decide whether to populate the cache during Fetch (eager) or on
+	// first FetchBinary (lazy), or skip caching entirely (none).
+	Mode string
+}
+
+// CacheAware is an optional capability for connectors that participate
+// in the binary cache. Connectors that accept caching (IMAP, Telegram)
+// implement this to receive the BinaryStore and their resolved policy
+// at wire-up time.
+type CacheAware interface {
+	SetBinaryStore(store BinaryStoreAPI, config CacheConfig)
+}

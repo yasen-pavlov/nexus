@@ -10,6 +10,7 @@ import (
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/search"
+	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.uber.org/zap"
@@ -25,6 +26,7 @@ func NewRouter(
 	em *EmbeddingManager,
 	rm *RerankManager,
 	syncJobs *SyncJobManager,
+	binaryStore *storage.BinaryStore,
 	jwtSecret []byte,
 	corsOrigins []string,
 	log *zap.Logger,
@@ -47,15 +49,16 @@ func NewRouter(
 	}))
 
 	h := &handler{
-		store:     store,
-		search:    search,
-		pipeline:  pipeline,
-		em:        em,
-		rm:        rm,
-		cm:        cm,
-		syncJobs:  syncJobs,
-		jwtSecret: jwtSecret,
-		log:       log,
+		store:       store,
+		search:      search,
+		pipeline:    pipeline,
+		em:          em,
+		rm:          rm,
+		cm:          cm,
+		syncJobs:    syncJobs,
+		binaryStore: binaryStore,
+		jwtSecret:   jwtSecret,
+		log:         log,
 	}
 
 	// SSE endpoint — outside the timeout middleware (long-lived connection)
@@ -107,6 +110,9 @@ func NewRouter(
 
 				r.Post("/reindex", h.TriggerReindex)
 				r.Delete("/sync/cursors", h.DeleteAllCursors)
+				r.Get("/storage/stats", h.GetStorageStats)
+				r.Delete("/storage/cache", h.DeleteStorageCache)
+				r.Delete("/storage/cache/{id}", h.DeleteStorageCacheByConnector)
 
 				r.Route("/settings", func(r chi.Router) {
 					r.Get("/embedding", h.GetEmbeddingSettings)

@@ -24,6 +24,7 @@ import (
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/rerank"
 	"github.com/muty/nexus/internal/search"
+	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	"github.com/muty/nexus/internal/testutil"
 	"github.com/muty/nexus/migrations"
@@ -98,7 +99,7 @@ func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManage
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, authWrap(router, token)
 }
@@ -421,7 +422,7 @@ func TestSearchOwnershipScoping(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
 		t.Helper()
@@ -1071,7 +1072,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1088,7 +1089,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1236,7 +1237,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -2289,7 +2290,7 @@ func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	// Index a shared chunk so the doc exists
 	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
@@ -2306,7 +2307,7 @@ func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
 	if err != nil {
@@ -2360,7 +2361,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	_ = sc.Refresh(context.Background())
 
 	// Build an unwrapped router so we can use a non-admin token
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
 	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
 	if err != nil {
@@ -2491,4 +2492,392 @@ func TestDownloadDocument_Integration_BadUUID(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d; body: %s", w.Code, w.Body.String())
 	}
+}
+
+// --- Binary cache stats endpoint ---
+
+func newTestRouterWithBinaryStore(t *testing.T) (*store.Store, *search.Client, *ConnectorManager, *storage.BinaryStore, http.Handler) {
+	t.Helper()
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+
+	bs, err := storage.New(t.TempDir(), st, zap.NewNop())
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+	cm.SetBinaryStore(bs)
+
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+	_, token := createTestAdmin(t, st)
+	return st, sc, cm, bs, authWrap(router, token)
+}
+
+func TestStorageStats_Empty(t *testing.T) {
+	_, _, _, _, router := newTestRouterWithBinaryStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/storage/stats", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	data, ok := resp.Data.([]any)
+	if !ok {
+		t.Fatalf("data type: %T", resp.Data)
+	}
+	if len(data) != 0 {
+		t.Errorf("expected empty stats, got %+v", data)
+	}
+}
+
+// TestStorageHandlers_NilBinaryStore exercises the "not configured"
+// branches — when the router is constructed without a binary store
+// the three handlers all short-circuit to a success response rather
+// than NPE'ing. Covers the early-return paths.
+func TestStorageHandlers_NilBinaryStore(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	_, token := createTestAdmin(t, st)
+	wrapped := authWrap(router, token)
+
+	t.Run("GET stats", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/storage/stats", nil)
+		w := httptest.NewRecorder()
+		wrapped.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("DELETE cache all", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache", nil)
+		w := httptest.NewRecorder()
+		wrapped.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("DELETE cache by connector", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache/"+uuid.New().String(), nil)
+		w := httptest.NewRecorder()
+		wrapped.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestStorageHandlers_StoreErrors closes the DB pool after setup so
+// the Stats / DeleteAll / GetConnectorConfig / DeleteBySource calls
+// all fail. Covers the error-path logging + 500 response branches in
+// each of the three handlers.
+func TestStorageHandlers_StoreErrors(t *testing.T) {
+	st, sc, cm, _, router := newTestRouterWithBinaryStore(t)
+
+	// Seed a real connector so the GetConnectorConfig lookup succeeds on
+	// the by-connector handler; we want to exercise the *Stats* error
+	// path, not the 404 path.
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "store-err",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	connID := cfg.ID
+
+	// Now poison the DB pool — every subsequent query errors.
+	st.Close()
+
+	t.Run("GET stats returns 500", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/storage/stats", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500, got %d", w.Code)
+		}
+	})
+	t.Run("DELETE cache all returns 500 on stats failure", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500, got %d", w.Code)
+		}
+	})
+	t.Run("DELETE cache by id returns 500 when GetConnectorConfig fails", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache/"+connID.String(), nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Errorf("expected 500, got %d", w.Code)
+		}
+	})
+
+	_ = sc
+}
+
+func TestStorageStats_ReturnsAggregates(t *testing.T) {
+	_, _, _, bs, router := newTestRouterWithBinaryStore(t)
+	ctx := context.Background()
+
+	// Populate cache with two connectors' worth of entries.
+	for _, id := range []string{"a", "b"} {
+		payload := bytes.Repeat([]byte("x"), 100)
+		if err := bs.Put(ctx, "imap", "icloud", id, bytes.NewReader(payload), 100); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := bs.Put(ctx, "telegram", "personal", "m", bytes.NewReader([]byte("hello")), 5); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/storage/stats", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data []model.BinaryStoreStats `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 aggregated rows, got %d: %+v", len(resp.Data), resp.Data)
+	}
+
+	byKey := map[string]model.BinaryStoreStats{}
+	for _, s := range resp.Data {
+		byKey[s.SourceType+"/"+s.SourceName] = s
+	}
+	if got := byKey["imap/icloud"]; got.Count != 2 || got.TotalSize != 200 {
+		t.Errorf("imap/icloud = %+v, want count=2 size=200", got)
+	}
+	if got := byKey["telegram/personal"]; got.Count != 1 || got.TotalSize != 5 {
+		t.Errorf("telegram/personal = %+v, want count=1 size=5", got)
+	}
+}
+
+func TestStorageStats_RequiresAdmin(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+
+	bs, err := storage.New(t.TempDir(), st, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+
+	// Non-admin user.
+	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+	user, err := st.CreateUser(context.Background(), username, "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, user.ID, user.Username, user.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/storage/stats", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for non-admin, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteStorageCache_All(t *testing.T) {
+	_, _, _, bs, router := newTestRouterWithBinaryStore(t)
+	ctx := context.Background()
+
+	// Populate with a couple of entries across connectors.
+	if err := bs.Put(ctx, "imap", "icloud", "a", bytes.NewReader(bytes.Repeat([]byte("x"), 100)), 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.Put(ctx, "telegram", "personal", "m", bytes.NewReader([]byte("hi")), 2); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			DeletedCount int64 `json:"deleted_count"`
+			BytesFreed   int64 `json:"bytes_freed"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Data.DeletedCount != 2 || resp.Data.BytesFreed != 102 {
+		t.Errorf("got deleted_count=%d bytes_freed=%d, want 2/102", resp.Data.DeletedCount, resp.Data.BytesFreed)
+	}
+
+	// Cache should be empty now.
+	stats, err := bs.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 0 {
+		t.Errorf("expected empty cache, got %+v", stats)
+	}
+}
+
+func TestDeleteStorageCache_ByConnector(t *testing.T) {
+	_, _, cm, bs, router := newTestRouterWithBinaryStore(t)
+	ctx := context.Background()
+
+	// Register a connector so we have a real ID to target.
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "cache-target",
+		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"}, Enabled: true, Shared: true,
+	}
+	if err := cm.Add(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Populate the cache for this connector and also for an unrelated one.
+	if err := bs.Put(ctx, "filesystem", "cache-target", "a", bytes.NewReader(bytes.Repeat([]byte("x"), 50)), 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.Put(ctx, "filesystem", "cache-target", "b", bytes.NewReader(bytes.Repeat([]byte("y"), 70)), 70); err != nil {
+		t.Fatal(err)
+	}
+	if err := bs.Put(ctx, "imap", "other", "z", bytes.NewReader([]byte("z")), 1); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache/"+cfg.ID.String(), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			DeletedCount int64 `json:"deleted_count"`
+			BytesFreed   int64 `json:"bytes_freed"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data.DeletedCount != 2 || resp.Data.BytesFreed != 120 {
+		t.Errorf("got deleted_count=%d bytes_freed=%d, want 2/120", resp.Data.DeletedCount, resp.Data.BytesFreed)
+	}
+
+	// cache-target entries gone; unrelated imap/other survives.
+	if ok, _ := bs.Exists(ctx, "filesystem", "cache-target", "a"); ok {
+		t.Error("connector-scoped delete should have removed 'a'")
+	}
+	if ok, _ := bs.Exists(ctx, "imap", "other", "z"); !ok {
+		t.Error("unrelated connector's cache should survive targeted delete")
+	}
+}
+
+func TestDeleteStorageCache_ByConnector_NotFound(t *testing.T) {
+	_, _, _, _, router := newTestRouterWithBinaryStore(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache/"+uuid.New().String(), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown connector, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteStorageCache_ByConnector_BadUUID(t *testing.T) {
+	_, _, _, _, router := newTestRouterWithBinaryStore(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/storage/cache/not-a-uuid", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad uuid, got %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteStorageCache_RequiresAdmin(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+
+	bs, err := storage.New(t.TempDir(), st, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+
+	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+	user, err := st.CreateUser(context.Background(), username, "hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, user.ID, user.Username, user.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/api/storage/cache", "/api/storage/cache/" + uuid.New().String()} {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: expected 403 for non-admin, got %d; body: %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestConnectorRemove_CleansCachedBinaries(t *testing.T) {
+	st, _, cm, bs, _ := newTestRouterWithBinaryStore(t)
+	ctx := context.Background()
+
+	// Create a connector the manager knows about.
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "cache-cleanup",
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Populate the cache as if the connector had cached something.
+	if err := bs.Put(ctx, "filesystem", "cache-cleanup", "file-1", bytes.NewReader([]byte("x")), 1); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := bs.Exists(ctx, "filesystem", "cache-cleanup", "file-1"); !ok {
+		t.Fatal("precondition: entry should be cached")
+	}
+
+	// Remove the connector — binary cache should be cleaned up.
+	if err := cm.Remove(ctx, cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := bs.Exists(ctx, "filesystem", "cache-cleanup", "file-1"); ok {
+		t.Error("cached binary should be deleted when connector is removed")
+	}
+
+	_ = st
 }

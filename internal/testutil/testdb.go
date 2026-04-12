@@ -50,7 +50,7 @@ func NewTestDB(t *testing.T, pkgName string, migrationsFS fs.FS) *TestDB {
 		t.Fatalf("testdb: connect: %v", err)
 	}
 
-	_, err = pool.Exec(ctx, "TRUNCATE sync_cursors, jobs, connector_configs, settings, users CASCADE")
+	_, err = pool.Exec(ctx, "TRUNCATE sync_cursors, jobs, connector_configs, settings, users, binary_store_entries CASCADE")
 	if err != nil {
 		pool.Close()
 		t.Fatalf("testdb: truncate: %v", err)
