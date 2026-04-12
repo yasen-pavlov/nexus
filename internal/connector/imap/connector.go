@@ -2,6 +2,7 @@
 package imap
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -71,15 +72,17 @@ func init() {
 
 // Connector fetches emails from an IMAP server.
 type Connector struct {
-	name      string
-	server    string
-	port      int
-	username  string
-	password  string
-	folders   []string
-	syncSince time.Time
-	extractor *extractor.Registry
-	dial      dialFunc
+	name        string
+	server      string
+	port        int
+	username    string
+	password    string
+	folders     []string
+	syncSince   time.Time
+	extractor   *extractor.Registry
+	dial        dialFunc
+	binaryStore connector.BinaryStoreAPI
+	cacheConfig connector.CacheConfig
 }
 
 func (c *Connector) Type() string { return "imap" }
@@ -88,6 +91,14 @@ func (c *Connector) Name() string { return c.name }
 // SetExtractor sets the content extractor for email attachments.
 func (c *Connector) SetExtractor(ext *extractor.Registry) {
 	c.extractor = ext
+}
+
+// SetBinaryStore wires the binary content cache plus the resolved
+// per-connector cache policy. Implements connector.CacheAware.
+// Called once at wire time by ConnectorManager.instantiateConnector.
+func (c *Connector) SetBinaryStore(store connector.BinaryStoreAPI, cfg connector.CacheConfig) {
+	c.binaryStore = store
+	c.cacheConfig = cfg
 }
 
 func (c *Connector) Configure(cfg connector.Config) error {
@@ -395,6 +406,21 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 			Visibility: "private",
 			CreatedAt:  createdAt,
 		})
+
+		// Eager cache population: the attachment bytes are already in
+		// memory from the MIME parse — dropping them here means the
+		// first preview click would have to re-fetch the entire email
+		// from IMAP. When the admin has opted into eager mode on this
+		// connector we proactively cache. Best-effort — a cache write
+		// failure shouldn't abort the sync.
+		if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
+			_ = c.binaryStore.Put(
+				context.Background(),
+				"imap", c.name, attSourceID,
+				bytes.NewReader(att.Data),
+				int64(len(att.Data)),
+			)
+		}
 	}
 
 	return docs
