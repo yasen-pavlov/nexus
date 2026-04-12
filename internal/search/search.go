@@ -38,6 +38,10 @@ type Client struct {
 	// the set of fields multi_match searches against. Empty is allowed and
 	// falls back to standard-analyzer-only (pre-stemming) behavior.
 	languages []lang.Language
+	// minShouldMatch controls how many query terms must appear in a single
+	// field for a document to match in BM25. When the Settings UI lands
+	// this becomes a DB-backed tunable alongside RerankMinScore.
+	minShouldMatch string
 }
 
 // New creates a new OpenSearch client and verifies the connection.
@@ -62,7 +66,7 @@ func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Lang
 	}
 
 	log.Info("connected to OpenSearch", zap.String("url", url))
-	return &Client{os: osClient, log: log, index: defaultIndex, languages: languages}, nil
+	return &Client{os: osClient, log: log, index: defaultIndex, languages: languages, minShouldMatch: DefaultMinShouldMatch}, nil
 }
 
 // NewWithIndex creates a client with a custom index name (for testing).
@@ -319,10 +323,11 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 
 	matchQuery := map[string]any{
 		"multi_match": map[string]any{
-			"query":   req.Query,
-			"fields":  c.textSearchFields(),
-			"type":    "most_fields",
-			"lenient": true,
+			"query":                req.Query,
+			"fields":               c.textSearchFields(),
+			"type":                 "most_fields",
+			"lenient":              true,
+			"minimum_should_match": c.minShouldMatch,
 		},
 	}
 	filters := buildFilterClauses(req)
@@ -361,10 +366,11 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 	// BM25 sub-query
 	bm25Query := map[string]any{
 		"multi_match": map[string]any{
-			"query":   req.Query,
-			"fields":  c.textSearchFields(),
-			"type":    "most_fields",
-			"lenient": true,
+			"query":                req.Query,
+			"fields":               c.textSearchFields(),
+			"type":                 "most_fields",
+			"lenient":              true,
+			"minimum_should_match": c.minShouldMatch,
 		},
 	}
 	filters := buildFilterClauses(req)

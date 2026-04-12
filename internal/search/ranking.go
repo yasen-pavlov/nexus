@@ -35,4 +35,41 @@ const (
 	// principled noise filter — searches that hit kNN-only matches will have
 	// some hub noise in the long tail. Add a reranker if that's a problem.
 	RerankMinScore = 0.4
+
+	// DefaultSourceTrustEnabled controls whether per-source trust weights
+	// are applied to reranker scores. When the Settings UI lands this
+	// becomes a toggle + per-source weight sliders.
+	DefaultSourceTrustEnabled = true
+)
+
+// SourceTrustWeight maps source types to a multiplicative weight applied
+// to the reranker score before the rerank floor. Values > 1 boost,
+// < 1 penalize. The intent is to express that some sources are
+// intrinsically more authoritative for document-type queries:
+// Paperless stores deliberately-archived documents, while IMAP is an
+// unfiltered inbox and Telegram is ephemeral chat.
+//
+// Applied between the reranker stage and the rerank floor so that
+// borderline inbox noise (reranker ~0.40) drops below the floor after
+// the penalty, while genuinely relevant emails (reranker 0.45+) survive.
+var SourceTrustWeight = map[string]float64{
+	"paperless":  1.05, // archived documents — slight boost
+	"filesystem": 1.00, // neutral
+	"imap":       0.92, // unfiltered inbox — penalty
+	"telegram":   0.92, // chat noise — penalty
+}
+
+const (
+	// DefaultMinShouldMatch is the default minimum_should_match value for
+	// multi_match BM25 queries. Controls how many query terms must appear
+	// in a single field for a document to match:
+	//
+	//   1 term  → 1 required (unchanged)
+	//   2 terms → 2 required (effectively AND — "ID card" won't match
+	//             documents that only contain "ID")
+	//   4 terms → 3 required (allows 1 miss for longer queries)
+	//
+	// Cross-language matches (e.g. "ID card" → "Personalausweis") still
+	// come through kNN and are unaffected by this BM25 threshold.
+	DefaultMinShouldMatch = "75%"
 )

@@ -35,9 +35,10 @@ func TestApplyRecencyDecay_OldDocKeepsFloor(t *testing.T) {
 
 	ApplyRecencyDecay(result)
 
-	// Very old doc should keep at least recencyFloor (0.7) of its score
-	if result.Documents[0].Rank < recencyFloor*0.99 {
-		t.Errorf("ancient doc score = %f, should be >= %f (floor)", result.Documents[0].Rank, recencyFloor)
+	// Very old imap doc should keep at least its source-specific floor of its score
+	imapFloor := sourceRecencyFloor["imap"]
+	if result.Documents[0].Rank < imapFloor*0.99 {
+		t.Errorf("ancient doc score = %f, should be >= %f (imap floor)", result.Documents[0].Rank, imapFloor)
 	}
 }
 
@@ -109,9 +110,10 @@ func TestApplyRecencyDecay_UnknownSourceUsesDefault(t *testing.T) {
 
 	ApplyRecencyDecay(result)
 
-	// Should use defaultHalfLife (60 days), score should be reduced but not zero
-	if result.Documents[0].Rank >= 1.0 || result.Documents[0].Rank < recencyFloor {
-		t.Errorf("score = %f, expected between %f and 1.0", result.Documents[0].Rank, recencyFloor)
+	// Should use defaultHalfLife (60 days) and defaultRecencyFloor,
+	// score should be reduced but not below the floor.
+	if result.Documents[0].Rank >= 1.0 || result.Documents[0].Rank < defaultRecencyFloor {
+		t.Errorf("score = %f, expected between %f and 1.0", result.Documents[0].Rank, defaultRecencyFloor)
 	}
 }
 

@@ -342,7 +342,7 @@ func TestUpdateOwnershipBySource(t *testing.T) {
 
 	visibleTo := func(t *testing.T, owner string) map[string]bool {
 		t.Helper()
-		res, err := c.Search(ctx, model.SearchRequest{Query: "alpha OR beta OR gamma", Limit: 10, OwnerID: owner})
+		res, err := c.Search(ctx, model.SearchRequest{Query: "content", Limit: 10, OwnerID: owner})
 		if err != nil {
 			t.Fatal(err)
 		}

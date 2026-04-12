@@ -145,6 +145,21 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stage 3b: source trust weights. Adjusts reranker scores by a
+	// per-source multiplier so archived documents (Paperless) get a slight
+	// boost and inbox/chat noise (IMAP, Telegram) gets a slight penalty.
+	// Applied before the rerank floor so borderline inbox noise drops
+	// below the threshold while genuinely relevant emails survive.
+	if rerankerActive && search.DefaultSourceTrustEnabled {
+		for i := range result.Documents {
+			w, ok := search.SourceTrustWeight[result.Documents[i].SourceType]
+			if !ok {
+				w = 1.0
+			}
+			result.Documents[i].Rank *= w
+		}
+	}
+
 	// Stage 4: rerank floor. Drop docs below the relevance threshold. Only
 	// fires when a reranker actually ran — without one, Rank is the raw RRF
 	// score which isn't a meaningful relevance number to threshold against.
