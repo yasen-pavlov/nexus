@@ -289,13 +289,20 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl medi
 }
 
 func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
-	// Collect text messages into records first (instead of emitting one
-	// Document per message), so we can sort by date and group them into
-	// conversation windows before producing the final text docs. Media-bearing
-	// messages are handled separately: each produces one sibling Document with
-	// its own bytes cached, regardless of whether the message also has text.
+	// Dual emission: each Telegram message produces up to three documents:
+	//
+	//   1. a conversation *window* doc — the retrieval unit, embedded and
+	//      searchable, whose content is several messages joined together.
+	//   2. a canonical per-*message* doc — Hidden so it doesn't surface in
+	//      default search, used for reply_to targets and chat-browser
+	//      pagination.
+	//   3. a media doc — when m.Media is downloadable (see mediaToDocument).
+	//
+	// The retrieval unit (window) != product unit (message) is deliberate:
+	// windows keep embeddings honest on short chat text, messages keep the
+	// reply graph and UI navigation clean. See plans/scalable-beaming-tower.md.
 	var records []messageRecord
-	var mediaDocs []model.Document
+	var allMessages []*tg.Message
 
 	req := &tg.MessagesGetHistoryRequest{
 		Peer:  inputPeer,
@@ -324,26 +331,21 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 				continue
 			}
 
-			// Skip messages older than sinceDate. This applies before
-			// both text and media handling so we don't re-download
-			// media we already have from previous syncs.
+			// Skip messages older than sinceDate. Applies before both
+			// text and media handling so we don't re-download media
+			// already cached from previous syncs.
 			if sinceDate > 0 && m.Date < sinceDate {
 				stop = true
 				break
 			}
 
+			allMessages = append(allMessages, m)
 			if m.Message != "" {
 				records = append(records, messageRecord{
 					ID:   m.ID,
 					Text: m.Message,
 					Date: time.Unix(int64(m.Date), 0),
 				})
-			}
-
-			if m.Media != nil {
-				if doc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
-					mediaDocs = append(mediaDocs, doc)
-				}
 			}
 		}
 
@@ -365,9 +367,82 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 		}
 	}
 
-	docs := c.windowMessages(records, chatName, chatID)
-	docs = append(docs, mediaDocs...)
+	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID)
+
+	docs := make([]model.Document, 0, len(windowDocs)+len(allMessages))
+	docs = append(docs, windowDocs...)
+
+	for _, m := range allMessages {
+		// Skip messages that carry neither text nor media — typically
+		// edit-cleared shells or unsupported event types that leaked
+		// past the *tg.Message type filter. A canonical record for them
+		// would just pollute the chat browser.
+		if m.Message == "" && m.Media == nil {
+			continue
+		}
+		docs = append(docs, c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID]))
+		if m.Media != nil {
+			if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
+				docs = append(docs, mediaDoc)
+			}
+		}
+	}
+
 	return docs, nil
+}
+
+// makeMessageDoc emits the canonical per-message record. It's Hidden
+// (excluded from default search so it doesn't duplicate the window doc's
+// hit) but carries everything the chat browser and relation resolver need:
+// the text, the reply edge, the member-of-window edge (when the message is
+// part of a text window), and sender metadata.
+func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSourceID string) model.Document {
+	sourceID := fmt.Sprintf("%s:%d:msg", chatID, m.ID)
+
+	relations := make([]model.Relation, 0, 2)
+	if windowSourceID != "" {
+		relations = append(relations, model.Relation{
+			Type:           model.RelationMemberOfWindow,
+			TargetSourceID: windowSourceID,
+			TargetID:       model.DocumentID("telegram", c.name, windowSourceID).String(),
+		})
+	}
+	if h, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok && h.ReplyToMsgID > 0 {
+		// Same-chat replies only — cross-chat replies carry a
+		// ReplyToPeerID we aren't wired to resolve yet.
+		if h.ReplyToPeerID == nil {
+			replyTargetSourceID := fmt.Sprintf("%s:%d:msg", chatID, h.ReplyToMsgID)
+			relations = append(relations, model.Relation{
+				Type:           model.RelationReplyTo,
+				TargetSourceID: replyTargetSourceID,
+				TargetID:       model.DocumentID("telegram", c.name, replyTargetSourceID).String(),
+			})
+		}
+	}
+
+	metadata := map[string]any{
+		"chat_id":    chatID,
+		"chat_name":  chatName,
+		"message_id": m.ID,
+	}
+	if u, ok := m.FromID.(*tg.PeerUser); ok {
+		metadata["sender_id"] = u.UserID
+	}
+
+	return model.Document{
+		ID:             model.DocumentID("telegram", c.name, sourceID),
+		SourceType:     "telegram",
+		SourceName:     c.name,
+		SourceID:       sourceID,
+		Title:          chatName,
+		Content:        m.Message,
+		Metadata:       metadata,
+		Relations:      relations,
+		ConversationID: chatID,
+		Hidden:         true,
+		Visibility:     "private",
+		CreatedAt:      time.Unix(int64(m.Date), 0),
+	}
 }
 
 // windowMessages groups consecutive messages from a single chat into
@@ -379,9 +454,10 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 // Input records may be in any order — they are sorted by date ascending here
 // before windowing so the resulting windows are chronological regardless of
 // how the records arrived from the API.
-func (c *Connector) windowMessages(records []messageRecord, chatName, chatID string) []model.Document {
+func (c *Connector) windowMessages(records []messageRecord, chatName, chatID string) ([]model.Document, map[int]string) {
+	msgIDToWindow := map[int]string{}
 	if len(records) == 0 {
-		return nil
+		return nil, msgIDToWindow
 	}
 
 	// Sort chronologically (oldest first) so windows reflect actual conversation flow.
@@ -397,7 +473,11 @@ func (c *Connector) windowMessages(records []messageRecord, chatName, chatID str
 		if len(window) == 0 {
 			return
 		}
-		docs = append(docs, c.makeWindowDoc(window, chatName, chatID))
+		doc := c.makeWindowDoc(window, chatName, chatID)
+		docs = append(docs, doc)
+		for _, r := range window {
+			msgIDToWindow[r.ID] = doc.SourceID
+		}
 		window = nil
 		windowChars = 0
 	}
@@ -416,7 +496,7 @@ func (c *Connector) windowMessages(records []messageRecord, chatName, chatID str
 	}
 	flush()
 
-	return docs
+	return docs, msgIDToWindow
 }
 
 // makeWindowDoc converts a non-empty slice of message records into a single
@@ -428,8 +508,10 @@ func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID strin
 	last := window[len(window)-1]
 
 	texts := make([]string, len(window))
+	messageIDs := make([]int, len(window))
 	for i, r := range window {
 		texts[i] = r.Text
+		messageIDs[i] = r.ID
 	}
 	content := strings.Join(texts, "\n")
 
@@ -443,16 +525,19 @@ func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID strin
 		Title:      chatName,
 		Content:    content,
 		Metadata: map[string]any{
-			"chat_name":        chatName,
-			"chat_id":          chatID,
-			"first_message_id": first.ID,
-			"last_message_id":  last.ID,
-			"message_count":    len(window),
-			"date_range_start": first.Date.Format(time.RFC3339),
-			"date_range_end":   last.Date.Format(time.RFC3339),
+			"chat_name":            chatName,
+			"chat_id":              chatID,
+			"first_message_id":     first.ID,
+			"last_message_id":      last.ID,
+			"message_count":        len(window),
+			"date_range_start":     first.Date.Format(time.RFC3339),
+			"date_range_end":       last.Date.Format(time.RFC3339),
+			"anchor_message_id":    first.ID,
+			"included_message_ids": messageIDs,
 		},
-		Visibility: "private",
-		CreatedAt:  last.Date,
+		ConversationID: chatID,
+		Visibility:     "private",
+		CreatedAt:      last.Date,
 	}
 }
 
@@ -583,10 +668,9 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 	}
 
 	metadata := map[string]any{
-		"chat_name":         chatName,
-		"chat_id":           chatID,
-		"parent_message_id": m.ID,
-		"content_type":      mimeType,
+		"chat_name":    chatName,
+		"chat_id":      chatID,
+		"content_type": mimeType,
 	}
 	if filename != "" {
 		metadata["filename"] = filename
@@ -594,6 +678,11 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 	if m.Message != "" {
 		metadata["caption"] = m.Message
 	}
+
+	// attachment_of points at the per-message doc (the canonical record
+	// for this Telegram message), not the window. The window can be
+	// reached by walking member_of_window from the message doc.
+	parentMsgSourceID := fmt.Sprintf("%s:%d:msg", chatID, m.ID)
 
 	return model.Document{
 		ID:         model.DocumentID("telegram", c.name, sourceID),
@@ -605,8 +694,14 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 		MimeType:   mimeType,
 		Size:       size,
 		Metadata:   metadata,
-		Visibility: "private",
-		CreatedAt:  time.Unix(int64(m.Date), 0),
+		Relations: []model.Relation{{
+			Type:           model.RelationAttachmentOf,
+			TargetSourceID: parentMsgSourceID,
+			TargetID:       model.DocumentID("telegram", c.name, parentMsgSourceID).String(),
+		}},
+		ConversationID: chatID,
+		Visibility:     "private",
+		CreatedAt:      time.Unix(int64(m.Date), 0),
 	}, true
 }
 

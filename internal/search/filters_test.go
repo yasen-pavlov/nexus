@@ -100,11 +100,24 @@ func TestBuildFilterClauses_OwnerIDPlusSources(t *testing.T) {
 	}
 }
 
-func TestBuildSearchQuery_NoFilters(t *testing.T) {
+func TestBuildSearchQuery_AlwaysExcludesHidden(t *testing.T) {
+	// buildSearchQuery must always wrap in a bool with a must_not for
+	// hidden=true, so Telegram per-message docs (and anything else that
+	// opts out of default search) never surface. This applies regardless
+	// of whether filter clauses are also present.
 	match := map[string]any{"match_all": map[string]any{}}
 	q := buildSearchQuery(match, nil)
-	if _, ok := q["bool"]; ok {
-		t.Error("expected no bool wrapper with no filters")
+	bool_, ok := q["bool"].(map[string]any)
+	if !ok {
+		t.Fatal("expected bool wrapper even with no filters")
+	}
+	mustNot, ok := bool_["must_not"].([]map[string]any)
+	if !ok || len(mustNot) == 0 {
+		t.Fatalf("expected must_not to exclude hidden docs, got %v", bool_)
+	}
+	term, ok := mustNot[0]["term"].(map[string]any)
+	if !ok || term["hidden"] != true {
+		t.Errorf("must_not clause should be {term: {hidden: true}}, got %v", mustNot[0])
 	}
 }
 

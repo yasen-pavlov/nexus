@@ -1,3 +1,25 @@
+export interface Relation {
+  type: string;
+  target_source_id?: string;
+  target_id?: string;
+}
+
+export interface RelatedEdge {
+  relation: Relation;
+  document?: Document;
+}
+
+export interface RelatedResponse {
+  outgoing: RelatedEdge[];
+  incoming: RelatedEdge[];
+}
+
+export interface ConversationMessagesResponse {
+  messages: Document[];
+  next_before?: string;
+  next_after?: string;
+}
+
 export interface Document {
   id: string;
   source_type: string;
@@ -8,6 +30,8 @@ export interface Document {
   mime_type?: string;
   size?: number;
   metadata: Record<string, unknown>;
+  relations?: Relation[];
+  conversation_id?: string;
   url: string;
   visibility: string;
   created_at: string;
@@ -174,6 +198,24 @@ export async function downloadDocument(id: string, suggestedFilename?: string): 
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(blobURL);
+}
+
+export async function getRelatedDocuments(id: string): Promise<RelatedResponse> {
+  return fetchAPI<RelatedResponse>(`/api/documents/${id}/related`);
+}
+
+export async function getConversationMessages(
+  sourceType: string,
+  conversationID: string,
+  opts?: { before?: string; after?: string; limit?: number },
+): Promise<ConversationMessagesResponse> {
+  const params = new URLSearchParams();
+  if (opts?.before) params.set('before', opts.before);
+  if (opts?.after) params.set('after', opts.after);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  const path = `/api/conversations/${encodeURIComponent(sourceType)}/${encodeURIComponent(conversationID)}/messages${query ? '?' + query : ''}`;
+  return fetchAPI<ConversationMessagesResponse>(path);
 }
 
 export async function search(query: string, limit = 20, offset = 0, filters?: SearchFilters): Promise<SearchResult> {

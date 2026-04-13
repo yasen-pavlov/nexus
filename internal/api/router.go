@@ -82,6 +82,8 @@ func NewRouter(
 			r.Get("/search", h.Search)
 
 			r.Get("/documents/{id}/content", h.DownloadDocument)
+			r.Get("/documents/{id}/related", h.GetRelatedDocuments)
+			r.Get("/conversations/{source_type}/{conversation_id}/messages", h.GetConversationMessages)
 
 			r.Get("/sync", h.ListSyncJobs)
 			r.Post("/sync", h.SyncAll)

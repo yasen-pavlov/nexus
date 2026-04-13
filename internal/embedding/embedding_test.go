@@ -275,6 +275,59 @@ func TestCohere_Embed(t *testing.T) {
 	}
 }
 
+func TestCohere_Embed_QueryInputType(t *testing.T) {
+	// InputTypeQuery maps to Cohere's "search_query" — a distinct
+	// branch of the switch that the document-only test doesn't hit.
+	var received string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req cohereEmbedRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		received = req.InputType
+		_ = json.NewEncoder(w).Encode(cohereEmbedResponse{
+			Embeddings: struct {
+				Float [][]float32 `json:"float"`
+			}{Float: [][]float32{{0.1}}},
+		})
+	}))
+	defer srv.Close()
+	c := NewCohere("key", "test", zap.NewNop())
+	c.baseURL = srv.URL
+	if _, err := c.Embed(context.Background(), []string{"q"}, InputTypeQuery); err != nil {
+		t.Fatal(err)
+	}
+	if received != "search_query" {
+		t.Errorf("input_type = %q, want search_query", received)
+	}
+}
+
+func TestCohere_Embed_NetworkError(t *testing.T) {
+	c := NewCohere("key", "test", zap.NewNop())
+	c.baseURL = "http://127.0.0.1:1" // closed port → connection refused
+	if _, err := c.Embed(context.Background(), []string{"x"}, InputTypeDocument); err == nil {
+		t.Error("expected network error")
+	}
+}
+
+func TestCohere_Embed_InvalidURL(t *testing.T) {
+	c := NewCohere("key", "test", zap.NewNop())
+	c.baseURL = "http://bad\x00host"
+	if _, err := c.Embed(context.Background(), []string{"x"}, InputTypeDocument); err == nil {
+		t.Error("expected request-creation error")
+	}
+}
+
+func TestCohere_Embed_BadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+	c := NewCohere("key", "test", zap.NewNop())
+	c.baseURL = srv.URL
+	if _, err := c.Embed(context.Background(), []string{"x"}, InputTypeDocument); err == nil {
+		t.Error("expected decode error")
+	}
+}
+
 func TestCohere_Embed_Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

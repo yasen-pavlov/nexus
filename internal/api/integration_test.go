@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -76,6 +77,23 @@ func createTestAdmin(t *testing.T, st *store.Store) (uuid.UUID, string) {
 	user, err := st.CreateUser(context.Background(), username, "hash", "admin")
 	if err != nil {
 		t.Fatalf("create test admin: %v", err)
+	}
+	token, err := auth.GenerateToken(testJWTSecret, user.ID, user.Username, user.Role)
+	if err != nil {
+		t.Fatalf("generate test token: %v", err)
+	}
+	return user.ID, token
+}
+
+// createTestUser creates a regular (non-admin) user and returns its ID + JWT.
+// Separate from createTestAdmin so auth-scoping tests can verify the
+// ownership filter actually fires — admins bypass it by design.
+func createTestUser(t *testing.T, st *store.Store) (uuid.UUID, string) {
+	t.Helper()
+	username := fmt.Sprintf("testuser-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
+	user, err := st.CreateUser(context.Background(), username, "hash", "user")
+	if err != nil {
+		t.Fatalf("create test user: %v", err)
 	}
 	token, err := auth.GenerateToken(testJWTSecret, user.ID, user.Username, user.Role)
 	if err != nil {
@@ -2904,4 +2922,455 @@ func TestConnectorRemove_CleansCachedBinaries(t *testing.T) {
 	}
 
 	_ = st
+}
+
+// --- Document relations + chat-browser endpoints ---
+
+// seedChunk is a concise helper for indexing a fully-qualified Chunk in
+// relations tests — most fields are boilerplate so we default them.
+func seedChunk(t *testing.T, sc *search.Client, ch model.Chunk) {
+	t.Helper()
+	ch.ParentID = ch.SourceType + ":" + ch.SourceName + ":" + ch.SourceID
+	if ch.ID == "" {
+		ch.ID = ch.ParentID + ":0"
+	}
+	if ch.DocID == "" {
+		ch.DocID = model.DocumentID(ch.SourceType, ch.SourceName, ch.SourceID).String()
+	}
+	if ch.Visibility == "" {
+		ch.Visibility = "private"
+	}
+	if ch.CreatedAt.IsZero() {
+		ch.CreatedAt = time.Now()
+	}
+	ch.Shared = true // tests index as shared so the injected admin token sees everything
+	if err := sc.IndexChunks(context.Background(), []model.Chunk{ch}); err != nil {
+		t.Fatalf("IndexChunks: %v", err)
+	}
+	_ = sc.Refresh(context.Background())
+}
+
+func decodeRelatedResponse(t *testing.T, body *bytes.Buffer) relatedResponse {
+	t.Helper()
+	var env APIResponse
+	if err := json.NewDecoder(body).Decode(&env); err != nil {
+		t.Fatalf("decode APIResponse: %v", err)
+	}
+	raw, err := json.Marshal(env.Data)
+	if err != nil {
+		t.Fatalf("re-marshal data: %v", err)
+	}
+	var out relatedResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode relatedResponse: %v", err)
+	}
+	return out
+}
+
+func decodeConversationResponse(t *testing.T, body *bytes.Buffer) conversationMessagesResponse {
+	t.Helper()
+	var env APIResponse
+	if err := json.NewDecoder(body).Decode(&env); err != nil {
+		t.Fatalf("decode APIResponse: %v", err)
+	}
+	raw, err := json.Marshal(env.Data)
+	if err != nil {
+		t.Fatalf("re-marshal data: %v", err)
+	}
+	var out conversationMessagesResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode conversationMessagesResponse: %v", err)
+	}
+	return out
+}
+
+func TestRelated_EmailAttachments(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	emailDocID := model.DocumentID("imap", "test", "INBOX:42").String()
+	seedChunk(t, sc, model.Chunk{
+		Title: "Quarterly report", Content: "See attached.",
+		SourceType: "imap", SourceName: "test", SourceID: "INBOX:42",
+		IMAPMessageID: "email42@example.com",
+	})
+	// Two attachments pointing at the email via attachment_of.
+	for i, name := range []string{"q1.pdf", "q2.pdf"} {
+		seedChunk(t, sc, model.Chunk{
+			Title:      name,
+			SourceType: "imap", SourceName: "test",
+			SourceID: fmt.Sprintf("INBOX:42:attachment:%d", i),
+			Relations: []model.Relation{{
+				Type: model.RelationAttachmentOf, TargetSourceID: "INBOX:42", TargetID: emailDocID,
+			}},
+		})
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+emailDocID+"/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRelatedResponse(t, w.Body)
+	if len(resp.Incoming) != 2 {
+		t.Errorf("expected 2 incoming attachments, got %d (%+v)", len(resp.Incoming), resp.Incoming)
+	}
+	if len(resp.Outgoing) != 0 {
+		t.Errorf("email has no outgoing edges, got %+v", resp.Outgoing)
+	}
+}
+
+func TestRelated_IMAPReplyChain(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	seedChunk(t, sc, model.Chunk{
+		Title:         "Original", Content: "Let's meet",
+		SourceType:    "imap", SourceName: "test", SourceID: "INBOX:1",
+		IMAPMessageID: "a@example.com",
+	})
+	// B replies to A; the edge carries A's Message-ID as target_source_id.
+	bDocID := model.DocumentID("imap", "test", "INBOX:2").String()
+	seedChunk(t, sc, model.Chunk{
+		Title:         "Re: Original", Content: "Sounds good",
+		SourceType:    "imap", SourceName: "test", SourceID: "INBOX:2",
+		IMAPMessageID: "b@example.com",
+		Relations: []model.Relation{{
+			Type: model.RelationReplyTo, TargetSourceID: "a@example.com",
+		}},
+	})
+
+	// /related on B resolves A as outgoing via imap_message_id.
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+bDocID+"/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRelatedResponse(t, w.Body)
+	if len(resp.Outgoing) != 1 {
+		t.Fatalf("expected 1 outgoing (reply_to), got %d (%+v)", len(resp.Outgoing), resp.Outgoing)
+	}
+	if resp.Outgoing[0].Document == nil {
+		t.Error("expected A to be resolved as outgoing neighbor")
+	} else if resp.Outgoing[0].Document.Title != "Original" {
+		t.Errorf("resolved the wrong neighbor: %+v", resp.Outgoing[0].Document)
+	}
+}
+
+func TestRelated_TelegramMessageNeighbors(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	// Window + two messages in it + one media doc attached to the first message.
+	seedChunk(t, sc, model.Chunk{
+		Title: "Chat", Content: "msg1\nmsg2",
+		SourceType: "telegram", SourceName: "test", SourceID: "99:100-101",
+		ConversationID: "99",
+	})
+	msg1DocID := model.DocumentID("telegram", "test", "99:100:msg").String()
+	seedChunk(t, sc, model.Chunk{
+		Title:   "Chat", Content: "msg1",
+		SourceType: "telegram", SourceName: "test", SourceID: "99:100:msg",
+		ConversationID: "99", Hidden: true,
+		Relations: []model.Relation{{
+			Type: model.RelationMemberOfWindow, TargetSourceID: "99:100-101",
+			TargetID: model.DocumentID("telegram", "test", "99:100-101").String(),
+		}},
+	})
+	seedChunk(t, sc, model.Chunk{
+		Title:   "Chat", Content: "msg2",
+		SourceType: "telegram", SourceName: "test", SourceID: "99:101:msg",
+		ConversationID: "99", Hidden: true,
+		Relations: []model.Relation{{
+			Type: model.RelationMemberOfWindow, TargetSourceID: "99:100-101",
+			TargetID: model.DocumentID("telegram", "test", "99:100-101").String(),
+		}},
+	})
+	seedChunk(t, sc, model.Chunk{
+		Title: "photo.jpg", SourceType: "telegram", SourceName: "test", SourceID: "99:100:media",
+		ConversationID: "99",
+		Relations: []model.Relation{{
+			Type: model.RelationAttachmentOf, TargetSourceID: "99:100:msg", TargetID: msg1DocID,
+		}},
+	})
+
+	// /related on msg1: outgoing window, incoming media.
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+msg1DocID+"/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRelatedResponse(t, w.Body)
+	if len(resp.Outgoing) != 1 || resp.Outgoing[0].Relation.Type != model.RelationMemberOfWindow {
+		t.Errorf("expected 1 outgoing member_of_window, got %+v", resp.Outgoing)
+	}
+	if len(resp.Incoming) != 1 || resp.Incoming[0].Relation.Type != model.RelationAttachmentOf {
+		t.Errorf("expected 1 incoming attachment_of, got %+v", resp.Incoming)
+	}
+}
+
+func TestSearch_ExcludesHiddenChunks(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	// Both chunks match the query "hidden-docs-sentinel". The hidden one
+	// is the Telegram-style per-message canonical doc; it must not surface
+	// in default search results alongside the window.
+	seedChunk(t, sc, model.Chunk{
+		Title: "Window", Content: "hidden-docs-sentinel content here",
+		SourceType: "telegram", SourceName: "test", SourceID: "1:10-11",
+	})
+	seedChunk(t, sc, model.Chunk{
+		Title:   "Message", Content: "hidden-docs-sentinel content here",
+		SourceType: "telegram", SourceName: "test", SourceID: "1:10:msg",
+		Hidden: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=hidden-docs-sentinel", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	var env APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	data := env.Data.(map[string]any)
+	docs, _ := data["documents"].([]any)
+	if len(docs) != 1 {
+		t.Errorf("expected exactly 1 result (window only; hidden message excluded), got %d", len(docs))
+	}
+}
+
+func TestConversations_MessagesOrderAndPagination(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	base := time.Now().Add(-1 * time.Hour)
+	for i := 0; i < 5; i++ {
+		seedChunk(t, sc, model.Chunk{
+			Title: "msg", Content: fmt.Sprintf("message %d", i),
+			SourceType: "telegram", SourceName: "test",
+			SourceID:   fmt.Sprintf("55:%d:msg", 1000+i),
+			ConversationID: "55", Hidden: true,
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	// Chronological order, unlimited.
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations/telegram/55/messages?limit=10", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeConversationResponse(t, w.Body)
+	if len(resp.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(resp.Messages))
+	}
+	for i := 1; i < len(resp.Messages); i++ {
+		if resp.Messages[i].CreatedAt.Before(resp.Messages[i-1].CreatedAt) {
+			t.Errorf("messages not sorted ASC: %v < %v", resp.Messages[i].CreatedAt, resp.Messages[i-1].CreatedAt)
+		}
+	}
+
+	// `after` cursor: should return only messages strictly after that point.
+	after := resp.Messages[2].CreatedAt.Format(time.RFC3339Nano)
+	req = httptest.NewRequest(http.MethodGet, "/api/conversations/telegram/55/messages?limit=10&after="+url.QueryEscape(after), nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp2 := decodeConversationResponse(t, w.Body)
+	if len(resp2.Messages) == 0 {
+		t.Error("expected some newer messages after cursor")
+	}
+	for _, m := range resp2.Messages {
+		if !m.CreatedAt.After(resp.Messages[2].CreatedAt) {
+			t.Errorf("message at %v should be strictly after cursor %v", m.CreatedAt, resp.Messages[2].CreatedAt)
+		}
+	}
+}
+
+func TestRelated_BadUUID(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/not-a-uuid/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestRelated_MissingDocument(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+uuid.New().String()+"/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestRelated_DanglingEdgeEchoedWithNilDocument(t *testing.T) {
+	// A message that replies to a Message-ID / source_id we've never
+	// indexed should still appear in /related so the UI can render a
+	// "reply to unknown" placeholder. The edge is echoed with
+	// document == null.
+	_, sc, _, router := newTestRouter(t)
+	bDocID := model.DocumentID("imap", "t", "INBOX:2").String()
+	seedChunk(t, sc, model.Chunk{
+		Title: "Reply", SourceType: "imap", SourceName: "t", SourceID: "INBOX:2",
+		IMAPMessageID: "b@x",
+		Relations:     []model.Relation{{Type: model.RelationReplyTo, TargetSourceID: "ghost@nowhere"}},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+bDocID+"/related", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp := decodeRelatedResponse(t, w.Body)
+	if len(resp.Outgoing) != 1 {
+		t.Fatalf("expected 1 outgoing edge, got %+v", resp.Outgoing)
+	}
+	if resp.Outgoing[0].Document != nil {
+		t.Errorf("expected dangling edge (document=nil), got %+v", resp.Outgoing[0])
+	}
+}
+
+func TestRelated_AuthScopingHidesForeignNeighbors(t *testing.T) {
+	// An attachment owned by a foreign user must NOT appear in the
+	// incoming edges of an email the caller owns — canReadDocument is
+	// the only auth boundary, and we want it enforced per-neighbor.
+	st, sc, _, router := newTestRouter(t)
+
+	emailDocID := model.DocumentID("imap", "t", "INBOX:1").String()
+	seedChunk(t, sc, model.Chunk{
+		Title: "Email", SourceType: "imap", SourceName: "t", SourceID: "INBOX:1",
+		IMAPMessageID: "a@x",
+	})
+	// Attachment that IS shared — should appear.
+	seedChunk(t, sc, model.Chunk{
+		Title: "ours.txt", SourceType: "imap", SourceName: "t", SourceID: "INBOX:1:attachment:0",
+		Relations: []model.Relation{{
+			Type: model.RelationAttachmentOf, TargetSourceID: "INBOX:1", TargetID: emailDocID,
+		}},
+	})
+	// Attachment owned by a different user, not shared — shouldn't
+	// appear. We bypass seedChunk (which forces shared=true) and index
+	// directly.
+	ctx := context.Background()
+	other := uuid.New()
+	if err := sc.IndexChunks(ctx, []model.Chunk{{
+		ID:       "imap:t:INBOX:1:attachment:1:0",
+		ParentID: "imap:t:INBOX:1:attachment:1",
+		DocID:    model.DocumentID("imap", "t", "INBOX:1:attachment:1").String(),
+		Title:    "theirs.txt", Content: "secret",
+		SourceType: "imap", SourceName: "t", SourceID: "INBOX:1:attachment:1",
+		OwnerID: other.String(), Shared: false, Visibility: "private",
+		CreatedAt: time.Now(),
+		Relations: []model.Relation{{
+			Type: model.RelationAttachmentOf, TargetSourceID: "INBOX:1", TargetID: emailDocID,
+		}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(ctx)
+
+	// Use a non-admin user so ownership filtering actually applies —
+	// the admin injected by newTestRouter sees everything.
+	userID, userToken := createTestUser(t, st)
+	_ = userID
+	req := httptest.NewRequest(http.MethodGet, "/api/documents/"+emailDocID+"/related", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp := decodeRelatedResponse(t, w.Body)
+	titles := make([]string, 0, len(resp.Incoming))
+	for _, e := range resp.Incoming {
+		if e.Document != nil {
+			titles = append(titles, e.Document.Title)
+		}
+	}
+	for _, title := range titles {
+		if title == "theirs.txt" {
+			t.Errorf("foreign-owned attachment leaked into incoming: %v", titles)
+		}
+	}
+	if len(titles) != 1 || titles[0] != "ours.txt" {
+		t.Errorf("expected only shared attachment, got %v", titles)
+	}
+}
+
+func TestConversations_BadInputs(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+	cases := []struct {
+		name, url string
+		wantCode  int
+	}{
+		{"bad before", "/api/conversations/telegram/55/messages?before=not-a-time", http.StatusBadRequest},
+		{"bad after", "/api/conversations/telegram/55/messages?after=also-bad", http.StatusBadRequest},
+		{"bad limit", "/api/conversations/telegram/55/messages?limit=abc", http.StatusBadRequest},
+		{"zero limit", "/api/conversations/telegram/55/messages?limit=0", http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != tc.wantCode {
+				t.Errorf("expected %d, got %d; body: %s", tc.wantCode, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestConversations_LimitCappedAtMax(t *testing.T) {
+	// limit=99999 must be silently clamped to maxConversationLimit — this
+	// is the only cap between a hostile (or careless) client and pulling
+	// the entire chat history in one request.
+	_, sc, _, router := newTestRouter(t)
+	seedChunk(t, sc, model.Chunk{
+		Title: "m", Content: "hi",
+		SourceType: "telegram", SourceName: "t", SourceID: "x:1:msg",
+		ConversationID: "x", Hidden: true,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations/telegram/x/messages?limit=99999", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestConversations_ExcludesWindowsAndNonChatSources(t *testing.T) {
+	_, sc, _, router := newTestRouter(t)
+
+	// A window doc with ConversationID set (as Telegram emits today) must
+	// NOT appear in the chat-browser paginator — only Hidden=true message
+	// docs do.
+	seedChunk(t, sc, model.Chunk{
+		Title: "Window", Content: "should not show up",
+		SourceType: "telegram", SourceName: "test", SourceID: "77:1-2",
+		ConversationID: "77",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations/telegram/77/messages", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	resp := decodeConversationResponse(t, w.Body)
+	if len(resp.Messages) != 0 {
+		t.Errorf("expected 0 messages (window is not Hidden), got %d", len(resp.Messages))
+	}
+
+	// A non-chat source is naturally empty since it doesn't emit
+	// ConversationID at all.
+	req = httptest.NewRequest(http.MethodGet, "/api/conversations/filesystem/nothing/messages", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	resp = decodeConversationResponse(t, w.Body)
+	if len(resp.Messages) != 0 {
+		t.Errorf("expected 0 messages for non-chat source, got %d", len(resp.Messages))
+	}
 }

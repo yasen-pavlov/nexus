@@ -264,6 +264,80 @@ func TestVoyage_Rerank_Error(t *testing.T) {
 	}
 }
 
+// Error-path coverage for both providers — network failure, bad-JSON
+// response, non-200 status (cohere path). Each of these exercises a
+// distinct error-branch return in Rerank() that would otherwise be
+// silently relied upon at runtime.
+
+func TestCohere_Rerank_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	c := &Cohere{apiKey: "k", model: "m", baseURL: srv.URL, client: srv.Client()}
+	_, err := c.Rerank(context.Background(), "q", []string{"d"})
+	var rerankErr *RerankError
+	if !errors.As(err, &rerankErr) || rerankErr.StatusCode != 502 {
+		t.Errorf("expected RerankError with 502, got %v", err)
+	}
+}
+
+func TestCohere_Rerank_BadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+	c := &Cohere{apiKey: "k", model: "m", baseURL: srv.URL, client: srv.Client()}
+	if _, err := c.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected decode error")
+	}
+}
+
+func TestVoyage_Rerank_BadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+	v := &Voyage{apiKey: "k", model: "m", baseURL: srv.URL, client: srv.Client()}
+	if _, err := v.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected decode error")
+	}
+}
+
+func TestCohere_Rerank_NetworkError(t *testing.T) {
+	// Point the client at a closed port to force a connection refusal.
+	// The exact error message is platform-specific; we only care that
+	// Rerank propagates something rather than returning nil.
+	c := &Cohere{apiKey: "k", model: "m", baseURL: "http://127.0.0.1:1", client: &http.Client{}}
+	if _, err := c.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected network error")
+	}
+}
+
+func TestVoyage_Rerank_NetworkError(t *testing.T) {
+	v := &Voyage{apiKey: "k", model: "m", baseURL: "http://127.0.0.1:1", client: &http.Client{}}
+	if _, err := v.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected network error")
+	}
+}
+
+func TestCohere_Rerank_InvalidURL(t *testing.T) {
+	// A control character in the baseURL trips http.NewRequestWithContext,
+	// covering the "create request" error branch.
+	c := &Cohere{apiKey: "k", model: "m", baseURL: "http://invalid\x00host", client: &http.Client{}}
+	if _, err := c.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected request-creation error")
+	}
+}
+
+func TestVoyage_Rerank_InvalidURL(t *testing.T) {
+	v := &Voyage{apiKey: "k", model: "m", baseURL: "http://invalid\x00host", client: &http.Client{}}
+	if _, err := v.Rerank(context.Background(), "q", []string{"d"}); err == nil {
+		t.Error("expected request-creation error")
+	}
+}
+
 // --- Error tests ---
 
 func TestRerankError(t *testing.T) {

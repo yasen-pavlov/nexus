@@ -597,11 +597,16 @@ func TestMessageToDocuments_WithExtractor(t *testing.T) {
 	}
 
 	attMd := attDoc.Metadata
-	if attMd["parent_message_id"] != "msg200@example.com" {
-		t.Errorf("parent_message_id = %v, want msg200@example.com", attMd["parent_message_id"])
-	}
 	if attMd["parent_subject"] != "With Attachment" {
 		t.Errorf("parent_subject = %v, want 'With Attachment'", attMd["parent_subject"])
+	}
+	// The typed attachment_of edge replaces the old parent_message_id
+	// metadata key — its target_source_id is the parent email's
+	// source_id, not the RFC 5322 Message-ID (that stays denormalized
+	// on the email chunk as IMAPMessageID for the /related resolver).
+	if len(attDoc.Relations) != 1 || attDoc.Relations[0].Type != "attachment_of" ||
+		attDoc.Relations[0].TargetSourceID != "INBOX:200" {
+		t.Errorf("expected attachment_of → INBOX:200, got %+v", attDoc.Relations)
 	}
 	if attDoc.MimeType != "text/plain" {
 		t.Errorf("expected attachment MimeType 'text/plain', got %q", attDoc.MimeType)

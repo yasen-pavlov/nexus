@@ -33,3 +33,13 @@ func TestHashPassword_DifferentHashes(t *testing.T) {
 		t.Error("bcrypt should produce different hashes for same input (random salt)")
 	}
 }
+
+func TestHashPassword_TooLong(t *testing.T) {
+	// bcrypt rejects passwords longer than 72 bytes. HashPassword
+	// propagates that error so the handler can return a clear 400
+	// instead of silently truncating.
+	hash, err := HashPassword(string(make([]byte, 100)))
+	if err == nil {
+		t.Errorf("expected error for >72-byte password, got hash %q", hash)
+	}
+}

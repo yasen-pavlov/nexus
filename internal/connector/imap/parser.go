@@ -3,12 +3,44 @@ package imap
 import (
 	"bytes"
 	"io"
+	netmail "net/mail"
 	"regexp"
 	"strings"
 
 	"github.com/emersion/go-message/mail"
 	"golang.org/x/net/html"
 )
+
+// parseReferencesHeader pulls the `References:` header out of a raw RFC 5322
+// message body and returns the Message-ID list as a slice with surrounding
+// angle brackets stripped. Returns nil when the header is absent or the body
+// isn't parseable — both are acceptable (the email just has no thread signal).
+//
+// We go through net/mail rather than emersion/go-message/mail because emersion's
+// mail.Reader only exposes part headers, not the top-level message headers.
+func parseReferencesHeader(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	msg, err := netmail.ReadMessage(bytes.NewReader(raw))
+	if err != nil {
+		return nil
+	}
+	header := msg.Header.Get("References")
+	if header == "" {
+		return nil
+	}
+	var out []string
+	for _, tok := range strings.Fields(header) {
+		tok = strings.TrimSpace(tok)
+		tok = strings.TrimPrefix(tok, "<")
+		tok = strings.TrimSuffix(tok, ">")
+		if tok != "" {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
 
 // attachment represents an email attachment.
 type attachment struct {

@@ -1,12 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamSyncProgress, listConnectors, listSyncJobs, downloadDocument, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters } from './api';
+import { search, triggerSync, syncAll, deleteAllCursors, triggerReindex, streamSyncProgress, listConnectors, listSyncJobs, downloadDocument, type SearchResult, type SyncJob, type ConnectorConfig, type SearchFilters, type Document } from './api';
 import ConnectorManager from './ConnectorManager';
 import SearchFiltersBar from './SearchFilters';
 import Settings from './Settings';
 import Login from './Login';
 import UserManagement from './UserManagement';
+import RelatedFooter from './RelatedFooter';
+import ChatBrowser from './ChatBrowser';
 import { useAuth } from './AuthContext';
 import './App.css';
+
+interface ChatBrowserTarget {
+  sourceType: string;
+  conversationID: string;
+  anchorMessageID?: number;
+}
 
 function App() {
   const { user, loading: authLoading, logout } = useAuth();
@@ -19,6 +27,7 @@ function App() {
   const [showConnectors, setShowConnectors] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
+  const [chatBrowser, setChatBrowser] = useState<ChatBrowserTarget | null>(null);
   const isAdmin = user?.role === 'admin';
   const canModify = (conn: ConnectorConfig) =>
     isAdmin || (!!conn.user_id && conn.user_id === user?.id);
@@ -219,6 +228,35 @@ function App() {
     );
   }
 
+  if (chatBrowser) {
+    return (
+      <div className="app">
+        <ChatBrowser
+          sourceType={chatBrowser.sourceType}
+          conversationID={chatBrowser.conversationID}
+          anchorMessageID={chatBrowser.anchorMessageID}
+          onClose={() => setChatBrowser(null)}
+        />
+      </div>
+    );
+  }
+
+  // openNeighbor lands on a neighbor document. Telegram docs navigate
+  // into the chat browser; other sources are surfaced by rerunning the
+  // search with the neighbor's title as the query — crude but it does
+  // the job for the PoC without an ID-based doc viewer.
+  const openNeighbor = (doc: Document) => {
+    if (doc.source_type === 'telegram' && doc.conversation_id) {
+      const raw = doc.metadata?.message_id ?? doc.metadata?.anchor_message_id;
+      const anchor = typeof raw === 'number' ? raw : undefined;
+      setChatBrowser({ sourceType: 'telegram', conversationID: doc.conversation_id, anchorMessageID: anchor });
+      return;
+    }
+    const q = doc.title || doc.source_id;
+    setQuery(q);
+    doSearch(q, filters);
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -367,7 +405,21 @@ function App() {
                     ↓ Download
                   </button>
                 ) : null}
+                {hit.source_type === 'telegram' && hit.conversation_id ? (
+                  <button
+                    type="button"
+                    className="result-download"
+                    onClick={() => {
+                      const raw = hit.metadata?.anchor_message_id ?? hit.metadata?.message_id;
+                      const anchor = typeof raw === 'number' ? raw : undefined;
+                      setChatBrowser({ sourceType: 'telegram', conversationID: hit.conversation_id!, anchorMessageID: anchor });
+                    }}
+                  >
+                    💬 Open in chat
+                  </button>
+                ) : null}
               </div>
+              <RelatedFooter docID={hit.id} onNavigate={openNeighbor} />
             </div>
           ))}
         </div>

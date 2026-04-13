@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,18 +321,31 @@ func TestProcessDialogs_GroupChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processDialogs failed: %v", err)
 	}
-	// Both messages are within the conversation window gap → one window doc.
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc (windowed), got %d", len(docs))
+	// Dual emission: one window doc (retrieval) + two per-message docs.
+	if len(docs) != 3 {
+		t.Fatalf("expected 3 docs (window + 2 messages), got %d", len(docs))
 	}
-	if !strings.Contains(docs[0].Content, "Hello group!") || !strings.Contains(docs[0].Content, "Second message") {
-		t.Errorf("expected window to contain both messages, got %q", docs[0].Content)
+	window := docs[0]
+	if !strings.Contains(window.Content, "Hello group!") || !strings.Contains(window.Content, "Second message") {
+		t.Errorf("expected window to contain both messages, got %q", window.Content)
 	}
-	if docs[0].SourceType != "telegram" {
-		t.Errorf("expected source_type 'telegram', got %q", docs[0].SourceType)
+	if window.SourceType != "telegram" {
+		t.Errorf("expected source_type 'telegram', got %q", window.SourceType)
 	}
-	if docs[0].Metadata["message_count"] != 2 {
-		t.Errorf("expected message_count=2, got %v", docs[0].Metadata["message_count"])
+	if window.Metadata["message_count"] != 2 {
+		t.Errorf("expected message_count=2, got %v", window.Metadata["message_count"])
+	}
+	if window.Hidden {
+		t.Error("window doc should not be Hidden")
+	}
+	// Per-message docs are Hidden=true and carry ConversationID=chatID.
+	for _, m := range docs[1:] {
+		if !m.Hidden {
+			t.Errorf("per-message doc %q should be Hidden=true", m.SourceID)
+		}
+		if m.ConversationID != "123" {
+			t.Errorf("per-message doc %q conversation_id = %q, want '123'", m.SourceID, m.ConversationID)
+		}
 	}
 }
 
@@ -381,8 +396,9 @@ func TestProcessDialogs_UserDMs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(docs))
+	// Window + per-message doc for one DM message.
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message), got %d", len(docs))
 	}
 	if docs[0].Title != "John Doe" {
 		t.Errorf("expected title 'John Doe', got %q", docs[0].Title)
@@ -429,12 +445,12 @@ func TestFetchChatMessages_SinceDateFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Should only get the recent message, old one is before sinceDate
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc (filtered by date), got %d", len(docs))
+	// Only the recent message passes the sinceDate filter → window + message.
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message) for filtered-by-date, got %d", len(docs))
 	}
 	if docs[0].Content != "Recent" {
-		t.Errorf("expected 'Recent', got %q", docs[0].Content)
+		t.Errorf("expected window content 'Recent', got %q", docs[0].Content)
 	}
 }
 
@@ -457,8 +473,10 @@ func TestFetchChatMessages_SkipsEmptyMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Errorf("expected 1 doc (skipping empty/service), got %d", len(docs))
+	// Text message yields window + per-message doc; empty-no-media message
+	// and MessageService are both skipped by the canonical-record gate.
+	if len(docs) != 2 {
+		t.Errorf("expected 2 docs (window + message for the text one), got %d", len(docs))
 	}
 }
 
@@ -484,8 +502,8 @@ func TestFetchWithAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(docs))
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message), got %d", len(docs))
 	}
 }
 
@@ -517,8 +535,8 @@ func TestFetchWithAPI_WithCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(docs))
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message), got %d", len(docs))
 	}
 }
 
@@ -544,8 +562,8 @@ func TestFetchWithAPI_SyncSince(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc, got %d", len(docs))
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message), got %d", len(docs))
 	}
 }
 
@@ -579,8 +597,8 @@ func TestProcessDialogs_Channel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc from channel, got %d", len(docs))
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message) from channel, got %d", len(docs))
 	}
 }
 
@@ -758,7 +776,7 @@ func TestWindowMessages_GroupsByTimeGap(t *testing.T) {
 		{ID: 5, Text: "fifth", Date: base.Add(2*time.Hour + 5*time.Minute)}, // same as fourth
 	}
 
-	docs := c.windowMessages(records, "Test Chat", "100")
+	docs, _ := c.windowMessages(records, "Test Chat", "100")
 
 	if len(docs) != 2 {
 		t.Fatalf("expected 2 windows, got %d", len(docs))
@@ -788,7 +806,7 @@ func TestWindowMessages_RespectsCharCap(t *testing.T) {
 		{ID: 4, Text: bigText, Date: base.Add(3 * time.Minute)},
 	}
 
-	docs := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100")
 	if len(docs) < 2 {
 		t.Errorf("expected multiple windows due to char cap, got %d", len(docs))
 	}
@@ -799,7 +817,7 @@ func TestWindowMessages_SingleMessage(t *testing.T) {
 	records := []messageRecord{
 		{ID: 1, Text: "lonely message", Date: time.Now()},
 	}
-	docs := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100")
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 doc for 1 message, got %d", len(docs))
 	}
@@ -821,7 +839,7 @@ func TestWindowMessages_SortsChronologically(t *testing.T) {
 		{ID: 2, Text: "second", Date: base.Add(5 * time.Minute)},
 		{ID: 1, Text: "first", Date: base},
 	}
-	docs := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100")
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(docs))
 	}
@@ -834,7 +852,7 @@ func TestWindowMessages_SortsChronologically(t *testing.T) {
 
 func TestWindowMessages_EmptyInput(t *testing.T) {
 	c := &Connector{name: "test"}
-	docs := c.windowMessages(nil, "Test", "100")
+	docs, _ := c.windowMessages(nil, "Test", "100")
 	if len(docs) != 0 {
 		t.Errorf("expected 0 docs for empty input, got %d", len(docs))
 	}
@@ -847,7 +865,7 @@ func TestWindowMessages_DocMetadata(t *testing.T) {
 		{ID: 100, Text: "hi", Date: base},
 		{ID: 101, Text: "there", Date: base.Add(1 * time.Minute)},
 	}
-	docs := c.windowMessages(records, "Friends", "42")
+	docs, _ := c.windowMessages(records, "Friends", "42")
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 doc, got %d", len(docs))
 	}
@@ -1050,11 +1068,15 @@ func TestMediaToDocument_Photo(t *testing.T) {
 	if doc.Content != "a caption" { // no extractor → caption
 		t.Errorf("content = %q", doc.Content)
 	}
-	if doc.Metadata["parent_message_id"] != 42 {
-		t.Errorf("parent_message_id = %v", doc.Metadata["parent_message_id"])
-	}
 	if doc.Metadata["caption"] != "a caption" {
 		t.Errorf("caption = %v", doc.Metadata["caption"])
+	}
+	// The parent-message pointer lives on Relations (attachment_of),
+	// not in metadata — the dropped parent_message_id key was
+	// strictly duplicated by the typed edge.
+	if len(doc.Relations) != 1 || doc.Relations[0].Type != "attachment_of" ||
+		doc.Relations[0].TargetSourceID != "99:42:msg" {
+		t.Errorf("expected attachment_of → 99:42:msg, got %+v", doc.Relations)
 	}
 	if store.puts.Load() != 1 {
 		t.Errorf("expected 1 eager Put, got %d", store.puts.Load())
@@ -1139,25 +1161,40 @@ func TestFetchChatMessages_CaptionedMedia_EmitsBothDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("expected 2 docs (window + media), got %d", len(docs))
+	// Dual emission: window + per-message + media.
+	if len(docs) != 3 {
+		t.Fatalf("expected 3 docs (window + message + media), got %d", len(docs))
 	}
-	var window, media *model.Document
+	var window, message, media *model.Document
 	for i := range docs {
-		if strings.HasSuffix(docs[i].SourceID, ":media") {
+		switch {
+		case strings.HasSuffix(docs[i].SourceID, ":media"):
 			media = &docs[i]
-		} else {
+		case strings.HasSuffix(docs[i].SourceID, ":msg"):
+			message = &docs[i]
+		default:
 			window = &docs[i]
 		}
 	}
-	if window == nil || media == nil {
-		t.Fatalf("missing window (%v) or media (%v) doc", window, media)
+	if window == nil || message == nil || media == nil {
+		t.Fatalf("missing window (%v), message (%v), or media (%v) doc", window, message, media)
 	}
 	if !strings.Contains(window.Content, "look at this photo") {
 		t.Errorf("window doc missing caption text: %q", window.Content)
 	}
+	if message.Content != "look at this photo" {
+		t.Errorf("message doc content = %q, want caption text", message.Content)
+	}
+	if !message.Hidden {
+		t.Error("message doc should be Hidden=true")
+	}
 	if media.Metadata["caption"] != "look at this photo" {
 		t.Errorf("media caption metadata = %v", media.Metadata["caption"])
+	}
+	// media doc carries attachment_of pointing at the per-message doc, not the window
+	if len(media.Relations) != 1 || media.Relations[0].Type != model.RelationAttachmentOf ||
+		!strings.HasSuffix(media.Relations[0].TargetSourceID, ":10:msg") {
+		t.Errorf("media attachment_of relation wrong: %+v", media.Relations)
 	}
 	if store.puts.Load() != 1 {
 		t.Errorf("expected 1 cache Put, got %d", store.puts.Load())
@@ -1185,11 +1222,27 @@ func TestFetchChatMessages_MediaOnlyMessage_EmitsMediaDoc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc (media only), got %d", len(docs))
+	// Media-only message: no window (no text record), message + media = 2 docs.
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (message + media), got %d", len(docs))
 	}
-	if !strings.HasSuffix(docs[0].SourceID, ":media") {
-		t.Errorf("expected media source id, got %q", docs[0].SourceID)
+	var msgDoc, mediaDoc *model.Document
+	for i := range docs {
+		if strings.HasSuffix(docs[i].SourceID, ":media") {
+			mediaDoc = &docs[i]
+		} else if strings.HasSuffix(docs[i].SourceID, ":msg") {
+			msgDoc = &docs[i]
+		}
+	}
+	if msgDoc == nil || mediaDoc == nil {
+		t.Fatalf("missing message (%v) or media (%v) doc", msgDoc, mediaDoc)
+	}
+	// The media-only message has no member_of_window edge (there's no
+	// window containing it — windows are built from text-bearing records).
+	for _, rel := range msgDoc.Relations {
+		if rel.Type == model.RelationMemberOfWindow {
+			t.Errorf("media-only message should have no member_of_window edge, got %+v", rel)
+		}
 	}
 }
 
@@ -1214,11 +1267,14 @@ func TestFetchChatMessages_DownloadFailure_TextStillWindowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("expected 1 doc (window only — media download failed), got %d", len(docs))
+	// Window + per-message doc; media is skipped because download failed.
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + message, no media), got %d", len(docs))
 	}
-	if strings.HasSuffix(docs[0].SourceID, ":media") {
-		t.Errorf("expected window doc, got media doc %q", docs[0].SourceID)
+	for _, d := range docs {
+		if strings.HasSuffix(d.SourceID, ":media") {
+			t.Errorf("media doc should have been skipped on download failure, got %q", d.SourceID)
+		}
 	}
 }
 
@@ -1343,6 +1399,66 @@ func TestMediaToDocument_Photo_SynthesizesFilename(t *testing.T) {
 	if doc.Metadata["filename"] != "photo-4242.jpg" {
 		t.Errorf("filename metadata = %v", doc.Metadata["filename"])
 	}
+}
+
+func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
+	c := &Connector{name: "tg"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	t.Run("same-chat reply emits reply_to relation", func(t *testing.T) {
+		m := &tg.Message{
+			ID: 500, Date: int(base.Unix()), Message: "ok",
+			FromID:  &tg.PeerUser{UserID: 42},
+			ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 499},
+		}
+		doc := c.makeMessageDoc(m, "Chat", "10", "10:499-500")
+		// Expect both member_of_window and reply_to relations.
+		kinds := []string{}
+		for _, r := range doc.Relations {
+			kinds = append(kinds, r.Type)
+		}
+		sort.Strings(kinds)
+		if !reflect.DeepEqual(kinds, []string{"member_of_window", "reply_to"}) {
+			t.Errorf("relation types = %v, want member_of_window + reply_to", kinds)
+		}
+		if doc.Metadata["sender_id"] != int64(42) {
+			t.Errorf("sender_id = %v, want 42", doc.Metadata["sender_id"])
+		}
+	})
+
+	t.Run("cross-chat reply is dropped", func(t *testing.T) {
+		m := &tg.Message{
+			ID: 500, Date: int(base.Unix()),
+			ReplyTo: &tg.MessageReplyHeader{
+				ReplyToMsgID:  499,
+				ReplyToPeerID: &tg.PeerChannel{ChannelID: 999},
+			},
+		}
+		doc := c.makeMessageDoc(m, "Chat", "10", "")
+		for _, r := range doc.Relations {
+			if r.Type == model.RelationReplyTo {
+				t.Errorf("cross-chat reply should be skipped, got %+v", r)
+			}
+		}
+	})
+
+	t.Run("no FromID leaves sender_id unset", func(t *testing.T) {
+		m := &tg.Message{ID: 1, Date: int(base.Unix()), Message: "x"}
+		doc := c.makeMessageDoc(m, "Chat", "10", "")
+		if _, ok := doc.Metadata["sender_id"]; ok {
+			t.Errorf("sender_id should be unset when FromID is nil")
+		}
+	})
+
+	t.Run("no window means no member_of_window edge", func(t *testing.T) {
+		m := &tg.Message{ID: 1, Date: int(base.Unix())}
+		doc := c.makeMessageDoc(m, "Chat", "10", "")
+		for _, r := range doc.Relations {
+			if r.Type == model.RelationMemberOfWindow {
+				t.Error("should have no member_of_window when windowSourceID is empty")
+			}
+		}
+	})
 }
 
 func TestSetExtractor_AndBinaryStore(t *testing.T) {

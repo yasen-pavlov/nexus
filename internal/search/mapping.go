@@ -56,14 +56,25 @@ func indexMappingJSON(embeddingDimension int, languages []lang.Language) string 
       "content":      %s,
       "full_content": { "type": "text", "index": false },
       "metadata":     { "type": "object", "enabled": false },
-      "url":          { "type": "keyword" },
-      "visibility":   { "type": "keyword" },
-      "created_at":   { "type": "date" },
-      "indexed_at":   { "type": "date" },
-      "owner_id":     { "type": "keyword" },
-      "shared":       { "type": "boolean" },
-      "mime_type":    { "type": "keyword" },
-      "size":         { "type": "long" }%s
+      "url":             { "type": "keyword" },
+      "visibility":      { "type": "keyword" },
+      "created_at":      { "type": "date" },
+      "indexed_at":      { "type": "date" },
+      "owner_id":        { "type": "keyword" },
+      "shared":          { "type": "boolean" },
+      "mime_type":       { "type": "keyword" },
+      "size":            { "type": "long" },
+      "hidden":          { "type": "boolean" },
+      "conversation_id": { "type": "keyword" },
+      "imap_message_id": { "type": "keyword" },
+      "relations": {
+        "type": "nested",
+        "properties": {
+          "type":             { "type": "keyword" },
+          "target_source_id": { "type": "keyword" },
+          "target_id":        { "type": "keyword" }
+        }
+      }%s
     }
   }
 }`, knnSetting, textField, textField, embeddingField)

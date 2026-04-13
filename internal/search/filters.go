@@ -47,17 +47,20 @@ func buildFilterClauses(req model.SearchRequest) []map[string]any {
 	return filters
 }
 
-// buildSearchQuery wraps a match query with optional filters.
+// buildSearchQuery wraps a match query with optional filters. Always excludes
+// chunks flagged Hidden=true (e.g. Telegram per-message docs whose content is
+// already covered by the parent conversation window — see the dual-emission
+// design in `plans/scalable-beaming-tower.md`). The `hidden` field is
+// `omitempty` so legacy documents without it are implicitly visible.
 func buildSearchQuery(matchQuery map[string]any, filters []map[string]any) map[string]any {
-	if len(filters) == 0 {
-		return matchQuery
+	boolQuery := map[string]any{
+		"must":     matchQuery,
+		"must_not": []map[string]any{{"term": map[string]any{"hidden": true}}},
 	}
-	return map[string]any{
-		"bool": map[string]any{
-			"must":   matchQuery,
-			"filter": filters,
-		},
+	if len(filters) > 0 {
+		boolQuery["filter"] = filters
 	}
+	return map[string]any{"bool": boolQuery}
 }
 
 // computeFacets counts source_type and source_name across all deduped results.

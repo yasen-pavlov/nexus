@@ -354,19 +354,52 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 
 	var docs []model.Document
 
+	// Thread + reply relations. env.InReplyTo is the direct parent
+	// Message-ID (optional); References is the full ancestor chain and
+	// we take its first entry as the canonical thread root so every
+	// message in a thread points at the same target.
+	var emailRelations []model.Relation
+	var inReplyTo string
+	if len(env.InReplyTo) > 0 {
+		inReplyTo = strings.Trim(env.InReplyTo[0], " <>")
+	}
+	if inReplyTo != "" {
+		emailRelations = append(emailRelations, model.Relation{
+			Type:           model.RelationReplyTo,
+			TargetSourceID: inReplyTo,
+		})
+	}
+	references := parseReferencesHeader(bodyData)
+	threadRoot := ""
+	switch {
+	case len(references) > 0:
+		threadRoot = references[0]
+	case inReplyTo != "":
+		threadRoot = inReplyTo
+	}
+	if threadRoot != "" {
+		emailRelations = append(emailRelations, model.Relation{
+			Type:           model.RelationMemberOfThread,
+			TargetSourceID: threadRoot,
+		})
+	}
+
 	// Main email document
 	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
+	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
 	docs = append(docs, model.Document{
-		ID:         model.DocumentID("imap", c.name, emailSourceID),
-		SourceType: "imap",
-		SourceName: c.name,
-		SourceID:   emailSourceID,
-		Title:      env.Subject,
-		Content:    textContent,
-		Metadata:   metadata,
-		URL:        msgURL,
-		Visibility: "private",
-		CreatedAt:  createdAt,
+		ID:            emailDocID,
+		SourceType:    "imap",
+		SourceName:    c.name,
+		SourceID:      emailSourceID,
+		Title:         env.Subject,
+		Content:       textContent,
+		Metadata:      metadata,
+		Relations:     emailRelations,
+		IMAPMessageID: strings.Trim(env.MessageID, " <>"),
+		URL:           msgURL,
+		Visibility:    "private",
+		CreatedAt:     createdAt,
 	})
 
 	// Attachment documents — always emitted, even when extraction fails or is
@@ -382,10 +415,8 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		}
 
 		attMetadata := map[string]any{
-			"parent_message_id": env.MessageID,
-			"parent_subject":    env.Subject,
-			"attachment_index":  i,
-			"content_type":      att.ContentType,
+			"parent_subject": env.Subject,
+			"content_type":   att.ContentType,
 		}
 		if att.Filename != "" {
 			attMetadata["filename"] = att.Filename
@@ -402,6 +433,11 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 			MimeType:   att.ContentType,
 			Size:       int64(len(att.Data)),
 			Metadata:   attMetadata,
+			Relations: []model.Relation{{
+				Type:           model.RelationAttachmentOf,
+				TargetSourceID: emailSourceID,
+				TargetID:       emailDocID.String(),
+			}},
 			URL:        msgURL,
 			Visibility: "private",
 			CreatedAt:  createdAt,

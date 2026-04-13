@@ -112,23 +112,27 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		chunks := make([]model.Chunk, len(textChunks))
 		for j, tc := range textChunks {
 			chunks[j] = model.Chunk{
-				ID:         fmt.Sprintf("%s:%d", parentID, tc.Index),
-				ParentID:   parentID,
-				DocID:      docID,
-				ChunkIndex: tc.Index,
-				Title:      doc.Title,
-				Content:    tc.Text,
-				SourceType: doc.SourceType,
-				SourceName: doc.SourceName,
-				SourceID:   doc.SourceID,
-				MimeType:   doc.MimeType,
-				Size:       doc.Size,
-				Metadata:   doc.Metadata,
-				URL:        doc.URL,
-				Visibility: doc.Visibility,
-				OwnerID:    ownerID,
-				Shared:     shared,
-				CreatedAt:  doc.CreatedAt,
+				ID:             fmt.Sprintf("%s:%d", parentID, tc.Index),
+				ParentID:       parentID,
+				DocID:          docID,
+				ChunkIndex:     tc.Index,
+				Title:          doc.Title,
+				Content:        tc.Text,
+				SourceType:     doc.SourceType,
+				SourceName:     doc.SourceName,
+				SourceID:       doc.SourceID,
+				MimeType:       doc.MimeType,
+				Size:           doc.Size,
+				Metadata:       doc.Metadata,
+				Relations:      doc.Relations,
+				ConversationID: doc.ConversationID,
+				IMAPMessageID:  doc.IMAPMessageID,
+				Hidden:         doc.Hidden,
+				URL:            doc.URL,
+				Visibility:     doc.Visibility,
+				OwnerID:        ownerID,
+				Shared:         shared,
+				CreatedAt:      doc.CreatedAt,
 			}
 			if tc.Index == 0 {
 				chunks[j].FullContent = doc.Content
@@ -139,8 +143,14 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		// low alphabetic-token count get indexed for BM25 only — they don't
 		// contribute a vector to kNN search. See minEmbeddingAlphabeticTokens
 		// for the rationale (noise hubs in embedding space).
+		//
+		// Hidden documents (Telegram per-message canonical records) skip
+		// embedding entirely. They exist for relation targeting and chat-
+		// browser pagination — their content is already covered by the
+		// parent conversation window, and embedding them would re-introduce
+		// the short-message noise-hub problem windowing was built to solve.
 		embedder := p.getEmbedder()
-		if embedder != nil && len(doc.Content) >= minEmbeddingContentLen {
+		if embedder != nil && !doc.Hidden && len(doc.Content) >= minEmbeddingContentLen {
 			var embedTexts []string
 			var embedIndices []int // index into chunks for each text we send
 			for j, c := range chunks {

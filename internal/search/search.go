@@ -312,6 +312,14 @@ func (c *Client) CheckMappingCurrent(ctx context.Context) (bool, error) {
 			}
 		}
 	}
+	// New top-level fields introduced for the document-relations work —
+	// missing them means the index predates the feature and should be
+	// rebuilt via POST /api/reindex.
+	for _, field := range []string{"hidden", "conversation_id", "imap_message_id", "relations"} {
+		if _, ok := parsed.Properties[field]; !ok {
+			return false, nil
+		}
+	}
 	return true, nil
 }
 
@@ -461,19 +469,21 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 			chunkData[chunk.ParentID] = &rankedChunk{
 				parentID: chunk.ParentID,
 				doc: model.Document{
-					ID:         model.DocumentID(chunk.SourceType, chunk.SourceName, chunk.SourceID),
-					SourceType: chunk.SourceType,
-					SourceName: chunk.SourceName,
-					SourceID:   chunk.SourceID,
-					Title:      chunk.Title,
-					Content:    chunk.Content,
-					MimeType:   chunk.MimeType,
-					Size:       chunk.Size,
-					Metadata:   chunk.Metadata,
-					URL:        chunk.URL,
-					Visibility: chunk.Visibility,
-					CreatedAt:  chunk.CreatedAt,
-					IndexedAt:  chunk.IndexedAt,
+					ID:             model.DocumentID(chunk.SourceType, chunk.SourceName, chunk.SourceID),
+					SourceType:     chunk.SourceType,
+					SourceName:     chunk.SourceName,
+					SourceID:       chunk.SourceID,
+					Title:          chunk.Title,
+					Content:        chunk.Content,
+					MimeType:       chunk.MimeType,
+					Size:           chunk.Size,
+					Metadata:       chunk.Metadata,
+					Relations:      chunk.Relations,
+					ConversationID: chunk.ConversationID,
+					URL:            chunk.URL,
+					Visibility:     chunk.Visibility,
+					CreatedAt:      chunk.CreatedAt,
+					IndexedAt:      chunk.IndexedAt,
 				},
 				headline: headline,
 				score:    score,
