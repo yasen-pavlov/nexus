@@ -1,5 +1,16 @@
 basePath: /api
 definitions:
+  github_com_muty_nexus_internal_model.BinaryStoreStats:
+    properties:
+      count:
+        type: integer
+      source_name:
+        type: string
+      source_type:
+        type: string
+      total_size:
+        type: integer
+    type: object
   github_com_muty_nexus_internal_model.ConnectorConfig:
     properties:
       config:
@@ -762,6 +773,92 @@ paths:
       security:
       - BearerAuth: []
       summary: Update rerank settings
+      tags:
+      - settings
+  /storage/cache:
+    delete:
+      description: Deletes every cached blob across all connectors. Admin only. Eager-cached
+        data (Telegram) will be re-populated on next sync only if the upstream media
+        is still available; use with care.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Wipe the entire binary cache
+      tags:
+      - settings
+  /storage/cache/{id}:
+    delete:
+      description: Deletes every cached blob for the connector identified by path
+        ID. Admin only. Safe for lazy-mode connectors — they'll repopulate the cache
+        on next preview. Eager-mode connectors lose cached data that may not be re-fetchable
+        if the upstream source has expired.
+      parameters:
+      - description: Connector UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Wipe the binary cache for a single connector
+      tags:
+      - settings
+  /storage/stats:
+    get:
+      description: Returns per-source-type/name aggregates of cached binaries (count,
+        total bytes). Admin only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/internal_api.APIResponse'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/github_com_muty_nexus_internal_model.BinaryStoreStats'
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Binary cache stats per connector
       tags:
       - settings
   /sync:

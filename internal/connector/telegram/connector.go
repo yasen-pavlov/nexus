@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
 // Conversation windowing constants. We group consecutive messages from the
@@ -45,6 +47,26 @@ type telegramAPI interface {
 	MessagesGetHistory(ctx context.Context, req *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error)
 }
 
+// mediaDownloader downloads the bytes for a Telegram file location.
+// Abstracted so tests can bypass the live MTProto client.
+type mediaDownloader interface {
+	Download(ctx context.Context, loc tg.InputFileLocationClass) ([]byte, error)
+}
+
+// liveMediaDownloader is the production mediaDownloader backed by a
+// live *telegram.Client (via its Download/Stream helpers).
+type liveMediaDownloader struct {
+	client *telegram.Client
+}
+
+func (l liveMediaDownloader) Download(ctx context.Context, loc tg.InputFileLocationClass) ([]byte, error) {
+	var buf bytes.Buffer
+	if _, err := l.client.Download(loc).Stream(ctx, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func init() {
 	connector.Register("telegram", func() connector.Connector {
 		return &Connector{}
@@ -53,17 +75,36 @@ func init() {
 
 // Connector fetches messages from Telegram chats via the MTProto User API.
 type Connector struct {
-	name       string
-	apiID      int
-	apiHash    string
-	phone      string
-	chatFilter []string
-	syncSince  time.Time
-	session    *DBSessionStorage
+	name        string
+	apiID       int
+	apiHash     string
+	phone       string
+	chatFilter  []string
+	syncSince   time.Time
+	session     *DBSessionStorage
+	extractor   *extractor.Registry
+	binaryStore connector.BinaryStoreAPI
+	cacheConfig connector.CacheConfig
 }
 
 func (c *Connector) Type() string { return "telegram" }
 func (c *Connector) Name() string { return c.name }
+
+// SetExtractor sets the content extractor used for downloaded media
+// (e.g. PDF documents, text files attached to chat messages).
+func (c *Connector) SetExtractor(ext *extractor.Registry) {
+	c.extractor = ext
+}
+
+// SetBinaryStore wires the binary content cache plus the resolved
+// per-connector cache policy. Implements connector.CacheAware.
+// Telegram runs in eager mode by default: media bytes are written
+// during Fetch because Telegram file references expire and lazy
+// refetch isn't viable.
+func (c *Connector) SetBinaryStore(store connector.BinaryStoreAPI, cfg connector.CacheConfig) {
+	c.binaryStore = store
+	c.cacheConfig = cfg
+}
 
 func (c *Connector) Configure(cfg connector.Config) error {
 	name, _ := cfg["name"].(string)
@@ -142,7 +183,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 
 	err := client.Run(ctx, func(ctx context.Context) error {
 		var fetchErr error
-		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), cursor)
+		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor)
 		return fetchErr
 	})
 
@@ -164,7 +205,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}, nil
 }
 
-func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, cursor *model.SyncCursor) ([]model.Document, error) {
+func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor) ([]model.Document, error) {
 	var sinceDate int
 	if cursor != nil {
 		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
@@ -196,10 +237,10 @@ func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, cursor *m
 		return nil, nil
 	}
 
-	return c.processDialogs(ctx, api, chats, users, sinceDate)
+	return c.processDialogs(ctx, api, dl, chats, users, sinceDate)
 }
 
-func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, chats []tg.ChatClass, users []tg.UserClass, sinceDate int) ([]model.Document, error) {
+func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, users []tg.UserClass, sinceDate int) ([]model.Document, error) {
 	var allDocs []model.Document
 
 	for _, chat := range chats {
@@ -215,7 +256,7 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, chats [
 			continue
 		}
 
-		docs, err := c.fetchChatMessages(ctx, api, inputPeer, chatName, chatID, sinceDate)
+		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, sinceDate)
 		if err != nil {
 			continue
 		}
@@ -237,7 +278,7 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, chats [
 		}
 
 		inputPeer := &tg.InputPeerUser{UserID: u.ID, AccessHash: u.AccessHash}
-		docs, err := c.fetchChatMessages(ctx, api, inputPeer, chatName, chatID, sinceDate)
+		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, sinceDate)
 		if err != nil {
 			continue
 		}
@@ -247,12 +288,14 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, chats [
 	return allDocs, nil
 }
 
-func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
-	// Collect messages into records first (instead of emitting one Document per
-	// message), so we can sort by date and group them into conversation windows
-	// before producing the final docs. This is the central change that fixes
-	// the embedding noise from short chat messages.
+func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
+	// Collect text messages into records first (instead of emitting one
+	// Document per message), so we can sort by date and group them into
+	// conversation windows before producing the final text docs. Media-bearing
+	// messages are handled separately: each produces one sibling Document with
+	// its own bytes cached, regardless of whether the message also has text.
 	var records []messageRecord
+	var mediaDocs []model.Document
 
 	req := &tg.MessagesGetHistoryRequest{
 		Peer:  inputPeer,
@@ -277,21 +320,31 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, inpu
 		stop := false
 		for _, msg := range messages {
 			m, ok := msg.(*tg.Message)
-			if !ok || m.Message == "" {
+			if !ok {
 				continue
 			}
 
-			// Skip messages older than sinceDate
+			// Skip messages older than sinceDate. This applies before
+			// both text and media handling so we don't re-download
+			// media we already have from previous syncs.
 			if sinceDate > 0 && m.Date < sinceDate {
 				stop = true
 				break
 			}
 
-			records = append(records, messageRecord{
-				ID:   m.ID,
-				Text: m.Message,
-				Date: time.Unix(int64(m.Date), 0),
-			})
+			if m.Message != "" {
+				records = append(records, messageRecord{
+					ID:   m.ID,
+					Text: m.Message,
+					Date: time.Unix(int64(m.Date), 0),
+				})
+			}
+
+			if m.Media != nil {
+				if doc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
+					mediaDocs = append(mediaDocs, doc)
+				}
+			}
 		}
 
 		if stop {
@@ -312,7 +365,9 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, inpu
 		}
 	}
 
-	return c.windowMessages(records, chatName, chatID), nil
+	docs := c.windowMessages(records, chatName, chatID)
+	docs = append(docs, mediaDocs...)
+	return docs, nil
 }
 
 // windowMessages groups consecutive messages from a single chat into
@@ -458,6 +513,211 @@ func userDisplayName(u *tg.User) string {
 		return u.Username
 	}
 	return "User " + strconv.FormatInt(u.ID, 10)
+}
+
+// mediaToDocument turns a single Telegram message carrying downloadable
+// media into a sibling Document. The text caption (m.Message) is preserved
+// as the doc's Content so it's searchable independently of the windowed
+// text document that already holds the same caption.
+//
+// Returns ok=false (and emits no doc) when:
+//   - the media kind isn't downloadable (webpage/geo/poll/etc.)
+//   - the download itself fails (expired file reference, network, etc.)
+//
+// Eager cache population runs inline — the bytes are already in memory
+// from the download, so skipping the Put would mean the first preview
+// request has no way to recover (Telegram file references expire).
+func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *tg.Message, chatName, chatID string) (model.Document, bool) {
+	loc, mimeType, filename, _, ok := mediaLocation(m.Media)
+	if !ok {
+		return model.Document{}, false
+	}
+
+	data, err := dl.Download(ctx, loc)
+	if err != nil {
+		// Best-effort: a single media failure shouldn't derail the sync.
+		// The message's text (if any) still produces a window doc.
+		return model.Document{}, false
+	}
+
+	// Use the actual downloaded byte count — the advertised size in
+	// the message header is a prediction; len(data) is truth.
+	size := int64(len(data))
+
+	// Photos have no filename attribute; synthesize one so the download
+	// endpoint can serve a sensible Content-Disposition without
+	// falling back to the chat name as a filename.
+	if filename == "" && mimeType == "image/jpeg" {
+		filename = fmt.Sprintf("photo-%d.jpg", m.ID)
+	}
+
+	sourceID := fmt.Sprintf("%s:%d:media", chatID, m.ID)
+
+	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
+		// Best-effort — a cache write failure shouldn't abort the doc
+		// emit. If this Put fails the preview endpoint will surface a
+		// clear "media not cached" error later, which is the correct
+		// degraded-state behavior.
+		_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
+	}
+
+	var extracted string
+	if c.extractor != nil && c.extractor.CanExtract(mimeType) {
+		if out, err := c.extractor.Extract(ctx, mimeType, data); err == nil {
+			extracted = out
+		}
+	}
+
+	// Caption flows through both the windowed text doc and the media
+	// doc. Having it in both is deliberate: the text window is for
+	// conversation-context ranking, while the media doc is the
+	// standalone searchable representation of the asset itself.
+	content := extracted
+	if content == "" {
+		content = m.Message
+	}
+
+	title := filename
+	if title == "" {
+		title = chatName
+	}
+
+	metadata := map[string]any{
+		"chat_name":         chatName,
+		"chat_id":           chatID,
+		"parent_message_id": m.ID,
+		"content_type":      mimeType,
+	}
+	if filename != "" {
+		metadata["filename"] = filename
+	}
+	if m.Message != "" {
+		metadata["caption"] = m.Message
+	}
+
+	return model.Document{
+		ID:         model.DocumentID("telegram", c.name, sourceID),
+		SourceType: "telegram",
+		SourceName: c.name,
+		SourceID:   sourceID,
+		Title:      title,
+		Content:    content,
+		MimeType:   mimeType,
+		Size:       size,
+		Metadata:   metadata,
+		Visibility: "private",
+		CreatedAt:  time.Unix(int64(m.Date), 0),
+	}, true
+}
+
+// mediaLocation inspects a message's media and returns the
+// InputFileLocation needed to download it, plus the sidecar metadata
+// (mime type, filename, size) the indexer needs.
+//
+// Returns ok=false for non-downloadable media: webpages, geo points,
+// polls, contacts, games, invoices, venues, unsupported types, and the
+// empty placeholder. Photos always report size=0 here because the
+// advertised size lives on the individual PhotoSize entry, not the
+// parent media object — callers compensate from the downloaded bytes.
+func mediaLocation(media tg.MessageMediaClass) (loc tg.InputFileLocationClass, mimeType, filename string, size int64, ok bool) {
+	switch m := media.(type) {
+	case *tg.MessageMediaPhoto:
+		photo, pok := m.Photo.AsNotEmpty()
+		if !pok {
+			return nil, "", "", 0, false
+		}
+		thumbType, photoSize, sok := largestPhotoSize(photo.Sizes)
+		if !sok {
+			return nil, "", "", 0, false
+		}
+		return &tg.InputPhotoFileLocation{
+			ID:            photo.ID,
+			AccessHash:    photo.AccessHash,
+			FileReference: photo.FileReference,
+			ThumbSize:     thumbType,
+		}, "image/jpeg", "", photoSize, true
+
+	case *tg.MessageMediaDocument:
+		doc, dok := m.Document.AsNotEmpty()
+		if !dok {
+			return nil, "", "", 0, false
+		}
+		// Stickers are emoji-equivalent decorations — no search value,
+		// and their Lottie JSON (for animated stickers) actively
+		// pollutes ranking. Skip them. GIFs (DocumentAttributeAnimated)
+		// and round video messages still flow through since they can
+		// carry meaningful content.
+		if isSticker(doc) {
+			return nil, "", "", 0, false
+		}
+		return &tg.InputDocumentFileLocation{
+			ID:            doc.ID,
+			AccessHash:    doc.AccessHash,
+			FileReference: doc.FileReference,
+			ThumbSize:     "",
+		}, doc.MimeType, documentFilename(doc), doc.Size, true
+	}
+	return nil, "", "", 0, false
+}
+
+// isSticker reports whether a Telegram document is a sticker (animated
+// .tgs, static .webp, or video .webm sticker). Sticker documents always
+// carry a *tg.DocumentAttributeSticker in their Attributes slice.
+func isSticker(doc *tg.Document) bool {
+	for _, attr := range doc.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeSticker); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// largestPhotoSize picks the largest downloadable PhotoSize from a
+// Telegram photo's sizes array and returns its type (used as ThumbSize
+// in InputPhotoFileLocation) and advertised byte size.
+//
+// Stripped/Cached/Path sizes are inline previews, not downloadable from
+// the file servers — skip them. Progressive sizes carry multiple byte
+// offsets; we use the final (largest) size from its Sizes slice.
+func largestPhotoSize(sizes []tg.PhotoSizeClass) (string, int64, bool) {
+	var bestType string
+	var bestSize int64
+	found := false
+	for _, s := range sizes {
+		switch ps := s.(type) {
+		case *tg.PhotoSize:
+			if int64(ps.Size) > bestSize {
+				bestType = ps.Type
+				bestSize = int64(ps.Size)
+				found = true
+			}
+		case *tg.PhotoSizeProgressive:
+			var last int
+			for _, sz := range ps.Sizes {
+				if sz > last {
+					last = sz
+				}
+			}
+			if int64(last) > bestSize {
+				bestType = ps.Type
+				bestSize = int64(last)
+				found = true
+			}
+		}
+	}
+	return bestType, bestSize, found
+}
+
+// documentFilename extracts the filename attribute from a Telegram
+// document. Returns "" when no filename attribute is present (voice
+// notes, round videos, stickers — all rely on auto-generated names).
+func documentFilename(doc *tg.Document) string {
+	for _, attr := range doc.Attributes {
+		if fn, ok := attr.(*tg.DocumentAttributeFilename); ok {
+			return fn.FileName
+		}
+	}
+	return ""
 }
 
 func extractMessages(result tg.MessagesMessagesClass) []tg.MessageClass {

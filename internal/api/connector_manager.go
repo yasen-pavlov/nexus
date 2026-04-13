@@ -291,8 +291,8 @@ func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (conn
 		return nil, fmt.Errorf("validation failed for %q: %w", cfg.Name, err)
 	}
 
-	// Inject extractor for connectors that support it (filesystem, imap)
-	if (cfg.Type == "filesystem" || cfg.Type == "imap") && m.extractor != nil {
+	// Inject extractor for connectors that support it (filesystem, imap, telegram)
+	if (cfg.Type == "filesystem" || cfg.Type == "imap" || cfg.Type == "telegram") && m.extractor != nil {
 		if extConn, ok := conn.(interface {
 			SetExtractor(*extractor.Registry)
 		}); ok {

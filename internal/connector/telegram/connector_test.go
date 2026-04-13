@@ -1,15 +1,20 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
 // mockTelegramAPI implements telegramAPI for testing.
@@ -17,6 +22,82 @@ type mockTelegramAPI struct {
 	dialogs tg.MessagesDialogsClass
 	msgList []tg.MessagesMessagesClass // returned in order
 	msgIdx  int
+}
+
+// stubDownloader is a mediaDownloader that returns a fixed payload
+// (or a fixed error) for every location. Tests that don't exercise
+// media can pass a zero-value stubDownloader.
+type stubDownloader struct {
+	payload []byte
+	err     error
+	calls   atomic.Int32
+}
+
+func (s *stubDownloader) Download(_ context.Context, _ tg.InputFileLocationClass) ([]byte, error) {
+	s.calls.Add(1)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.payload, nil
+}
+
+// fakeBinaryStore is a minimal in-memory BinaryStoreAPI stub for tests.
+// Mirrors the IMAP test file's shape so the Telegram tests stay
+// self-contained.
+type fakeBinaryStore struct {
+	mu    sync.Mutex
+	blobs map[string][]byte
+	puts  atomic.Int32
+	gets  atomic.Int32
+}
+
+func newFakeBinaryStore() *fakeBinaryStore {
+	return &fakeBinaryStore{blobs: map[string][]byte{}}
+}
+
+func (f *fakeBinaryStore) key(st, sn, sid string) string { return st + "/" + sn + "/" + sid }
+
+func (f *fakeBinaryStore) Put(_ context.Context, st, sn, sid string, r io.Reader, _ int64) error {
+	f.puts.Add(1)
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blobs[f.key(st, sn, sid)] = b
+	return nil
+}
+
+func (f *fakeBinaryStore) Get(_ context.Context, st, sn, sid string) (io.ReadCloser, error) {
+	f.gets.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.blobs[f.key(st, sn, sid)]
+	if !ok {
+		return nil, errNotExist
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (f *fakeBinaryStore) Exists(_ context.Context, st, sn, sid string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.blobs[f.key(st, sn, sid)]
+	return ok, nil
+}
+
+// errNotExist matches os.ErrNotExist for the fake store so tests don't
+// have to import os just for this.
+var errNotExist = &notExistErr{}
+
+type notExistErr struct{}
+
+func (*notExistErr) Error() string { return "not exist" }
+
+// Is satisfies errors.Is against os.ErrNotExist without importing os.
+func (*notExistErr) Is(target error) bool {
+	return target.Error() == "file does not exist"
 }
 
 func (m *mockTelegramAPI) MessagesGetDialogs(_ context.Context, _ *tg.MessagesGetDialogsRequest) (tg.MessagesDialogsClass, error) {
@@ -234,7 +315,7 @@ func TestProcessDialogs_GroupChat(t *testing.T) {
 		&tg.Chat{ID: 123, Title: "Test Group"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
 	if err != nil {
 		t.Fatalf("processDialogs failed: %v", err)
 	}
@@ -270,7 +351,7 @@ func TestProcessDialogs_WithFilter(t *testing.T) {
 		&tg.Chat{ID: 123, Title: "Test Group"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +377,7 @@ func TestProcessDialogs_UserDMs(t *testing.T) {
 		&tg.User{ID: 456, FirstName: "John", LastName: "Doe"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, nil, users, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +397,7 @@ func TestProcessDialogs_SkipsBots(t *testing.T) {
 		&tg.User{ID: 2, FirstName: "Self", Self: true},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, nil, users, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +425,7 @@ func TestFetchChatMessages_SinceDateFilter(t *testing.T) {
 	c := &Connector{name: "test"}
 	inputPeer := &tg.InputPeerChat{ChatID: 123}
 
-	docs, err := c.fetchChatMessages(context.Background(), api, inputPeer, "Test", "123", sinceDate)
+	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, inputPeer, "Test", "123", sinceDate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +453,7 @@ func TestFetchChatMessages_SkipsEmptyMessages(t *testing.T) {
 	}
 
 	c := &Connector{name: "test"}
-	docs, err := c.fetchChatMessages(context.Background(), api, &tg.InputPeerChat{ChatID: 1}, "Chat", "1", 0)
+	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, &tg.InputPeerChat{ChatID: 1}, "Chat", "1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +480,7 @@ func TestFetchWithAPI(t *testing.T) {
 	}
 
 	c := &Connector{name: "test"}
-	docs, err := c.fetchWithAPI(context.Background(), api, nil)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +513,7 @@ func TestFetchWithAPI_WithCursor(t *testing.T) {
 			"last_message_date": float64(now - 3600),
 		},
 	}
-	docs, err := c.fetchWithAPI(context.Background(), api, cursor)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +540,7 @@ func TestFetchWithAPI_SyncSince(t *testing.T) {
 	}
 
 	c := &Connector{name: "test", syncSince: time.Now().Add(-24 * time.Hour)}
-	docs, err := c.fetchWithAPI(context.Background(), api, nil)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +575,7 @@ func TestProcessDialogs_Channel(t *testing.T) {
 		&tg.Channel{ID: 789, Title: "News Channel", AccessHash: 12345},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -789,5 +870,494 @@ func TestWindowMessages_DocMetadata(t *testing.T) {
 	// CreatedAt should be the latest message's date
 	if !d.CreatedAt.Equal(base.Add(1 * time.Minute)) {
 		t.Errorf("CreatedAt = %v, want latest message date", d.CreatedAt)
+	}
+}
+
+// --- Media handling tests ---
+
+// samplePhoto returns a minimally valid *tg.Photo with one PhotoSize
+// large enough to be picked by largestPhotoSize.
+func samplePhoto() *tg.Photo {
+	return &tg.Photo{
+		ID:            1001,
+		AccessHash:    2002,
+		FileReference: []byte{0xde, 0xad, 0xbe, 0xef},
+		Sizes: []tg.PhotoSizeClass{
+			&tg.PhotoStrippedSize{Type: "i", Bytes: []byte{0x00}}, // inline — skipped
+			&tg.PhotoSize{Type: "m", W: 320, H: 320, Size: 1024},
+			&tg.PhotoSize{Type: "x", W: 1280, H: 1280, Size: 65536},
+		},
+	}
+}
+
+// sampleDocument returns a *tg.Document with a filename attribute.
+func sampleDocument() *tg.Document {
+	return &tg.Document{
+		ID:            3003,
+		AccessHash:    4004,
+		FileReference: []byte{0x01, 0x02},
+		MimeType:      "application/pdf",
+		Size:          2048,
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{FileName: "report.pdf"},
+		},
+	}
+}
+
+func TestLargestPhotoSize(t *testing.T) {
+	t.Run("picks largest PhotoSize", func(t *testing.T) {
+		typ, sz, ok := largestPhotoSize(samplePhoto().Sizes)
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		if typ != "x" || sz != 65536 {
+			t.Errorf("got (%q, %d), want (x, 65536)", typ, sz)
+		}
+	})
+	t.Run("only inline sizes returns ok=false", func(t *testing.T) {
+		sizes := []tg.PhotoSizeClass{
+			&tg.PhotoStrippedSize{Type: "i"},
+			&tg.PhotoPathSize{Type: "j"},
+		}
+		if _, _, ok := largestPhotoSize(sizes); ok {
+			t.Error("expected ok=false for inline-only sizes")
+		}
+	})
+	t.Run("progressive size", func(t *testing.T) {
+		sizes := []tg.PhotoSizeClass{
+			&tg.PhotoSizeProgressive{Type: "p", Sizes: []int{100, 500, 1500}},
+		}
+		typ, sz, ok := largestPhotoSize(sizes)
+		if !ok || typ != "p" || sz != 1500 {
+			t.Errorf("progressive: (%q, %d, %v), want (p, 1500, true)", typ, sz, ok)
+		}
+	})
+	t.Run("empty slice", func(t *testing.T) {
+		if _, _, ok := largestPhotoSize(nil); ok {
+			t.Error("expected ok=false for empty sizes")
+		}
+	})
+}
+
+func TestDocumentFilename(t *testing.T) {
+	t.Run("with filename attr", func(t *testing.T) {
+		if got := documentFilename(sampleDocument()); got != "report.pdf" {
+			t.Errorf("got %q, want report.pdf", got)
+		}
+	})
+	t.Run("without filename attr", func(t *testing.T) {
+		doc := &tg.Document{Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeAudio{Duration: 30},
+		}}
+		if got := documentFilename(doc); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+}
+
+func TestMediaLocation(t *testing.T) {
+	t.Run("photo", func(t *testing.T) {
+		loc, mime, fn, size, ok := mediaLocation(&tg.MessageMediaPhoto{Photo: samplePhoto()})
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		pl, isPhoto := loc.(*tg.InputPhotoFileLocation)
+		if !isPhoto {
+			t.Fatalf("expected *InputPhotoFileLocation, got %T", loc)
+		}
+		if pl.ID != 1001 || pl.AccessHash != 2002 || pl.ThumbSize != "x" {
+			t.Errorf("photo loc = %+v", pl)
+		}
+		if mime != "image/jpeg" || fn != "" || size != 65536 {
+			t.Errorf("sidecar (%q, %q, %d) mismatch", mime, fn, size)
+		}
+	})
+	t.Run("document", func(t *testing.T) {
+		loc, mime, fn, size, ok := mediaLocation(&tg.MessageMediaDocument{Document: sampleDocument()})
+		if !ok {
+			t.Fatal("expected ok")
+		}
+		dl, isDoc := loc.(*tg.InputDocumentFileLocation)
+		if !isDoc {
+			t.Fatalf("expected *InputDocumentFileLocation, got %T", loc)
+		}
+		if dl.ID != 3003 || dl.AccessHash != 4004 {
+			t.Errorf("document loc = %+v", dl)
+		}
+		if mime != "application/pdf" || fn != "report.pdf" || size != 2048 {
+			t.Errorf("sidecar (%q, %q, %d) mismatch", mime, fn, size)
+		}
+	})
+	t.Run("empty photo", func(t *testing.T) {
+		if _, _, _, _, ok := mediaLocation(&tg.MessageMediaPhoto{Photo: &tg.PhotoEmpty{}}); ok {
+			t.Error("expected ok=false for PhotoEmpty")
+		}
+	})
+	t.Run("unsupported kinds", func(t *testing.T) {
+		cases := []tg.MessageMediaClass{
+			&tg.MessageMediaEmpty{},
+			&tg.MessageMediaGeo{},
+			&tg.MessageMediaContact{},
+			&tg.MessageMediaWebPage{},
+			&tg.MessageMediaPoll{},
+		}
+		for _, m := range cases {
+			if _, _, _, _, ok := mediaLocation(m); ok {
+				t.Errorf("%T: expected ok=false", m)
+			}
+		}
+	})
+}
+
+func TestMediaToDocument_Photo(t *testing.T) {
+	now := time.Now()
+	store := newFakeBinaryStore()
+	c := &Connector{
+		name:        "tg",
+		binaryStore: store,
+		cacheConfig: connector.CacheConfig{Mode: "eager"},
+	}
+	dl := &stubDownloader{payload: []byte("JPEG-bytes")}
+	m := &tg.Message{
+		ID:      42,
+		Date:    int(now.Unix()),
+		Message: "a caption",
+		Media:   &tg.MessageMediaPhoto{Photo: samplePhoto()},
+	}
+
+	doc, ok := c.mediaToDocument(context.Background(), dl, m, "Friends", "99")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if doc.SourceID != "99:42:media" {
+		t.Errorf("source_id = %q", doc.SourceID)
+	}
+	if doc.SourceType != "telegram" || doc.SourceName != "tg" {
+		t.Errorf("source type/name wrong: %+v", doc)
+	}
+	if doc.MimeType != "image/jpeg" {
+		t.Errorf("mime = %q", doc.MimeType)
+	}
+	// Post-download size should equal downloaded byte count (photo
+	// advertised 65536 but the stub returned 10 bytes — media doc
+	// should reflect reality).
+	if doc.Size != int64(len("JPEG-bytes")) {
+		t.Errorf("size = %d, want %d", doc.Size, len("JPEG-bytes"))
+	}
+	if doc.Title != "photo-42.jpg" { // synthesized from msg ID
+		t.Errorf("title = %q", doc.Title)
+	}
+	if doc.Content != "a caption" { // no extractor → caption
+		t.Errorf("content = %q", doc.Content)
+	}
+	if doc.Metadata["parent_message_id"] != 42 {
+		t.Errorf("parent_message_id = %v", doc.Metadata["parent_message_id"])
+	}
+	if doc.Metadata["caption"] != "a caption" {
+		t.Errorf("caption = %v", doc.Metadata["caption"])
+	}
+	if store.puts.Load() != 1 {
+		t.Errorf("expected 1 eager Put, got %d", store.puts.Load())
+	}
+	if got := store.blobs[store.key("telegram", "tg", "99:42:media")]; string(got) != "JPEG-bytes" {
+		t.Errorf("cached bytes = %q", got)
+	}
+}
+
+func TestMediaToDocument_Document_TitleFromFilename(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("%PDF-...")}
+	m := &tg.Message{
+		ID:    7,
+		Date:  int(time.Now().Unix()),
+		Media: &tg.MessageMediaDocument{Document: sampleDocument()},
+	}
+
+	doc, ok := c.mediaToDocument(context.Background(), dl, m, "Some Chat", "5")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if doc.Title != "report.pdf" {
+		t.Errorf("title = %q, want report.pdf", doc.Title)
+	}
+	if doc.Metadata["filename"] != "report.pdf" {
+		t.Errorf("filename metadata = %v", doc.Metadata["filename"])
+	}
+	// No caption, no extractor → content is empty
+	if doc.Content != "" {
+		t.Errorf("content = %q, want empty", doc.Content)
+	}
+}
+
+func TestMediaToDocument_DownloadFailureSkips(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{err: errors.New("boom")}
+	m := &tg.Message{
+		ID: 1, Date: int(time.Now().Unix()),
+		Media: &tg.MessageMediaPhoto{Photo: samplePhoto()},
+	}
+	if _, ok := c.mediaToDocument(context.Background(), dl, m, "Chat", "1"); ok {
+		t.Error("expected ok=false on download failure")
+	}
+}
+
+func TestMediaToDocument_UnsupportedSkips(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{}
+	m := &tg.Message{ID: 1, Date: int(time.Now().Unix()), Media: &tg.MessageMediaGeo{}}
+	if _, ok := c.mediaToDocument(context.Background(), dl, m, "Chat", "1"); ok {
+		t.Error("expected ok=false for unsupported media")
+	}
+	if dl.calls.Load() != 0 {
+		t.Errorf("downloader should not be called for unsupported media, got %d", dl.calls.Load())
+	}
+}
+
+func TestFetchChatMessages_CaptionedMedia_EmitsBothDocs(t *testing.T) {
+	now := int(time.Now().Unix())
+	api := &mockTelegramAPI{
+		msgList: []tg.MessagesMessagesClass{
+			&tg.MessagesMessages{
+				Messages: []tg.MessageClass{
+					&tg.Message{
+						ID: 10, Date: now, Message: "look at this photo",
+						Media: &tg.MessageMediaPhoto{Photo: samplePhoto()},
+					},
+				},
+			},
+		},
+	}
+	store := newFakeBinaryStore()
+	c := &Connector{
+		name:        "tg",
+		binaryStore: store,
+		cacheConfig: connector.CacheConfig{Mode: "eager"},
+	}
+	dl := &stubDownloader{payload: []byte("photo-bytes")}
+
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs (window + media), got %d", len(docs))
+	}
+	var window, media *model.Document
+	for i := range docs {
+		if strings.HasSuffix(docs[i].SourceID, ":media") {
+			media = &docs[i]
+		} else {
+			window = &docs[i]
+		}
+	}
+	if window == nil || media == nil {
+		t.Fatalf("missing window (%v) or media (%v) doc", window, media)
+	}
+	if !strings.Contains(window.Content, "look at this photo") {
+		t.Errorf("window doc missing caption text: %q", window.Content)
+	}
+	if media.Metadata["caption"] != "look at this photo" {
+		t.Errorf("media caption metadata = %v", media.Metadata["caption"])
+	}
+	if store.puts.Load() != 1 {
+		t.Errorf("expected 1 cache Put, got %d", store.puts.Load())
+	}
+}
+
+func TestFetchChatMessages_MediaOnlyMessage_EmitsMediaDoc(t *testing.T) {
+	now := int(time.Now().Unix())
+	api := &mockTelegramAPI{
+		msgList: []tg.MessagesMessagesClass{
+			&tg.MessagesMessages{
+				Messages: []tg.MessageClass{
+					&tg.Message{
+						ID: 11, Date: now, Message: "",
+						Media: &tg.MessageMediaDocument{Document: sampleDocument()},
+					},
+				},
+			},
+		},
+	}
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("pdf-bytes")}
+
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc (media only), got %d", len(docs))
+	}
+	if !strings.HasSuffix(docs[0].SourceID, ":media") {
+		t.Errorf("expected media source id, got %q", docs[0].SourceID)
+	}
+}
+
+func TestFetchChatMessages_DownloadFailure_TextStillWindowed(t *testing.T) {
+	now := int(time.Now().Unix())
+	api := &mockTelegramAPI{
+		msgList: []tg.MessagesMessagesClass{
+			&tg.MessagesMessages{
+				Messages: []tg.MessageClass{
+					&tg.Message{
+						ID: 1, Date: now, Message: "hey",
+						Media: &tg.MessageMediaPhoto{Photo: samplePhoto()},
+					},
+				},
+			},
+		},
+	}
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{err: errors.New("network")}
+
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc (window only — media download failed), got %d", len(docs))
+	}
+	if strings.HasSuffix(docs[0].SourceID, ":media") {
+		t.Errorf("expected window doc, got media doc %q", docs[0].SourceID)
+	}
+}
+
+func TestMediaLocation_PhotoWithOnlyInlineSizes(t *testing.T) {
+	// A photo whose Sizes slice contains only inline previews
+	// (stripped/cached/path) is undownloadable — mediaLocation should
+	// bail with ok=false rather than returning a broken location.
+	photo := &tg.Photo{
+		ID: 1, AccessHash: 2, FileReference: []byte{0x00},
+		Sizes: []tg.PhotoSizeClass{
+			&tg.PhotoStrippedSize{Type: "i"},
+			&tg.PhotoPathSize{Type: "j"},
+		},
+	}
+	if _, _, _, _, ok := mediaLocation(&tg.MessageMediaPhoto{Photo: photo}); ok {
+		t.Error("expected ok=false when photo has only inline sizes")
+	}
+}
+
+func TestMediaLocation_DocumentEmpty(t *testing.T) {
+	if _, _, _, _, ok := mediaLocation(&tg.MessageMediaDocument{Document: &tg.DocumentEmpty{}}); ok {
+		t.Error("expected ok=false for DocumentEmpty")
+	}
+}
+
+func TestMediaToDocument_ExtractorConsumesContent(t *testing.T) {
+	// A plain-text document should flow through the default PlainText
+	// extractor so its bytes end up in the Document's Content field,
+	// overriding the caption fallback.
+	c := &Connector{
+		name:      "tg",
+		extractor: extractor.NewRegistry("", nil), // PlainText-only registry
+	}
+	dl := &stubDownloader{payload: []byte("the quick brown fox")}
+	m := &tg.Message{
+		ID:      1,
+		Date:    int(time.Now().Unix()),
+		Message: "caption that should NOT win over extracted text",
+		Media: &tg.MessageMediaDocument{Document: &tg.Document{
+			ID: 1, AccessHash: 2, FileReference: []byte{0},
+			MimeType: "text/plain",
+			Attributes: []tg.DocumentAttributeClass{
+				&tg.DocumentAttributeFilename{FileName: "note.txt"},
+			},
+		}},
+	}
+	doc, ok := c.mediaToDocument(context.Background(), dl, m, "Chat", "7")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if doc.Content != "the quick brown fox" {
+		t.Errorf("content = %q, want extracted text", doc.Content)
+	}
+}
+
+func TestMediaToDocument_TitleFallsBackToChatName(t *testing.T) {
+	// A document with no filename attribute and a non-photo mime
+	// should fall back to the chat name for Title — the
+	// photo-filename synthesis branch shouldn't trigger here.
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("ogg-voice-note")}
+	m := &tg.Message{
+		ID:   42,
+		Date: int(time.Now().Unix()),
+		Media: &tg.MessageMediaDocument{Document: &tg.Document{
+			ID: 1, AccessHash: 2, FileReference: []byte{0},
+			MimeType:   "audio/ogg",
+			Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeAudio{Voice: true, Duration: 5}},
+		}},
+	}
+	doc, ok := c.mediaToDocument(context.Background(), dl, m, "Voice Buddy", "8")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if doc.Title != "Voice Buddy" {
+		t.Errorf("title = %q, want chat name 'Voice Buddy'", doc.Title)
+	}
+}
+
+func TestMediaLocation_SkipsStickers(t *testing.T) {
+	doc := &tg.Document{
+		ID: 1, AccessHash: 2, MimeType: "application/x-tgsticker",
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeFilename{FileName: "AnimatedSticker.tgs"},
+			&tg.DocumentAttributeSticker{Alt: "🙂"},
+		},
+	}
+	if _, _, _, _, ok := mediaLocation(&tg.MessageMediaDocument{Document: doc}); ok {
+		t.Error("expected ok=false for sticker documents")
+	}
+}
+
+func TestMediaLocation_KeepsAnimatedGIF(t *testing.T) {
+	// GIFs carry DocumentAttributeAnimated but no DocumentAttributeSticker —
+	// they should still be indexed.
+	doc := &tg.Document{
+		ID: 5, AccessHash: 6, MimeType: "video/mp4",
+		Attributes: []tg.DocumentAttributeClass{
+			&tg.DocumentAttributeAnimated{},
+			&tg.DocumentAttributeFilename{FileName: "funny.mp4"},
+		},
+	}
+	if _, _, _, _, ok := mediaLocation(&tg.MessageMediaDocument{Document: doc}); !ok {
+		t.Error("expected ok=true for GIF/animated (non-sticker) documents")
+	}
+}
+
+func TestMediaToDocument_Photo_SynthesizesFilename(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("jpg")}
+	m := &tg.Message{
+		ID: 4242, Date: int(time.Now().Unix()),
+		Media: &tg.MessageMediaPhoto{Photo: samplePhoto()},
+	}
+	doc, ok := c.mediaToDocument(context.Background(), dl, m, "Maria Pavlova", "99")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if doc.Title != "photo-4242.jpg" {
+		t.Errorf("title = %q, want photo-4242.jpg", doc.Title)
+	}
+	if doc.Metadata["filename"] != "photo-4242.jpg" {
+		t.Errorf("filename metadata = %v", doc.Metadata["filename"])
+	}
+}
+
+func TestSetExtractor_AndBinaryStore(t *testing.T) {
+	c := &Connector{}
+	c.SetExtractor(nil) // just verify it accepts nil without panic
+	if c.extractor != nil {
+		t.Error("expected nil extractor after SetExtractor(nil)")
+	}
+	store := newFakeBinaryStore()
+	cfg := connector.CacheConfig{Mode: "eager"}
+	c.SetBinaryStore(store, cfg)
+	if c.binaryStore != store {
+		t.Error("expected binaryStore to be set")
+	}
+	if c.cacheConfig.Mode != "eager" {
+		t.Error("expected cacheConfig to be stored")
 	}
 }

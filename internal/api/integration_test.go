@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
+	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
@@ -2433,26 +2434,49 @@ func TestDownloadDocument_Integration_PathTraversal(t *testing.T) {
 	_ = st
 }
 
+// nonFetcherConnector is a minimal Connector used to exercise the
+// "preview not supported" branch of the download handler. It has no
+// FetchBinary method so the handler's type assertion fails.
+type nonFetcherConnector struct{ name string }
+
+func (n *nonFetcherConnector) Type() string                       { return "non-fetcher" }
+func (n *nonFetcherConnector) Name() string                       { return n.name }
+func (n *nonFetcherConnector) Configure(cfg connector.Config) error {
+	if s, _ := cfg["name"].(string); s != "" {
+		n.name = s
+	}
+	return nil
+}
+func (n *nonFetcherConnector) Validate() error { return nil }
+func (n *nonFetcherConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+	return &model.FetchResult{}, nil
+}
+
+func init() {
+	connector.Register("non-fetcher", func() connector.Connector {
+		return &nonFetcherConnector{}
+	})
+}
+
 func TestDownloadDocument_Integration_PreviewNotSupported(t *testing.T) {
 	_, sc, cm, router := newTestRouter(t)
 
-	// Telegram connector exists but doesn't implement BinaryFetcher
+	// A connector that intentionally doesn't implement BinaryFetcher —
+	// the download endpoint should return 404 "preview not supported".
 	cfg := &model.ConnectorConfig{
-		Type: "telegram", Name: "dl-tg",
-		Config: map[string]any{"api_id": "12345", "api_hash": "abc", "phone": "+1234567890"},
-		Enabled: true, Shared: true,
+		Type: "non-fetcher", Name: "dl-nf",
+		Config: map[string]any{}, Enabled: true, Shared: true,
 	}
 	if err := cm.Add(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	// Index a chunk pointing at the telegram connector
-	parentID := "telegram:dl-tg:msg1"
-	docID := model.DocumentID("telegram", "dl-tg", "msg1").String()
+	parentID := "non-fetcher:dl-nf:doc1"
+	docID := model.DocumentID("non-fetcher", "dl-nf", "doc1").String()
 	chunk := model.Chunk{
 		ID: parentID + ":0", ParentID: parentID, DocID: docID, ChunkIndex: 0,
-		Title: "Some chat", Content: "hello",
-		SourceType: "telegram", SourceName: "dl-tg", SourceID: "msg1",
+		Title: "Some document", Content: "hello",
+		SourceType: "non-fetcher", SourceName: "dl-nf", SourceID: "doc1",
 		Metadata: map[string]any{}, Visibility: "private", Shared: true,
 		CreatedAt: time.Now(),
 	}

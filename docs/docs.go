@@ -763,6 +763,137 @@ const docTemplate = `{
                 }
             }
         },
+        "/storage/cache": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes every cached blob across all connectors. Admin only. Eager-cached data (Telegram) will be re-populated on next sync only if the upstream media is still available; use with care.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Wipe the entire binary cache",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/storage/cache/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes every cached blob for the connector identified by path ID. Admin only. Safe for lazy-mode connectors — they'll repopulate the cache on next preview. Eager-mode connectors lose cached data that may not be re-fetchable if the upstream source has expired.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Wipe the binary cache for a single connector",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Connector UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/storage/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns per-source-type/name aggregates of cached binaries (count, total bytes). Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Binary cache stats per connector",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "allOf": [
+                                {
+                                    "$ref": "#/definitions/internal_api.APIResponse"
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "data": {
+                                            "type": "array",
+                                            "items": {
+                                                "$ref": "#/definitions/github_com_muty_nexus_internal_model.BinaryStoreStats"
+                                            }
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/sync": {
             "get": {
                 "security": [
@@ -1145,6 +1276,23 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "github_com_muty_nexus_internal_model.BinaryStoreStats": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "source_name": {
+                    "type": "string"
+                },
+                "source_type": {
+                    "type": "string"
+                },
+                "total_size": {
+                    "type": "integer"
+                }
+            }
+        },
         "github_com_muty_nexus_internal_model.ConnectorConfig": {
             "type": "object",
             "properties": {
