@@ -7,7 +7,10 @@ test: test-unit test-integration
 test-unit:
 	go test ./internal/...
 
-# Integration tests (requires Postgres + OpenSearch)
+# Integration tests — containers start automatically via testcontainers-go.
+# To reuse an already-running dev cluster (faster iteration), export:
+#   NEXUS_TEST_DATABASE_URL=postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable
+#   NEXUS_TEST_OPENSEARCH_URL=http://localhost:9200
 test-integration:
 	go test -tags integration ./internal/...
 

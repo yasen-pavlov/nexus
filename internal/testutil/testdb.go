@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,14 +20,6 @@ var (
 	mu      sync.Mutex
 	created = map[string]string{} // pkgName -> database URL
 )
-
-func baseURL() string {
-	url := os.Getenv("NEXUS_TEST_DATABASE_URL")
-	if url == "" {
-		url = "postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable"
-	}
-	return url
-}
 
 // TestDB holds a test database connection pool and its URL.
 type TestDB struct {
@@ -70,7 +61,7 @@ func getOrCreateDB(t *testing.T, pkgName string, migrationsFS fs.FS) string {
 		return url
 	}
 
-	base := baseURL()
+	base := baseDatabaseURL(t)
 	ctx := context.Background()
 
 	conn, err := pgx.Connect(ctx, base)
