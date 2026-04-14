@@ -1426,21 +1426,40 @@ func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
 		}
 	})
 
-	t.Run("cross-chat reply is dropped", func(t *testing.T) {
-		m := &tg.Message{
-			ID: 500, Date: int(base.Unix()),
-			ReplyTo: &tg.MessageReplyHeader{
-				ReplyToMsgID:  499,
-				ReplyToPeerID: &tg.PeerChannel{ChannelID: 999},
-			},
-		}
-		doc := c.makeMessageDoc(m, "Chat", "10", "")
-		for _, r := range doc.Relations {
-			if r.Type == model.RelationReplyTo {
-				t.Errorf("cross-chat reply should be skipped, got %+v", r)
+	crossChatCases := []struct {
+		name       string
+		peer       tg.PeerClass
+		wantTarget string
+	}{
+		{"channel peer", &tg.PeerChannel{ChannelID: 999}, "999:499:msg"},
+		{"chat peer", &tg.PeerChat{ChatID: 777}, "777:499:msg"},
+		{"user peer", &tg.PeerUser{UserID: 42}, "42:499:msg"},
+	}
+	for _, tc := range crossChatCases {
+		t.Run("cross-chat reply resolves target: "+tc.name, func(t *testing.T) {
+			m := &tg.Message{
+				ID: 500, Date: int(base.Unix()),
+				ReplyTo: &tg.MessageReplyHeader{
+					ReplyToMsgID:  499,
+					ReplyToPeerID: tc.peer,
+				},
 			}
-		}
-	})
+			doc := c.makeMessageDoc(m, "Chat", "10", "")
+			var got *model.Relation
+			for i, r := range doc.Relations {
+				if r.Type == model.RelationReplyTo {
+					got = &doc.Relations[i]
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("expected reply_to relation, got none")
+			}
+			if got.TargetSourceID != tc.wantTarget {
+				t.Errorf("TargetSourceID = %q, want %q", got.TargetSourceID, tc.wantTarget)
+			}
+		})
+	}
 
 	t.Run("no FromID leaves sender_id unset", func(t *testing.T) {
 		m := &tg.Message{ID: 1, Date: int(base.Unix()), Message: "x"}

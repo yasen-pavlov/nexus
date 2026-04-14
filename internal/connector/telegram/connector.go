@@ -415,10 +415,16 @@ func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSource
 		})
 	}
 	if h, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok && h.ReplyToMsgID > 0 {
-		// Same-chat replies only — cross-chat replies carry a
-		// ReplyToPeerID we aren't wired to resolve yet.
-		if h.ReplyToPeerID == nil {
-			replyTargetSourceID := fmt.Sprintf("%s:%d:msg", chatID, h.ReplyToMsgID)
+		targetChatID := chatID
+		if h.ReplyToPeerID != nil {
+			resolved, ok := peerChatID(h.ReplyToPeerID)
+			if !ok {
+				resolved = ""
+			}
+			targetChatID = resolved
+		}
+		if targetChatID != "" {
+			replyTargetSourceID := fmt.Sprintf("%s:%d:msg", targetChatID, h.ReplyToMsgID)
 			relations = append(relations, model.Relation{
 				Type:           model.RelationReplyTo,
 				TargetSourceID: replyTargetSourceID,
@@ -569,6 +575,23 @@ func chatTitle(chat tg.ChatClass) string {
 		return c.Title
 	default:
 		return "Unknown"
+	}
+}
+
+// peerChatID extracts the bare numeric identifier from a Telegram peer,
+// matching the format produced by chatIdentifier and the DM branch in
+// fetchChatsAndDMs. Returns false for unknown peer types (e.g. secret
+// chats) so callers can skip emitting relations they can't target.
+func peerChatID(p tg.PeerClass) (string, bool) {
+	switch v := p.(type) {
+	case *tg.PeerUser:
+		return strconv.FormatInt(v.UserID, 10), true
+	case *tg.PeerChat:
+		return strconv.FormatInt(v.ChatID, 10), true
+	case *tg.PeerChannel:
+		return strconv.FormatInt(v.ChannelID, 10), true
+	default:
+		return "", false
 	}
 }
 
