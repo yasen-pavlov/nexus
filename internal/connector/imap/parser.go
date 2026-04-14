@@ -3,13 +3,38 @@ package imap
 import (
 	"bytes"
 	"io"
+	"mime"
 	netmail "net/mail"
 	"regexp"
 	"strings"
 
+	"github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
 	"golang.org/x/net/html"
 )
+
+// headerDecoder decodes RFC 2047 encoded-word headers (e.g.
+// `=?windows-1252?Q?Unser_Anspruch_an_die_Windows-Qualit=E4t?=` → German
+// text with the umlaut). The IMAP Envelope fields come through raw —
+// Go's mime.WordDecoder handles the standard charsets but doesn't know
+// windows-1252, koi8-r, etc. on its own, so we wire in emersion's
+// charset reader which registers ~every IANA-listed encoding.
+var headerDecoder = mime.WordDecoder{CharsetReader: charset.Reader}
+
+// decodeHeader returns the UTF-8 form of an RFC 2047 encoded header
+// value. Falls back to the raw input on any decoder error — a
+// malformed header should surface as the raw bytes in the UI rather
+// than disappearing or failing the whole email.
+func decodeHeader(s string) string {
+	if s == "" || !strings.Contains(s, "=?") {
+		return s
+	}
+	out, err := headerDecoder.DecodeHeader(s)
+	if err != nil {
+		return s
+	}
+	return out
+}
 
 // parseReferencesHeader pulls the `References:` header out of a raw RFC 5322
 // message body and returns the Message-ID list as a slice with surrounding

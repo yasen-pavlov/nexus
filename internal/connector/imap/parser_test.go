@@ -5,6 +5,58 @@ import (
 	"testing"
 )
 
+func TestDecodeHeader(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain ASCII passthrough",
+			in:   "Hello world",
+			want: "Hello world",
+		},
+		{
+			name: "empty string",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "UTF-8 Q-encoded",
+			in:   "=?UTF-8?Q?Gr=C3=BC=C3=9Fe?=",
+			want: "Grüße",
+		},
+		{
+			name: "UTF-8 base64",
+			in:   "=?UTF-8?B?R3LDvMOfZQ==?=",
+			want: "Grüße",
+		},
+		{
+			name: "windows-1252 Q-encoded (needs emersion charset reader)",
+			in:   "=?windows-1252?Q?Unser_Anspruch_an_die_Windows-Qualit=E4t?=",
+			want: "Unser Anspruch an die Windows-Qualität",
+		},
+		{
+			name: "mixed encoded + raw",
+			in:   "Re: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?= aus dem Büro",
+			want: "Re: Grüße aus dem Büro",
+		},
+		{
+			name: "malformed input falls back to raw",
+			in:   "=?not-a-charset?Q?zzz?=",
+			want: "=?not-a-charset?Q?zzz?=",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := decodeHeader(tt.in)
+			if got != tt.want {
+				t.Errorf("decodeHeader(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseReferencesHeader(t *testing.T) {
 	tests := []struct {
 		name string

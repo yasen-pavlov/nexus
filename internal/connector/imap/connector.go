@@ -424,7 +424,10 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		})
 	}
 
-	// Main email document
+	// Main email document. Subject comes off the IMAP ENVELOPE raw —
+	// RFC 2047 encoded-word subjects (common for non-ASCII European
+	// mail) need decoding before they're useful for BM25 or the UI.
+	decodedSubject := decodeHeader(env.Subject)
 	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
 	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
 	docs = append(docs, model.Document{
@@ -432,7 +435,7 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		SourceType:    "imap",
 		SourceName:    c.name,
 		SourceID:      emailSourceID,
-		Title:         env.Subject,
+		Title:         decodedSubject,
 		Content:       textContent,
 		Metadata:      metadata,
 		Relations:     emailRelations,
@@ -455,7 +458,7 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		}
 
 		attMetadata := map[string]any{
-			"parent_subject": env.Subject,
+			"parent_subject": decodedSubject,
 			"content_type":   att.ContentType,
 		}
 		if att.Filename != "" {
@@ -505,8 +508,13 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 func formatAddresses(addrs []imap.Address) string {
 	parts := make([]string, 0, len(addrs))
 	for _, a := range addrs {
-		if a.Name != "" {
-			parts = append(parts, fmt.Sprintf("%s <%s>", a.Name, a.Addr()))
+		// Display-name fields are routinely RFC 2047 encoded when the
+		// sender's name contains non-ASCII (e.g.
+		// `=?UTF-8?Q?J=C3=BCrgen_M=C3=BCller?=`). Decode to UTF-8 so
+		// metadata search + UI rendering are readable.
+		name := decodeHeader(a.Name)
+		if name != "" {
+			parts = append(parts, fmt.Sprintf("%s <%s>", name, a.Addr()))
 		} else {
 			parts = append(parts, a.Addr())
 		}
