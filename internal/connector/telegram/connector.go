@@ -74,6 +74,13 @@ func init() {
 }
 
 // Connector fetches messages from Telegram chats via the MTProto User API.
+//
+// Deletion sync: this connector permanently opts out by leaving
+// FetchResult.CurrentSourceIDs as nil. MTProto doesn't expose a
+// reliable "list all message IDs in a chat" signal — message
+// deletions aren't surfaced via incremental updates and full history
+// re-enumeration would defeat the purpose of incremental sync.
+// Telegram docs are only removed from the index by a full reindex.
 type Connector struct {
 	name        string
 	apiID       int

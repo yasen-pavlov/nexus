@@ -16,6 +16,7 @@ type SyncJob struct {
 	Status        string    `json:"status"` // "running", "completed", "failed"
 	DocsTotal     int       `json:"docs_total"`
 	DocsProcessed int       `json:"docs_processed"`
+	DocsDeleted   int       `json:"docs_deleted"`
 	Errors        int       `json:"errors"`
 	Error         string    `json:"error,omitempty"`
 	StartedAt     time.Time `json:"started_at"`
@@ -107,6 +108,24 @@ func (m *SyncJobManager) Update(id string, total, processed, errors int) {
 	}
 	m.mu.Unlock()
 
+	if ok {
+		m.notify(id)
+	}
+}
+
+// SetDeleted records the count of documents removed by deletion sync
+// for this job, then notifies subscribers. Called by the sync handler
+// once RunWithProgress returns its SyncReport — deletion happens at
+// the end of a sync, after the regular progress callbacks, so it
+// gets a separate update path rather than threading through the
+// per-doc ProgressFunc.
+func (m *SyncJobManager) SetDeleted(id string, deleted int) {
+	m.mu.Lock()
+	job, ok := m.jobs[id]
+	if ok {
+		job.DocsDeleted = deleted
+	}
+	m.mu.Unlock()
 	if ok {
 		m.notify(id)
 	}

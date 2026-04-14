@@ -161,6 +161,7 @@ func run() error {
 
 	// Set up scheduler
 	p := pipeline.New(st, searchClient, em, log)
+	p.SetBinaryStore(binaryStore)
 	sched := scheduler.New(cm, p, st, log)
 	cm.SetScheduleObserver(sched)
 

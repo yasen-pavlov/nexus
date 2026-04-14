@@ -457,6 +457,7 @@ function SyncProgress({ job, onDismiss }: { job: SyncJob; onDismiss: () => void 
         </span>
         <span className="sync-progress-stats">
           {job.docs_processed}{job.docs_total > 0 ? `/${job.docs_total}` : ''} docs
+          {job.docs_deleted > 0 && `, ${job.docs_deleted} deleted`}
           {job.errors > 0 && ` (${job.errors} errors)`}
         </span>
         {!isRunning && (

@@ -198,6 +198,65 @@ func TestFetch(t *testing.T) {
 	})
 }
 
+func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
+	// Even with an incremental cursor that filters out unchanged
+	// files (so Documents is empty), the connector must still report
+	// every matching source_id in CurrentSourceIDs — otherwise the
+	// pipeline's deletion-sync pass would wrongly delete everything.
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "alpha")
+	writeFile(t, dir, "b.txt", "bravo")
+	writeFile(t, dir, "c.md", "charlie")
+	writeFile(t, dir, "skipme.png", "binary") // doesn't match the pattern
+
+	c := &Connector{
+		name: "t", rootPath: dir, patterns: []string{"*.txt", "*.md"},
+		extractor: extractor.NewRegistry("", nil),
+	}
+
+	t.Run("full sync includes every matching file", func(t *testing.T) {
+		result, err := c.Fetch(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool, len(result.CurrentSourceIDs))
+		for _, sid := range result.CurrentSourceIDs {
+			got[sid] = true
+		}
+		want := []string{"a.txt", "b.txt", "c.md"}
+		if len(got) != len(want) {
+			t.Fatalf("expected %d source ids, got %v", len(want), result.CurrentSourceIDs)
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("missing %q from CurrentSourceIDs (got %v)", w, result.CurrentSourceIDs)
+			}
+		}
+		// The PNG never matches the pattern → must not appear.
+		if got["skipme.png"] {
+			t.Error("non-matching file leaked into CurrentSourceIDs")
+		}
+	})
+
+	t.Run("incremental sync keeps full enumeration", func(t *testing.T) {
+		// Cursor far in the future → no Documents emitted, but the
+		// CurrentSourceIDs list must still be complete.
+		future := time.Now().Add(time.Hour)
+		result, err := c.Fetch(context.Background(), &model.SyncCursor{
+			CursorData: map[string]any{"last_sync_time": future.Format(time.RFC3339Nano)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Documents) != 0 {
+			t.Errorf("expected 0 docs on future-cursor sync, got %d", len(result.Documents))
+		}
+		if len(result.CurrentSourceIDs) != 3 {
+			t.Errorf("expected 3 source ids regardless of cursor, got %v", result.CurrentSourceIDs)
+		}
+	})
+}
+
 func TestFetchContextCancellation(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "file.txt", "content")

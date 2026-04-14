@@ -247,7 +247,10 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 		if cfg.UserID != nil {
 			ownerID = cfg.UserID.String()
 		}
-		_, err := h.pipeline.RunWithProgress(ctx, cfg.ID, conn, ownerID, cfg.Shared, progress)
+		report, err := h.pipeline.RunWithProgress(ctx, cfg.ID, conn, ownerID, cfg.Shared, progress)
+		if report != nil {
+			h.syncJobs.SetDeleted(job.ID, report.DocsDeleted)
+		}
 		h.syncJobs.Complete(job.ID, err)
 
 		if err != nil {
@@ -437,7 +440,10 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
+			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
+			if report != nil {
+				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
+			}
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("sync all: connector failed", zap.String("connector", n), zap.Error(err))
@@ -487,7 +493,10 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
+			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
+			if report != nil {
+				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
+			}
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("reindex: connector failed", zap.String("connector", n), zap.Error(err))

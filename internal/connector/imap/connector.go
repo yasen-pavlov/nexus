@@ -186,7 +186,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}
 
 	mbc := &realMailboxClient{client: client}
-	docs, newUIDs, err := c.fetchWithClient(ctx, mbc, cursor)
+	docs, newUIDs, currentSourceIDs, err := c.fetchWithClient(ctx, mbc, cursor)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,8 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}
 
 	return &model.FetchResult{
-		Documents: docs,
+		Documents:        docs,
+		CurrentSourceIDs: currentSourceIDs,
 		Cursor: &model.SyncCursor{
 			CursorData:  cursorData,
 			LastSync:    now,
@@ -210,32 +211,71 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}, nil
 }
 
-func (c *Connector) fetchWithClient(ctx context.Context, mbc mailboxClient, cursor *model.SyncCursor) ([]model.Document, map[string]imap.UID, error) {
+func (c *Connector) fetchWithClient(ctx context.Context, mbc mailboxClient, cursor *model.SyncCursor) ([]model.Document, map[string]imap.UID, []string, error) {
 	var allDocs []model.Document
 	newUIDs := make(map[string]imap.UID)
+	// allUIDs accumulates the full UID list across folders for deletion
+	// sync. Stays nil if any folder fails its enumeration so the
+	// pipeline skips the diff (avoids false-positive deletions on a
+	// transient IMAP error).
+	var allUIDs []string
+	enumOK := true
 
 	for _, folder := range c.folders {
 		if ctx.Err() != nil {
-			return allDocs, newUIDs, ctx.Err()
+			return allDocs, newUIDs, nil, ctx.Err()
 		}
 
-		docs, lastUID, err := c.fetchFolder(ctx, mbc, folder, cursor)
+		docs, lastUID, folderUIDs, err := c.fetchFolder(ctx, mbc, folder, cursor)
 		if err != nil {
-			return allDocs, newUIDs, fmt.Errorf("imap: folder %q: %w", folder, err)
+			return allDocs, newUIDs, nil, fmt.Errorf("imap: folder %q: %w", folder, err)
 		}
 
 		allDocs = append(allDocs, docs...)
 		if lastUID > 0 {
 			newUIDs[folder] = lastUID
 		}
+		if folderUIDs == nil {
+			// Folder's full enumeration failed (search error); fall back
+			// to opting out of deletion sync for the entire connector
+			// run rather than presenting a partial picture.
+			enumOK = false
+		} else if enumOK {
+			allUIDs = append(allUIDs, folderUIDs...)
+		}
 	}
 
-	return allDocs, newUIDs, nil
+	if !enumOK {
+		return allDocs, newUIDs, nil, nil
+	}
+	return allDocs, newUIDs, allUIDs, nil
 }
 
-func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor) ([]model.Document, imap.UID, error) {
+// fetchFolder returns (docs, lastUID, allFolderSourceIDs, err). The
+// fourth return is the full set of source_ids in the folder regardless
+// of cursor — used for deletion sync. nil signals "enumeration failed,
+// skip deletion for this run".
+//
+// Only email source_ids (`{folder}:{uid}`) are enumerated, not
+// attachment source_ids. The pipeline's diff treats attachments whose
+// parent UID disappeared as orphans and removes them anyway, so this
+// is consistent without paying for a body-structure fetch on every
+// email just to enumerate attachment indices.
+func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor) ([]model.Document, imap.UID, []string, error) {
 	if err := mbc.SelectFolder(folder); err != nil {
-		return nil, 0, fmt.Errorf("select: %w", err)
+		return nil, 0, nil, fmt.Errorf("select: %w", err)
+	}
+
+	// Full UID enumeration — runs once per sync, cheap (a single
+	// IMAP SEARCH command). Done before the cursor-based fetch so
+	// any error here aborts cleanly.
+	allUIDs, err := mbc.SearchUIDs(&imap.SearchCriteria{})
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("search all: %w", err)
+	}
+	folderSourceIDs := make([]string, 0, len(allUIDs))
+	for _, uid := range allUIDs {
+		folderSourceIDs = append(folderSourceIDs, fmt.Sprintf("%s:%d", folder, uid))
 	}
 
 	criteria := &imap.SearchCriteria{}
@@ -257,16 +297,16 @@ func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder s
 
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
-		return nil, 0, fmt.Errorf("search: %w", err)
+		return nil, 0, nil, fmt.Errorf("search: %w", err)
 	}
 
 	if len(uids) == 0 {
-		return nil, lastUID, nil
+		return nil, lastUID, folderSourceIDs, nil
 	}
 
 	msgs, err := mbc.FetchMessages(uids)
 	if err != nil {
-		return nil, 0, fmt.Errorf("fetch: %w", err)
+		return nil, 0, nil, fmt.Errorf("fetch: %w", err)
 	}
 
 	var docs []model.Document
@@ -274,7 +314,7 @@ func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder s
 
 	for _, msg := range msgs {
 		if ctx.Err() != nil {
-			return docs, maxUID, ctx.Err()
+			return docs, maxUID, nil, ctx.Err()
 		}
 
 		if msg.UID > maxUID {
@@ -289,7 +329,7 @@ func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder s
 		lastUID = maxUID
 	}
 
-	return docs, lastUID, nil
+	return docs, lastUID, folderSourceIDs, nil
 }
 
 func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folder string) []model.Document {

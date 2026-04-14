@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -289,8 +290,76 @@ func TestFetch_Pagination(t *testing.T) {
 	if len(result.Documents) != 2 {
 		t.Fatalf("expected 2 documents across 2 pages, got %d", len(result.Documents))
 	}
-	if callCount != 2 {
-		t.Errorf("expected 2 page fetches, got %d", callCount)
+	// 2 paginated content fetches + 1 enumerateAllIDs pass for the
+	// deletion-sync source-id list.
+	if callCount != 3 {
+		t.Errorf("expected 3 calls (2 page fetches + 1 enumerate), got %d", callCount)
+	}
+}
+
+func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}})
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		// `fields=id` indicates the enumeration pass — return the
+		// id-only shape. Anything else is the regular fetch path.
+		if r.URL.Query().Get("fields") == "id" {
+			_, _ = w.Write([]byte(`{"results":[{"id":1},{"id":2},{"id":3}],"next":null}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(paginatedResponse{
+			Results: []paperlessDoc{{ID: 1, Title: "T", Added: time.Now(), Modified: time.Now()}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := &Connector{name: "test", baseURL: srv.URL, token: "k", client: srv.Client()}
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"1", "2", "3"}
+	if !reflect.DeepEqual(result.CurrentSourceIDs, want) {
+		t.Errorf("CurrentSourceIDs = %v, want %v", result.CurrentSourceIDs, want)
+	}
+}
+
+func TestFetch_EnumerationFailureDoesNotAbortFetch(t *testing.T) {
+	// A 500 on the id-only enumerate must NOT fail the sync — we still
+	// want to index the docs returned by the regular fetch. The
+	// enumeration error just opts the connector out of deletion sync
+	// for this round (CurrentSourceIDs == nil).
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}})
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fields") == "id" {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(paginatedResponse{
+			Results: []paperlessDoc{{ID: 1, Title: "T", Added: time.Now(), Modified: time.Now()}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := &Connector{name: "test", baseURL: srv.URL, token: "k", client: srv.Client()}
+	result, err := c.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch should succeed even when enumeration fails, got %v", err)
+	}
+	if len(result.Documents) != 1 {
+		t.Errorf("expected 1 indexed doc, got %d", len(result.Documents))
+	}
+	if result.CurrentSourceIDs != nil {
+		t.Errorf("CurrentSourceIDs must be nil on enumeration failure, got %v", result.CurrentSourceIDs)
 	}
 }
 

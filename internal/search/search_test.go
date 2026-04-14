@@ -5,6 +5,8 @@ package search
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,6 +219,78 @@ func TestDeleteBySource(t *testing.T) {
 	}
 	if result.TotalCount != 1 {
 		t.Errorf("expected 1 result after delete, got %d", result.TotalCount)
+	}
+}
+
+func TestDeleteBySourceIDs_Granular(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// Three chunks under the same source — DeleteBySourceIDs must
+	// touch only the listed source_ids and leave the rest alone.
+	for i, sid := range []string{"keep.txt", "drop.txt", "also-drop.txt"} {
+		doc := testDoc(sid, "Doc"+strconv.Itoa(i), "content "+strconv.Itoa(i))
+		doc.SourceName = "del-test"
+		_ = c.IndexDocument(ctx, doc)
+	}
+	_ = c.Refresh(ctx)
+
+	if err := c.DeleteBySourceIDs(ctx, "filesystem", "del-test", []string{"drop.txt", "also-drop.txt"}); err != nil {
+		t.Fatalf("DeleteBySourceIDs: %v", err)
+	}
+	_ = c.Refresh(ctx)
+
+	got, err := c.ListIndexedSourceIDs(ctx, "filesystem", "del-test")
+	if err != nil {
+		t.Fatalf("ListIndexedSourceIDs: %v", err)
+	}
+	if len(got) != 1 || got[0] != "keep.txt" {
+		t.Errorf("expected only keep.txt, got %v", got)
+	}
+}
+
+func TestDeleteBySourceIDs_EmptyInputIsNoop(t *testing.T) {
+	c := newTestClient(t)
+	// An empty slice must short-circuit without sending a delete-all
+	// query that would nuke unrelated docs. Verifying via "no error,
+	// nothing changed" requires no setup — empty input on an empty
+	// index should still return nil.
+	if err := c.DeleteBySourceIDs(context.Background(), "filesystem", "empty", nil); err != nil {
+		t.Errorf("empty input should be a no-op, got error: %v", err)
+	}
+}
+
+func TestListIndexedSourceIDs_DedupedAcrossChunks(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// One document with content long enough to chunk into multiple
+	// pieces — terms aggregation must collapse them into a single
+	// source_id bucket so the deletion-sync diff stays accurate.
+	doc := testDoc("multichunk.txt", "Multi", strings.Repeat("alpha beta gamma ", 200))
+	doc.SourceName = "list-test"
+	if err := c.IndexDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Refresh(ctx)
+
+	ids, err := c.ListIndexedSourceIDs(ctx, "filesystem", "list-test")
+	if err != nil {
+		t.Fatalf("ListIndexedSourceIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "multichunk.txt" {
+		t.Errorf("expected ['multichunk.txt'], got %v", ids)
+	}
+}
+
+func TestListIndexedSourceIDs_EmptySource(t *testing.T) {
+	c := newTestClient(t)
+	got, err := c.ListIndexedSourceIDs(context.Background(), "filesystem", "no-such-source")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %v", got)
 	}
 }
 

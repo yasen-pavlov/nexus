@@ -88,6 +88,12 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}
 
 	var docs []model.Document
+	// Every matching file's source_id, regardless of the lastSync filter.
+	// Populated during the same walk so deletion sync can diff this
+	// authoritative list against what's indexed. Built in parallel with
+	// docs so a single walk covers both incremental indexing and full
+	// enumeration.
+	currentSourceIDs := []string{}
 	err := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -108,6 +114,9 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			return nil // skip files we can't stat
 		}
 
+		relPathForID, _ := filepath.Rel(c.rootPath, path)
+		currentSourceIDs = append(currentSourceIDs, relPathForID)
+
 		// Incremental sync: skip files not modified since last sync
 		if !lastSync.IsZero() && info.ModTime().Before(lastSync) {
 			return nil
@@ -118,7 +127,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			return nil // skip files we can't read
 		}
 
-		relPath, _ := filepath.Rel(c.rootPath, path)
+		relPath := relPathForID
 		contentType := detectContentType(d.Name())
 
 		// Try extraction. On failure or unsupported type, the doc is still emitted
@@ -155,12 +164,17 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		return nil
 	})
 	if err != nil {
+		// Walk errored partway → enumeration is incomplete. Return the
+		// docs we did collect (so indexing of the readable subset still
+		// happens) but null out CurrentSourceIDs to skip the deletion
+		// pass — a partial list would trigger false-positive deletions.
 		return nil, fmt.Errorf("filesystem: walk: %w", err)
 	}
 
 	now := time.Now()
 	return &model.FetchResult{
-		Documents: docs,
+		Documents:        docs,
+		CurrentSourceIDs: currentSourceIDs,
 		Cursor: &model.SyncCursor{
 			CursorData: map[string]any{
 				"last_sync_time": now.Format(time.RFC3339Nano),

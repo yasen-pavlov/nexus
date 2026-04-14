@@ -3,6 +3,8 @@ package imap
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,13 +24,25 @@ type mockMailboxClient struct {
 	searchErr error
 	msgs      []*imapclient.FetchMessageBuffer
 	fetchErr  error
+
+	// failOnAllSearch, when true, returns an error from the *first*
+	// (no-criteria) SearchUIDs call — the deletion-sync enumeration
+	// pass — while leaving the second cursor-filtered call working.
+	// Lets tests exercise the "enumeration failed → opt out of
+	// deletion sync" behavior in isolation.
+	failOnAllSearch bool
+	searchCallCount int
 }
 
 func (m *mockMailboxClient) SelectFolder(_ string) error {
 	return m.selectErr
 }
 
-func (m *mockMailboxClient) SearchUIDs(_ *imap.SearchCriteria) ([]imap.UID, error) {
+func (m *mockMailboxClient) SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UID, error) {
+	m.searchCallCount++
+	if m.failOnAllSearch && criteria != nil && len(criteria.UID) == 0 && criteria.Since.IsZero() {
+		return nil, fmt.Errorf("simulated SEARCH ALL failure")
+	}
 	return m.uids, m.searchErr
 }
 
@@ -206,6 +220,45 @@ func TestRegistration(t *testing.T) {
 	}
 }
 
+// --- deletion-sync enumeration tests ---
+
+func TestFetchWithClient_EnumeratesAllUIDsAcrossFolders(t *testing.T) {
+	c := &Connector{name: "test-mail", folders: []string{"INBOX", "Sent"}}
+	mock := &mockMailboxClient{
+		uids: []imap.UID{1, 2, 7},
+		msgs: []*imapclient.FetchMessageBuffer{},
+	}
+
+	_, _, currentSourceIDs, err := c.fetchWithClient(context.Background(), mock, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Two folders × three UIDs each = six source ids, prefixed by folder.
+	want := []string{"INBOX:1", "INBOX:2", "INBOX:7", "Sent:1", "Sent:2", "Sent:7"}
+	got := append([]string{}, currentSourceIDs...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("CurrentSourceIDs = %v, want %v", got, want)
+	}
+}
+
+func TestFetchWithClient_EnumerationFailureOptsOut(t *testing.T) {
+	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
+	mock := &mockMailboxClient{
+		uids:            []imap.UID{1},
+		failOnAllSearch: true,
+	}
+	_, _, currentSourceIDs, err := c.fetchWithClient(context.Background(), mock, nil)
+	// SearchUIDs failure surfaces as a fetchFolder error, propagated up.
+	if err == nil {
+		t.Fatal("expected error from failed SEARCH ALL")
+	}
+	if currentSourceIDs != nil {
+		t.Errorf("CurrentSourceIDs must be nil on enumeration failure, got %v", currentSourceIDs)
+	}
+}
+
 // --- fetchWithClient tests ---
 
 func TestFetchWithClient_SingleFolder(t *testing.T) {
@@ -239,7 +292,7 @@ func TestFetchWithClient_SingleFolder(t *testing.T) {
 		},
 	}
 
-	docs, uids, err := c.fetchWithClient(context.Background(), mock, nil)
+	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,7 +329,7 @@ func TestFetchWithClient_MultipleFolders(t *testing.T) {
 		},
 	}
 
-	docs, uids, err := c.fetchWithClient(context.Background(), mock, nil)
+	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +365,7 @@ func TestFetchWithClient_WithCursor(t *testing.T) {
 		CursorData: map[string]any{"uid:INBOX": float64(50)},
 	}
 
-	docs, uids, err := c.fetchWithClient(context.Background(), mock, cursor)
+	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, cursor)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -328,7 +381,7 @@ func TestFetchWithClient_NoMessages(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{uids: nil}
 
-	docs, uids, err := c.fetchWithClient(context.Background(), mock, nil)
+	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,7 +397,7 @@ func TestFetchWithClient_SelectError(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{selectErr: fmt.Errorf("folder not found")}
 
-	_, _, err := c.fetchWithClient(context.Background(), mock, nil)
+	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err == nil || !strings.Contains(err.Error(), "select") {
 		t.Errorf("error = %v, want 'select' error", err)
 	}
@@ -354,7 +407,7 @@ func TestFetchWithClient_SearchError(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{searchErr: fmt.Errorf("search failed")}
 
-	_, _, err := c.fetchWithClient(context.Background(), mock, nil)
+	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err == nil || !strings.Contains(err.Error(), "search") {
 		t.Errorf("error = %v, want 'search' error", err)
 	}
@@ -367,7 +420,7 @@ func TestFetchWithClient_FetchError(t *testing.T) {
 		fetchErr: fmt.Errorf("fetch failed"),
 	}
 
-	_, _, err := c.fetchWithClient(context.Background(), mock, nil)
+	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err == nil || !strings.Contains(err.Error(), "fetch") {
 		t.Errorf("error = %v, want 'fetch' error", err)
 	}
@@ -393,7 +446,7 @@ func TestFetchWithClient_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, _, err := c.fetchWithClient(ctx, mock, nil)
+	_, _, _, err := c.fetchWithClient(ctx, mock, nil)
 	if err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -405,7 +458,7 @@ func TestFetchWithClient_SyncSince(t *testing.T) {
 	mock := &mockMailboxClient{uids: nil}
 
 	// Should not error — just returns no docs when there are no UIDs
-	docs, _, err := c.fetchWithClient(context.Background(), mock, nil)
+	docs, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

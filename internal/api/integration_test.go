@@ -2452,6 +2452,85 @@ func TestDownloadDocument_Integration_PathTraversal(t *testing.T) {
 	_ = st
 }
 
+// --- Deletion sync end-to-end ---
+
+func TestDeletionSync_Integration(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	jobs := NewSyncJobManager()
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), jobs, nil, testJWTSecret, nil, zap.NewNop())
+	_, token := createTestAdmin(t, st)
+
+	// Filesystem connector + temp dir. First sync indexes both files;
+	// then we delete one on disk and trigger sync again — the deleted
+	// file should disappear from the index.
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/keep.txt", []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/drop.txt", []byte("dropped"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &model.ConnectorConfig{
+		Type: "filesystem", Name: "del-sync",
+		Config:  map[string]any{"root_path": dir, "patterns": "*.txt"},
+		Enabled: true, Shared: true,
+	}
+	if err := cm.Add(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapped := authWrap(router, token)
+
+	triggerAndWait := func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/sync/"+cfg.ID.String(), nil)
+		w := httptest.NewRecorder()
+		wrapped.ServeHTTP(w, req)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("trigger sync: status = %d, body: %s", w.Code, w.Body.String())
+		}
+		// Async sync — wait for the job to settle. Times out at 5s
+		// (filesystem walks a 2-file tempdir; should finish in ms).
+		var jobID string
+		_ = json.Unmarshal(w.Body.Bytes(), &struct {
+			Data *struct {
+				ID *string `json:"id"`
+			} `json:"data"`
+		}{Data: &struct {
+			ID *string `json:"id"`
+		}{ID: &jobID}})
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			job := jobs.Get(jobID)
+			if job != nil && job.Status != "running" {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("sync job %s did not complete in time", jobID)
+	}
+
+	triggerAndWait()
+	_ = sc.Refresh(context.Background())
+
+	if err := os.Remove(dir + "/drop.txt"); err != nil {
+		t.Fatalf("remove drop.txt: %v", err)
+	}
+
+	triggerAndWait()
+	_ = sc.Refresh(context.Background())
+
+	remaining, err := sc.ListIndexedSourceIDs(context.Background(), "filesystem", "del-sync")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0] != "keep.txt" {
+		t.Errorf("expected only keep.txt in index after deletion sync, got %v", remaining)
+	}
+}
+
 // nonFetcherConnector is a minimal Connector used to exercise the
 // "preview not supported" branch of the download handler. It has no
 // FetchBinary method so the handler's type assertion fails.

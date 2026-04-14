@@ -66,6 +66,7 @@ export interface SyncReport {
   connector_name: string;
   connector_type: string;
   docs_processed: number;
+  docs_deleted: number;
   errors: number;
   duration: number;
 }
@@ -78,6 +79,7 @@ export interface SyncJob {
   status: 'running' | 'completed' | 'failed';
   docs_total: number;
   docs_processed: number;
+  docs_deleted: number;
   errors: number;
   error?: string;
   started_at: string;

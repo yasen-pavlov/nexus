@@ -131,9 +131,19 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		fetchURL = nextURL
 	}
 
+	// Full-enumeration pass for deletion sync. Cheap (id-only fields),
+	// completely independent of the cursor-filtered fetch above. Any
+	// failure here just opts out of deletion this round — the indexed
+	// docs are still useful, and the next sync gets another shot.
+	currentSourceIDs, enumErr := c.enumerateAllIDs(ctx)
+	if enumErr != nil {
+		currentSourceIDs = nil
+	}
+
 	now := time.Now()
 	return &model.FetchResult{
-		Documents: docs,
+		Documents:        docs,
+		CurrentSourceIDs: currentSourceIDs,
 		Cursor: &model.SyncCursor{
 			CursorData: map[string]any{
 				"last_sync_time": now.Format(time.RFC3339Nano),
@@ -143,6 +153,75 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			ItemsSynced: len(docs),
 		},
 	}, nil
+}
+
+// enumerateAllIDs paginates Paperless's `/api/documents/?fields=id`
+// to collect every document ID currently present, returned as
+// connector source_ids. Pulled in a separate pass from Fetch's
+// cursor-filtered request because the cursor scopes that to changed
+// docs only — deletion sync needs the unscoped full set.
+//
+// Any HTTP error or pagination failure aborts and returns the error;
+// the caller turns that into a nil CurrentSourceIDs (opting out of
+// deletion this round) rather than risking a partial list.
+func (c *Connector) enumerateAllIDs(ctx context.Context) ([]string, error) {
+	params := url.Values{}
+	params.Set("fields", "id")
+	params.Set("page_size", "1000")
+	params.Set("ordering", "id")
+	fetchURL := c.baseURL + "/api/documents/?" + params.Encode()
+
+	var ids []string
+	for fetchURL != "" {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Token "+c.token)
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, err := func() (struct {
+			Results []struct {
+				ID int `json:"id"`
+			} `json:"results"`
+			Next *string `json:"next"`
+		}, error) {
+			defer resp.Body.Close() //nolint:errcheck // HTTP response body
+			if resp.StatusCode != http.StatusOK {
+				return struct {
+					Results []struct {
+						ID int `json:"id"`
+					} `json:"results"`
+					Next *string `json:"next"`
+				}{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
+			}
+			var page struct {
+				Results []struct {
+					ID int `json:"id"`
+				} `json:"results"`
+				Next *string `json:"next"`
+			}
+			err := json.NewDecoder(resp.Body).Decode(&page)
+			return page, err
+		}()
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range body.Results {
+			ids = append(ids, strconv.Itoa(r.ID))
+		}
+		fetchURL = ""
+		if body.Next != nil {
+			fetchURL = *body.Next
+		}
+	}
+	return ids, nil
 }
 
 // paperlessDoc represents a document from the Paperless API.

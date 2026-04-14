@@ -48,21 +48,38 @@ type SyncReport struct {
 	ConnectorName string        `json:"connector_name"`
 	ConnectorType string        `json:"connector_type"`
 	DocsProcessed int           `json:"docs_processed"`
+	DocsDeleted   int           `json:"docs_deleted"`
 	Errors        int           `json:"errors"`
 	Duration      time.Duration `json:"duration"`
 }
 
+// binaryStoreDeleter is the subset of *storage.BinaryStore the pipeline
+// needs for deletion-sync cascade. Defined locally as an interface so
+// the pipeline doesn't have to drag the storage package into its tests.
+type binaryStoreDeleter interface {
+	Delete(ctx context.Context, sourceType, sourceName, sourceID string) error
+}
+
 // Pipeline orchestrates fetching documents and indexing them.
 type Pipeline struct {
-	store      *store.Store
-	search     *search.Client
-	embeddings EmbedderProvider
-	log        *zap.Logger
+	store       *store.Store
+	search      *search.Client
+	embeddings  EmbedderProvider
+	binaryStore binaryStoreDeleter
+	log         *zap.Logger
 }
 
 // New creates a new Pipeline. embeddings can be nil for BM25-only mode.
 func New(store *store.Store, search *search.Client, embeddings EmbedderProvider, log *zap.Logger) *Pipeline {
 	return &Pipeline{store: store, search: search, embeddings: embeddings, log: log}
+}
+
+// SetBinaryStore wires the binary cache so deletion-sync can purge
+// cached blobs alongside the index entries. Optional — pipelines
+// without one just skip the cascade. Called once at startup; not
+// safe to call concurrently with Run.
+func (p *Pipeline) SetBinaryStore(bs binaryStoreDeleter) {
+	p.binaryStore = bs
 }
 
 // ProgressFunc is called with (total, processed, errors) as documents are indexed.
@@ -189,6 +206,8 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		}
 	}
 
+	deletedCount := p.reconcileDeletions(ctx, conn.Type(), connName, result.CurrentSourceIDs)
+
 	if result.Cursor != nil {
 		// Override whatever the connector set as ConnectorID — it doesn't know
 		// the configured UUID. The store keys cursors by connector UUID.
@@ -202,6 +221,7 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		ConnectorName: connName,
 		ConnectorType: conn.Type(),
 		DocsProcessed: len(result.Documents),
+		DocsDeleted:   deletedCount,
 		Errors:        errCount,
 		Duration:      time.Since(start),
 	}
@@ -209,11 +229,112 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 	p.log.Info("sync completed",
 		zap.String("connector", connName),
 		zap.Int("docs", report.DocsProcessed),
+		zap.Int("deleted", report.DocsDeleted),
 		zap.Int("errors", report.Errors),
 		zap.Duration("duration", report.Duration),
 	)
 
 	return report, nil
+}
+
+// reconcileDeletions diffs the indexed source_ids against the
+// connector's authoritative CurrentSourceIDs list and removes the
+// stragglers (plus their cached binaries when a BinaryStore is
+// wired). Returns the count of source_ids deleted.
+//
+// Failure-mode semantics are deliberately permissive: any error in
+// enumeration or deletion is logged and the sync continues. Deletion
+// is bookkeeping — losing one round of cleanup is recoverable on the
+// next sync; failing the entire sync because of it would mean a
+// transient OpenSearch hiccup blocks indexing too. The all-or-nothing
+// rule lives one level up: connectors set CurrentSourceIDs to nil
+// when their enumeration is incomplete, which short-circuits this
+// function entirely.
+func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceName string, currentSourceIDs []string) int {
+	if currentSourceIDs == nil {
+		return 0 // connector opted out (or its enumeration errored)
+	}
+
+	indexed, err := p.search.ListIndexedSourceIDs(ctx, sourceType, sourceName)
+	if err != nil {
+		p.log.Warn("deletion sync: list indexed source ids failed; skipping",
+			zap.String("connector", sourceName), zap.Error(err))
+		return 0
+	}
+	if len(indexed) == 0 {
+		return 0
+	}
+
+	keep := make(map[string]struct{}, len(currentSourceIDs))
+	for _, sid := range currentSourceIDs {
+		keep[sid] = struct{}{}
+	}
+	stale := make([]string, 0)
+	for _, sid := range indexed {
+		if _, ok := keep[sid]; ok {
+			continue
+		}
+		if isChildOfKept(sid, keep) {
+			// Preserved by the "colon-suffix children" convention —
+			// e.g. IMAP attachment `INBOX:42:attachment:0` when the
+			// parent email `INBOX:42` is in keep. Lets connectors
+			// declare parent-only source_ids and inherit child
+			// preservation without enumerating every child.
+			continue
+		}
+		stale = append(stale, sid)
+	}
+	if len(stale) == 0 {
+		return 0
+	}
+
+	if err := p.search.DeleteBySourceIDs(ctx, sourceType, sourceName, stale); err != nil {
+		p.log.Warn("deletion sync: delete failed; skipping cache cleanup",
+			zap.String("connector", sourceName),
+			zap.Int("stale_count", len(stale)),
+			zap.Error(err))
+		return 0
+	}
+
+	// Cascade to BinaryStore — best-effort. A leftover blob is harmless
+	// (eviction picks it up); a leftover chunk shows up in search and is
+	// already gone above.
+	if p.binaryStore != nil {
+		for _, sid := range stale {
+			if err := p.binaryStore.Delete(ctx, sourceType, sourceName, sid); err != nil {
+				p.log.Debug("deletion sync: binary cache delete failed",
+					zap.String("connector", sourceName),
+					zap.String("source_id", sid),
+					zap.Error(err))
+			}
+		}
+	}
+
+	p.log.Info("deletion sync: removed stale documents",
+		zap.String("connector", sourceName),
+		zap.Int("count", len(stale)))
+	return len(stale)
+}
+
+// isChildOfKept reports whether sid is a colon-suffix child of any
+// source_id in keep — i.e. sid starts with `{k}:` for some k in keep.
+// Implements the convention documented on FetchResult.CurrentSourceIDs:
+// connectors that emit parent-only identifiers (IMAP enumerates email
+// UIDs but not attachment indices) get their children preserved
+// automatically via the shared naming scheme.
+//
+// Scanning right-to-left lets us bail on the deepest prefix first, which
+// for attachment-like structures (`folder:uid:attachment:N`) usually
+// hits on the second iteration.
+func isChildOfKept(sid string, keep map[string]struct{}) bool {
+	for i := len(sid) - 1; i > 0; i-- {
+		if sid[i] == ':' {
+			if _, ok := keep[sid[:i]]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Pipeline) getEmbedder() embedding.Embedder {

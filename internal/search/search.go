@@ -605,6 +605,122 @@ func (c *Client) GetChunkByDocID(ctx context.Context, docID string) (*model.Chun
 	return &chunk, nil
 }
 
+// DeleteBySourceIDs removes every chunk for the given (source_type,
+// source_name) whose source_id is in the provided list. Used by the
+// pipeline's deletion-sync pass to remove docs that disappeared
+// upstream. No-op on an empty input slice — callers don't need to
+// pre-check before calling.
+func (c *Client) DeleteBySourceIDs(ctx context.Context, sourceType, sourceName string, sourceIDs []string) error {
+	if len(sourceIDs) == 0 {
+		return nil
+	}
+	query := map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"source_type": sourceType}},
+					{"term": map[string]any{"source_name": sourceName}},
+					{"terms": map[string]any{"source_id": sourceIDs}},
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(query)
+	if err != nil {
+		return fmt.Errorf("search: marshal delete-by-source-ids query: %w", err)
+	}
+	if _, err = c.os.Document.DeleteByQuery(ctx, opensearchapi.DocumentDeleteByQueryReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	}); err != nil {
+		return fmt.Errorf("search: delete by source ids: %w", err)
+	}
+	return nil
+}
+
+// listIndexedSourceIDsPageSize is the per-request page size for the
+// composite aggregation that enumerates source_ids. 1000 keeps each
+// round-trip well under OpenSearch's default search.max_buckets while
+// staying small enough that a paged request returns quickly. With this
+// page size, a 100K-doc connector enumerates in 100 sequential
+// round-trips — fast on a local cluster, harmless on a remote one.
+const listIndexedSourceIDsPageSize = 1000
+
+// ListIndexedSourceIDs returns every distinct source_id currently
+// indexed for the given (source_type, source_name). Used by the
+// pipeline to compute the deletion set against
+// FetchResult.CurrentSourceIDs.
+//
+// Implemented as a composite aggregation paginated by `after_key`,
+// which has no upper bound on result size — important for connectors
+// like IMAP where a single account routinely holds tens of thousands
+// of messages. The simpler `terms` aggregation has a fixed `size`
+// cap that would silently truncate (or warn) above some threshold;
+// composite trades a slight per-request cost for unbounded
+// completeness.
+func (c *Client) ListIndexedSourceIDs(ctx context.Context, sourceType, sourceName string) ([]string, error) {
+	var out []string
+	var afterKey map[string]any
+	for {
+		composite := map[string]any{
+			"size":    listIndexedSourceIDsPageSize,
+			"sources": []map[string]any{{"sid": map[string]any{"terms": map[string]any{"field": "source_id"}}}},
+		}
+		if afterKey != nil {
+			composite["after"] = afterKey
+		}
+		query := map[string]any{
+			"size": 0,
+			"query": map[string]any{
+				"bool": map[string]any{
+					"filter": []map[string]any{
+						{"term": map[string]any{"source_type": sourceType}},
+						{"term": map[string]any{"source_name": sourceName}},
+					},
+				},
+			},
+			"aggs": map[string]any{"source_ids": map[string]any{"composite": composite}},
+		}
+		body, err := json.Marshal(query)
+		if err != nil {
+			return nil, fmt.Errorf("search: marshal list-source-ids query: %w", err)
+		}
+		resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+			Indices: []string{c.index},
+			Body:    bytes.NewReader(body),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("search: list source ids: %w", err)
+		}
+		if len(resp.Aggregations) == 0 {
+			return out, nil
+		}
+		var aggs struct {
+			SourceIDs struct {
+				AfterKey map[string]any `json:"after_key"`
+				Buckets  []struct {
+					Key map[string]string `json:"key"`
+				} `json:"buckets"`
+			} `json:"source_ids"`
+		}
+		if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
+			return nil, fmt.Errorf("search: parse source_ids agg: %w", err)
+		}
+		for _, b := range aggs.SourceIDs.Buckets {
+			if sid, ok := b.Key["sid"]; ok {
+				out = append(out, sid)
+			}
+		}
+		// after_key is omitted on the final page, signaling we've seen
+		// every bucket. Returning an empty buckets array is also a
+		// valid termination — guard both.
+		if aggs.SourceIDs.AfterKey == nil || len(aggs.SourceIDs.Buckets) == 0 {
+			return out, nil
+		}
+		afterKey = aggs.SourceIDs.AfterKey
+	}
+}
+
 // DeleteBySource deletes all documents from a specific source.
 func (c *Client) DeleteBySource(ctx context.Context, sourceType, sourceName string) error {
 	query := map[string]any{

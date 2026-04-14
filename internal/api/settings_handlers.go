@@ -136,7 +136,10 @@ func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			_, err := h.pipeline.RunWithProgress(bgCtx, cid, c, oid, shared, progress)
+			report, err := h.pipeline.RunWithProgress(bgCtx, cid, c, oid, shared, progress)
+			if report != nil {
+				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
+			}
 			h.syncJobs.Complete(jobID, err)
 			if err != nil {
 				h.log.Error("auto-reindex: sync failed", zap.String("connector", n), zap.Error(err))

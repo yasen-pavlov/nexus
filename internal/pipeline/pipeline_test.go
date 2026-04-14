@@ -4,8 +4,11 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
@@ -191,6 +194,398 @@ func TestPipelineRun(t *testing.T) {
 	}
 	if report2.DocsProcessed != 0 {
 		t.Errorf("expected 0 docs on incremental sync, got %d", report2.DocsProcessed)
+	}
+}
+
+// fakeDeletionConnector lets pipeline tests drive arbitrary
+// (Documents, CurrentSourceIDs) combinations without needing a real
+// connector to round-trip a fake source. Each Fetch call pops the next
+// scripted result.
+type fakeDeletionConnector struct {
+	results []*model.FetchResult
+	idx     int
+}
+
+func (f *fakeDeletionConnector) Type() string                                { return "filesystem" }
+func (f *fakeDeletionConnector) Name() string                                { return "fake-del" }
+func (f *fakeDeletionConnector) Configure(_ connector.Config) error          { return nil }
+func (f *fakeDeletionConnector) Validate() error                             { return nil }
+func (f *fakeDeletionConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+	if f.idx >= len(f.results) {
+		return &model.FetchResult{Cursor: &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"}}, nil
+	}
+	r := f.results[f.idx]
+	f.idx++
+	return r, nil
+}
+
+func newFakeDoc(sid, title string) model.Document {
+	return model.Document{
+		SourceType: "filesystem",
+		SourceName: "fake-del",
+		SourceID:   sid,
+		Title:      title,
+		Content:    "content for " + sid,
+		Visibility: "private",
+		CreatedAt:  time.Now(),
+	}
+}
+
+func TestPipelineRun_DeletionSync_RemovesStale(t *testing.T) {
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "fake-del",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := &fakeDeletionConnector{
+		results: []*model.FetchResult{
+			// First sync: index three docs.
+			{
+				Documents: []model.Document{
+					newFakeDoc("a.txt", "Alpha"),
+					newFakeDoc("b.txt", "Beta"),
+					newFakeDoc("c.txt", "Gamma"),
+				},
+				CurrentSourceIDs: []string{"a.txt", "b.txt", "c.txt"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+			// Second sync: only two remain upstream → c.txt should be
+			// deleted from the index without re-emitting a/b.
+			{
+				Documents:        nil,
+				CurrentSourceIDs: []string{"a.txt", "b.txt"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+		},
+	}
+
+	r1, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if r1.DocsDeleted != 0 {
+		t.Errorf("first sync should delete nothing, got %d", r1.DocsDeleted)
+	}
+	_ = sc.Refresh(ctx)
+
+	r2, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if r2.DocsDeleted != 1 {
+		t.Errorf("second sync should delete c.txt (1 doc), got %d", r2.DocsDeleted)
+	}
+	_ = sc.Refresh(ctx)
+
+	remaining, err := sc.ListIndexedSourceIDs(ctx, "filesystem", "fake-del")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 {
+		t.Errorf("expected 2 remaining source_ids, got %v", remaining)
+	}
+}
+
+func TestPipelineRun_DeletionSync_NilSkipsDiff(t *testing.T) {
+	// CurrentSourceIDs == nil signals "connector opted out / enumeration
+	// failed" — pipeline must NOT delete anything, even if the index
+	// has docs that the (nil) list wouldn't cover.
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "fake-del",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := &fakeDeletionConnector{
+		results: []*model.FetchResult{
+			{
+				Documents:        []model.Document{newFakeDoc("survives.txt", "Survives")},
+				CurrentSourceIDs: []string{"survives.txt"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+			{
+				Documents:        nil,
+				CurrentSourceIDs: nil, // explicit opt-out
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+		},
+	}
+
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	// OpenSearch doesn't refresh between writes by default — the second
+	// sync's reconciliation pass needs the first sync's writes visible
+	// to the terms aggregation.
+	_ = sc.Refresh(ctx)
+	r2, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.DocsDeleted != 0 {
+		t.Errorf("nil CurrentSourceIDs must skip deletion, got %d deleted", r2.DocsDeleted)
+	}
+	_ = sc.Refresh(ctx)
+	remaining, _ := sc.ListIndexedSourceIDs(ctx, "filesystem", "fake-del")
+	if len(remaining) != 1 {
+		t.Errorf("expected the doc to survive, got %v", remaining)
+	}
+}
+
+func TestPipelineRun_DeletionSync_EmptySliceWipesAll(t *testing.T) {
+	// CurrentSourceIDs == [] means "connector enumerated and nothing
+	// exists upstream" — every indexed doc for this connector should
+	// be removed.
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "fake-del",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := &fakeDeletionConnector{
+		results: []*model.FetchResult{
+			{
+				Documents: []model.Document{
+					newFakeDoc("x.txt", "X"),
+					newFakeDoc("y.txt", "Y"),
+				},
+				CurrentSourceIDs: []string{"x.txt", "y.txt"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+			{
+				Documents:        nil,
+				CurrentSourceIDs: []string{},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+		},
+	}
+
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	// OpenSearch doesn't refresh between writes by default — the second
+	// sync's reconciliation pass needs the first sync's writes visible
+	// to the terms aggregation.
+	_ = sc.Refresh(ctx)
+	r2, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2.DocsDeleted != 2 {
+		t.Errorf("empty CurrentSourceIDs should delete everything (2), got %d", r2.DocsDeleted)
+	}
+	_ = sc.Refresh(ctx)
+	remaining, _ := sc.ListIndexedSourceIDs(ctx, "filesystem", "fake-del")
+	if len(remaining) != 0 {
+		t.Errorf("expected nothing left, got %v", remaining)
+	}
+}
+
+func TestPipelineRun_DeletionSync_PreservesColonSuffixChildren(t *testing.T) {
+	// Bug caught live on 2026-04-14: the IMAP connector enumerates
+	// email UIDs but not attachment source_ids. Without the
+	// colon-suffix children rule in reconcileDeletions, every
+	// attachment looked orphaned and got deleted on every sync.
+	// This test drives the scenario directly: parent source_ids
+	// stay in CurrentSourceIDs, child source_ids (colon-suffix)
+	// are indexed but not enumerated, and the diff must preserve
+	// the children.
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "fake-del",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := &fakeDeletionConnector{
+		results: []*model.FetchResult{
+			// Index both the parent and its "attachment" child.
+			{
+				Documents: []model.Document{
+					newFakeDoc("INBOX:42", "Parent"),
+					newFakeDoc("INBOX:42:attachment:0", "Att0"),
+					newFakeDoc("INBOX:42:attachment:1", "Att1"),
+					// A genuinely orphaned child (parent not enumerated).
+					newFakeDoc("INBOX:99:attachment:0", "OrphanAtt"),
+				},
+				// Only enumerate the parent — mimics IMAP UID SEARCH ALL.
+				CurrentSourceIDs: []string{"INBOX:42"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+			// Second sync: same enumeration (parent still exists) —
+			// attachments must still be there, but the orphan goes.
+			{
+				CurrentSourceIDs: []string{"INBOX:42"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+		},
+	}
+
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(ctx)
+	r2, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the true orphan (INBOX:99:attachment:0) should go.
+	if r2.DocsDeleted != 1 {
+		t.Errorf("expected 1 deletion (orphan only), got %d", r2.DocsDeleted)
+	}
+	_ = sc.Refresh(ctx)
+	remaining, _ := sc.ListIndexedSourceIDs(ctx, "filesystem", "fake-del")
+	want := map[string]bool{"INBOX:42": true, "INBOX:42:attachment:0": true, "INBOX:42:attachment:1": true}
+	if len(remaining) != len(want) {
+		t.Errorf("expected %d surviving ids, got %v", len(want), remaining)
+	}
+	for _, sid := range remaining {
+		if !want[sid] {
+			t.Errorf("unexpected survivor: %q", sid)
+		}
+	}
+}
+
+// fakeBinaryStoreDeleter records Delete calls so tests can assert the
+// deletion-sync cascade reaches the binary cache. The pipeline uses
+// this indirectly via the binaryStoreDeleter interface.
+type fakeBinaryStoreDeleter struct {
+	mu      sync.Mutex
+	deleted []string
+	err     error // set to make Delete return an error
+}
+
+func (f *fakeBinaryStoreDeleter) Delete(_ context.Context, _, _, sid string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, sid)
+	return f.err
+}
+
+func TestPipelineRun_DeletionSync_CascadesToBinaryStore(t *testing.T) {
+	// When a binary store is wired via SetBinaryStore, deleted
+	// source_ids must also be purged from the cache. Errors from the
+	// cache are best-effort (logged at debug, not fatal) — the
+	// fakeBinaryStoreDeleter exercises both paths to prove the
+	// cascade still completes even when an individual delete fails.
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+	p := New(st, sc, nil, zap.NewNop())
+	bs := &fakeBinaryStoreDeleter{}
+	p.SetBinaryStore(bs)
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "fake-del",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := &fakeDeletionConnector{
+		results: []*model.FetchResult{
+			{
+				Documents: []model.Document{
+					newFakeDoc("a.txt", "A"),
+					newFakeDoc("b.txt", "B"),
+				},
+				CurrentSourceIDs: []string{"a.txt", "b.txt"},
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+			{
+				CurrentSourceIDs: []string{"a.txt"}, // b.txt drops
+				Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+			},
+		},
+	}
+
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(ctx)
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(bs.deleted) != 1 || bs.deleted[0] != "b.txt" {
+		t.Errorf("expected binary store to receive Delete for b.txt, got %v", bs.deleted)
+	}
+
+	// Now prove an error from the cache doesn't propagate up: reset
+	// and drive a second deletion with a failing fake.
+	bs.err = fmt.Errorf("disk on fire")
+	conn.idx = 0
+	conn.results = []*model.FetchResult{
+		{
+			Documents:        []model.Document{newFakeDoc("c.txt", "C")},
+			CurrentSourceIDs: []string{"c.txt"},
+			Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+		},
+		{
+			CurrentSourceIDs: []string{},
+			Cursor:           &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"},
+		},
+	}
+	if _, err := p.RunWithProgress(ctx, connID, conn, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = sc.Refresh(ctx)
+	r, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if err != nil {
+		t.Fatalf("cache error must not fail the sync: %v", err)
+	}
+	if r.DocsDeleted != 1 {
+		t.Errorf("cache error should not change reported count, got %d", r.DocsDeleted)
+	}
+}
+
+// TestIsChildOfKept unit-tests the colon-suffix-children rule in
+// isolation — ensuring prefix collisions don't erroneously preserve
+// unrelated source_ids (e.g. `INBOX:42` must NOT preserve
+// `INBOX:420:...`).
+func TestIsChildOfKept(t *testing.T) {
+	keep := map[string]struct{}{"INBOX:42": {}, "Sent:7": {}}
+	cases := []struct {
+		sid  string
+		want bool
+	}{
+		{"INBOX:42:attachment:0", true},
+		{"INBOX:42:attachment:5", true},
+		{"Sent:7:attachment:0", true},
+		{"INBOX:420:attachment:0", false},     // prefix collision, must NOT match
+		{"INBOX:42", false},                   // exact match is handled by caller, not this helper
+		{"INBOX:41:attachment:0", false},      // different UID
+		{"Trash:42:attachment:0", false},      // different folder
+		{":junk", false},                      // pathological, no crash
+		{"INBOX:42:attachment:0:sub", true},   // deeper nested still valid
+	}
+	for _, tc := range cases {
+		if got := isChildOfKept(tc.sid, keep); got != tc.want {
+			t.Errorf("isChildOfKept(%q) = %v, want %v", tc.sid, got, tc.want)
+		}
 	}
 }
 
