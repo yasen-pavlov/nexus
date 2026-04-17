@@ -1,0 +1,76 @@
+import { type ReactNode } from "react";
+import { render, type RenderOptions } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  RouterProvider,
+  createRouter,
+  createRootRoute,
+  createRoute,
+  createMemoryHistory,
+} from "@tanstack/react-router";
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function AllProviders({ children }: { children: ReactNode }) {
+  const queryClient = createTestQueryClient();
+  return (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+}
+
+/**
+ * Render a component wrapped in QueryClientProvider only (no router).
+ * Use renderWithRouter when the component needs TanStack Router context.
+ */
+function renderWithProviders(
+  ui: React.ReactElement,
+  options?: Omit<RenderOptions, "wrapper">,
+) {
+  return render(ui, { wrapper: AllProviders, ...options });
+}
+
+/**
+ * Render within a minimal TanStack Router so hooks like useNavigate work.
+ * The component under test is rendered at the "/" route.
+ */
+function renderWithRouter(
+  ui: React.ReactElement,
+  options?: { initialPath?: string },
+) {
+  const queryClient = createTestQueryClient();
+
+  const rootRoute = createRootRoute({
+    component: () => ui,
+  });
+
+  const indexRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+    component: () => null,
+  });
+
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([indexRoute]),
+    history: createMemoryHistory({
+      initialEntries: [options?.initialPath ?? "/"],
+    }),
+    context: { queryClient },
+  });
+
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+}
+
+export { renderWithProviders as render, renderWithRouter, createTestQueryClient };
+export { screen, waitFor, within, act } from "@testing-library/react";
+export { default as userEvent } from "@testing-library/user-event";
