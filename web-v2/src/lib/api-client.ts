@@ -12,14 +12,10 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-type UnauthorizedListener = () => void;
-const unauthorizedListeners = new Set<UnauthorizedListener>();
+let unauthorizedHandler: (() => void) | null = null;
 
-export function onUnauthorized(listener: UnauthorizedListener): () => void {
-  unauthorizedListeners.add(listener);
-  return () => {
-    unauthorizedListeners.delete(listener);
-  };
+export function setUnauthorizedHandler(handler: () => void): void {
+  unauthorizedHandler = handler;
 }
 
 interface APIResponse<T> {
@@ -35,9 +31,10 @@ export async function fetchAPI<T>(
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(url, { ...options, headers });
+  // 401 means "session expired" — backend returns 400 for bad credentials.
   if (res.status === 401) {
     clearToken();
-    unauthorizedListeners.forEach((fn) => fn());
+    unauthorizedHandler?.();
     throw new Error("Unauthorized");
   }
   const body: APIResponse<T> = await res.json();

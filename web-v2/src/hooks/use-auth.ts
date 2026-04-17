@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { fetchAPI, setToken, clearToken, getToken } from "@/lib/api-client";
 import type { User, AuthResponse, HealthResponse } from "@/lib/api-types";
 import { authKeys } from "@/lib/query-keys";
@@ -69,9 +70,11 @@ export function useRegister() {
 
 export function useLogout() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   return () => {
     clearToken();
     queryClient.setQueryData(authKeys.me(), null);
     queryClient.clear();
+    void navigate({ to: "/login" });
   };
 }

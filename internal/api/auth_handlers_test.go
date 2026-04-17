@@ -173,8 +173,8 @@ func TestLogin_WrongPassword(t *testing.T) {
 	doJSON(t, router, http.MethodPost, "/api/auth/register", `{"username":"alice","password":"password123"}`, "")
 
 	w := doJSON(t, router, http.MethodPost, "/api/auth/login", `{"username":"alice","password":"wrongpass1"}`, "")
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 
@@ -182,8 +182,8 @@ func TestLogin_UnknownUser(t *testing.T) {
 	router, _ := newAuthTestRouter(t)
 
 	w := doJSON(t, router, http.MethodPost, "/api/auth/login", `{"username":"ghost","password":"password123"}`, "")
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 
@@ -708,11 +708,11 @@ func TestLogin_StoreError(t *testing.T) {
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
 
-	// GetUserByUsername fails on closed store → handler returns 401 (invalid credentials)
+	// GetUserByUsername fails on closed store → handler returns 400 (invalid credentials)
 	// because it cannot distinguish missing user from store error.
 	w := doJSON(t, router, http.MethodPost, "/api/auth/login", `{"username":"x","password":"password123"}`, "")
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
 	}
 }
 

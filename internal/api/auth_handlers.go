@@ -115,7 +115,7 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Param		request	body	loginRequest	true	"Credentials"
 //	@Success	200	{object}	authResponse
-//	@Failure	401	{object}	APIResponse
+//	@Failure	400	{object}	APIResponse	"invalid credentials"
 //	@Router		/auth/login [post]
 func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
@@ -124,14 +124,17 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bad credentials return 400, reserving 401 exclusively for expired /
+	// invalid session tokens on protected endpoints. This lets the frontend
+	// treat every 401 as "log out and redirect" without carve-outs.
 	user, passwordHash, err := h.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		writeError(w, http.StatusBadRequest, "invalid username or password")
 		return
 	}
 
 	if !auth.CheckPassword(passwordHash, req.Password) {
-		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		writeError(w, http.StatusBadRequest, "invalid username or password")
 		return
 	}
 

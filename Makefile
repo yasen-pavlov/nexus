@@ -36,9 +36,14 @@ build: swagger
 dev-db:
 	docker compose -f docker-compose.dev.yml up -d
 
-# Dev: run the app locally
+# Dev: run the app locally. Keys mirror docker-compose.yml so you can switch
+# between `make dev` and `docker compose up` without breaking JWT sessions or
+# losing access to encrypted connector config fields.
 dev: dev-db
 	NEXUS_DATABASE_URL=postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable \
 	NEXUS_OPENSEARCH_URL=http://localhost:9200 \
+	NEXUS_TIKA_URL=http://localhost:9998 \
 	NEXUS_FS_ROOT_PATH=./testdata \
+	NEXUS_ENCRYPTION_KEY=REDACTED_DEV_ENCRYPTION_KEY \
+	NEXUS_JWT_SECRET=change-me-to-a-long-random-string-at-least-32-bytes \
 	go run ./cmd/nexus
