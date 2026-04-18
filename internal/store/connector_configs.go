@@ -16,14 +16,15 @@ import (
 
 var ErrDuplicateName = errors.New("connector name already exists")
 
-const connectorCols = `id, type, name, config, enabled, schedule, shared, user_id, last_run, created_at, updated_at`
+const connectorCols = `id, type, name, config, enabled, schedule, shared, user_id, external_id, external_name, last_run, created_at, updated_at`
 
 func (s *Store) scanConnectorConfig(scan func(dest ...any) error) (model.ConnectorConfig, error) {
 	var cfg model.ConnectorConfig
 	var configJSON []byte
 	err := scan(
 		&cfg.ID, &cfg.Type, &cfg.Name, &configJSON, &cfg.Enabled, &cfg.Schedule,
-		&cfg.Shared, &cfg.UserID, &cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt,
+		&cfg.Shared, &cfg.UserID, &cfg.ExternalID, &cfg.ExternalName,
+		&cfg.LastRun, &cfg.CreatedAt, &cfg.UpdatedAt,
 	)
 	if err != nil {
 		return cfg, err
@@ -133,12 +134,13 @@ func (s *Store) CreateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `INSERT INTO connector_configs (id, type, name, config, enabled, schedule, shared, user_id, last_run, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+	query := `INSERT INTO connector_configs (id, type, name, config, enabled, schedule, shared, user_id, external_id, external_name, last_run, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 
 	_, err = s.pool.Exec(ctx, query,
 		cfg.ID, cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule,
-		cfg.Shared, cfg.UserID, cfg.LastRun, cfg.CreatedAt, cfg.UpdatedAt,
+		cfg.Shared, cfg.UserID, cfg.ExternalID, cfg.ExternalName,
+		cfg.LastRun, cfg.CreatedAt, cfg.UpdatedAt,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -162,10 +164,11 @@ func (s *Store) UpdateConnectorConfig(ctx context.Context, cfg *model.ConnectorC
 		return fmt.Errorf("store: marshal connector config: %w", err)
 	}
 
-	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, schedule = $5, shared = $6, updated_at = $7 WHERE id = $8`
+	query := `UPDATE connector_configs SET type = $1, name = $2, config = $3, enabled = $4, schedule = $5, shared = $6, external_id = $7, external_name = $8, updated_at = $9 WHERE id = $10`
 
 	result, err := s.pool.Exec(ctx, query,
-		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.Shared, cfg.UpdatedAt, cfg.ID,
+		cfg.Type, cfg.Name, configJSON, cfg.Enabled, cfg.Schedule, cfg.Shared,
+		cfg.ExternalID, cfg.ExternalName, cfg.UpdatedAt, cfg.ID,
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError

@@ -16,6 +16,7 @@ import (
 	"github.com/gotd/td/tg"
 	nauth "github.com/muty/nexus/internal/auth"
 	tgconn "github.com/muty/nexus/internal/connector/telegram"
+	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
@@ -37,8 +38,45 @@ type authFlow struct {
 	client   *telegram.Client
 	codeCh   chan string
 	passCh   chan string
-	resultCh chan error
+	resultCh chan authResult
 	cancel   context.CancelFunc
+}
+
+// authResult carries the outcome of a background Telegram auth flow.
+// When err is nil, the self-user fields identify who the Nexus user
+// authenticated as so the caller can persist them onto the connector
+// config (see ExternalID/ExternalName on model.ConnectorConfig).
+type authResult struct {
+	err      error
+	selfID   int64
+	selfName string
+}
+
+// resolveSelfIdentity asks Telegram who the just-authenticated user is
+// so the connector config can persist a display name and external ID.
+// Never called before the auth flow has succeeded.
+func resolveSelfIdentity(ctx context.Context, client *telegram.Client) (int64, string) {
+	self, err := client.Self(ctx)
+	if err != nil || self == nil {
+		return 0, ""
+	}
+	name := tgconn.DisplayName(self)
+	return self.ID, name
+}
+
+// persistSelfIdentity writes external_id + external_name onto the
+// connector config and routes the write through the ConnectorManager
+// so in-memory state updates too. Extracted so it can be unit-tested
+// without driving the full auth goroutine.
+func persistSelfIdentity(ctx context.Context, cm *ConnectorManager, cfg *model.ConnectorConfig, selfID int64, selfName string) error {
+	if selfID == 0 {
+		return nil
+	}
+	cfg.ExternalID = strconv.FormatInt(selfID, 10)
+	if selfName != "" {
+		cfg.ExternalName = selfName
+	}
+	return cm.Update(ctx, cfg)
 }
 
 var pending = &pendingAuth{flows: make(map[pendingAuthKey]*authFlow)}
@@ -108,7 +146,7 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	codeCh := make(chan string, 1)
 	passCh := make(chan string, 1)
-	resultCh := make(chan error, 1)
+	resultCh := make(chan authResult, 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -136,7 +174,8 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	// Run auth in background
 	go func() {
 		defer cancel()
-		err := client.Run(ctx, func(ctx context.Context) error {
+		var result authResult
+		result.err = client.Run(ctx, func(ctx context.Context) error {
 			codeAuth := auth.NewFlow(
 				&interactiveAuth{
 					phone:  phone,
@@ -145,9 +184,16 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 				},
 				auth.SendCodeOptions{},
 			)
-			return codeAuth.Run(ctx, client.Auth())
+			if err := codeAuth.Run(ctx, client.Auth()); err != nil {
+				return err
+			}
+			// Resolve the authenticated user's identity before the
+			// client.Run callback returns — client.Self is only
+			// callable while the MTProto client is alive.
+			result.selfID, result.selfName = resolveSelfIdentity(ctx, client)
+			return nil
 		})
-		resultCh <- err
+		resultCh <- result
 	}()
 
 	h.log.Info("telegram auth started", zap.String("connector", id.String()))
@@ -223,15 +269,25 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 
 	// Wait for result (with timeout from request context)
 	select {
-	case err := <-flow.resultCh:
+	case res := <-flow.resultCh:
 		pending.mu.Lock()
 		delete(pending.flows, flowKey)
 		pending.mu.Unlock()
 
-		if err != nil {
-			h.log.Error("telegram auth failed", zap.Error(err))
-			writeError(w, http.StatusBadRequest, "auth failed: "+err.Error())
+		if res.err != nil {
+			h.log.Error("telegram auth failed", zap.Error(res.err))
+			writeError(w, http.StatusBadRequest, "auth failed: "+res.err.Error())
 			return
+		}
+
+		// Persist the self-identity onto the connector config so the
+		// /api/me/identities endpoint can surface it to the frontend.
+		// Failure is non-fatal — auth still succeeded, identity can be
+		// backfilled by a subsequent sync. Log and move on.
+		if err := persistSelfIdentity(r.Context(), h.cm, cfg, res.selfID, res.selfName); err != nil {
+			h.log.Warn("persist telegram self-identity",
+				zap.String("connector", id.String()),
+				zap.Error(err))
 		}
 
 		h.log.Info("telegram auth successful", zap.String("connector", id.String()))

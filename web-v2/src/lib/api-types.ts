@@ -66,6 +66,32 @@ export interface DocumentHit extends Document {
   // Total relations (outgoing + incoming). Populated by the backend so the
   // UI can hide the "Related" toggle without fanning out /related per hit.
   related_count?: number;
+
+  // Pinpoint-match fields — populated when the backend can map the
+  // BM25 highlight back to a specific message inside a window doc
+  // (telegram today). Absent for semantic-only hits; the frontend
+  // switches the card into a bookended-window preview in that case.
+  match_source_id?: string;
+  match_message_id?: number;
+  match_created_at?: string;
+  match_sender_id?: number;
+  match_sender_name?: string;
+  match_avatar_key?: string;
+}
+
+// MessageLine mirrors the Go per-line metadata entry stored on
+// telegram window docs. Consumed by the search card for bookended
+// semantic-fallback rendering (and, in principle, by any future
+// consumer that wants per-message preview data without refetching
+// per-message docs).
+export interface MessageLine {
+  id: number;
+  text: string;
+  created_at: string;
+  sender_id?: number;
+  sender_name?: string;
+  sender_username?: string;
+  sender_avatar_key?: string;
 }
 
 export type Facet = Req<Schemas["github_com_muty_nexus_internal_model.Facet"]>;
@@ -94,6 +120,29 @@ export interface RelatedEdge {
 export interface RelatedResponse {
   outgoing: RelatedEdge[];
   incoming: RelatedEdge[];
+}
+
+// Conversations
+
+export interface ConversationMessagesResponse {
+  messages: Document[];
+  next_before?: string;
+  next_after?: string;
+}
+
+// Identities — the "who am I on each connected source" map.
+
+export interface Identity {
+  connector_id: string;
+  source_type: string;
+  source_name: string;
+  external_id: string;
+  external_name: string;
+  has_avatar: boolean;
+}
+
+export interface IdentitiesResponse {
+  identities: Identity[];
 }
 
 // Connectors

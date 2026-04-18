@@ -230,14 +230,27 @@ func (c *Client) IndexChunks(ctx context.Context, chunks []model.Chunk) error {
 }
 
 // highlightConfig returns the standard highlight configuration.
-func highlightConfig() map[string]any {
-	return map[string]any{
-		"fields": map[string]any{
-			"content": map[string]any{
-				"fragment_size":       200,
-				"number_of_fragments": 1,
-			},
+// Highlights are requested on the plain content field AND each
+// language-analyzed sub-field (content.bulgarian, content.english,
+// …) — otherwise a query like "болница" matches "болницата" via the
+// Bulgarian stemmer on content.bulgarian but the highlighter on plain
+// `content` (standard analyzer) finds no matched terms and returns an
+// empty fragment. Surface whichever field produced a hit.
+func (c *Client) highlightConfig() map[string]any {
+	fields := map[string]any{
+		"content": map[string]any{
+			"fragment_size":       200,
+			"number_of_fragments": 1,
 		},
+	}
+	for _, l := range c.languages {
+		fields["content."+l.Name] = map[string]any{
+			"fragment_size":       200,
+			"number_of_fragments": 1,
+		}
+	}
+	return map[string]any{
+		"fields":    fields,
 		"pre_tags":  []string{"<mark>"},
 		"post_tags": []string{"</mark>"},
 	}
@@ -342,7 +355,7 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 
 	query := map[string]any{
 		"query":            buildSearchQuery(matchQuery, filters),
-		"highlight":        highlightConfig(),
+		"highlight":        c.highlightConfig(),
 		"size":             req.Limit * 3, // over-fetch for dedup
 		"track_total_hits": true,
 	}
@@ -371,8 +384,12 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 	}
 	fetchSize := req.Limit * 3
 
-	// BM25 sub-query
-	bm25Query := map[string]any{
+	// BM25 sub-query. Wrap in a bool so hidden chunks (Telegram
+	// per-message docs whose content is already covered by the
+	// parent window) stay out of default search — same rule the
+	// BM25-only path gets via buildSearchQuery.
+	hiddenExclusion := []map[string]any{{"term": map[string]any{"hidden": true}}}
+	bm25Inner := map[string]any{
 		"multi_match": map[string]any{
 			"query":                req.Query,
 			"fields":               c.textSearchFields(),
@@ -382,27 +399,29 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 		},
 	}
 	filters := buildFilterClauses(req)
-	if len(filters) > 0 {
-		bm25Query = map[string]any{
-			"bool": map[string]any{
-				"must":   bm25Query,
-				"filter": filters,
-			},
-		}
+	bm25Bool := map[string]any{
+		"must":     bm25Inner,
+		"must_not": hiddenExclusion,
 	}
+	if len(filters) > 0 {
+		bm25Bool["filter"] = filters
+	}
+	bm25Query := map[string]any{"bool": bm25Bool}
 
-	// k-NN sub-query with filters applied
+	// k-NN sub-query — also exclude hidden docs and apply the same
+	// filters so semantic retrieval can't surface hidden chunks the
+	// user didn't opt into.
 	knnParams := map[string]any{
 		"vector": queryEmbedding,
 		"k":      fetchSize,
 	}
-	if len(filters) > 0 {
-		knnParams["filter"] = map[string]any{
-			"bool": map[string]any{
-				"filter": filters,
-			},
-		}
+	knnFilterBool := map[string]any{
+		"must_not": hiddenExclusion,
 	}
+	if len(filters) > 0 {
+		knnFilterBool["filter"] = filters
+	}
+	knnParams["filter"] = map[string]any{"bool": knnFilterBool}
 	knnQuery := map[string]any{
 		"knn": map[string]any{
 			"embedding": knnParams,
@@ -415,7 +434,7 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 				"queries": []map[string]any{bm25Query, knnQuery},
 			},
 		},
-		"highlight": highlightConfig(),
+		"highlight": c.highlightConfig(),
 		"size":      fetchSize,
 	}
 
@@ -452,9 +471,21 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 			continue
 		}
 
+		// Highlights can appear on the plain content field or on any
+		// of the language-analyzed sub-fields (content.bulgarian,
+		// content.english, …) depending on which analyzer matched.
+		// Prefer plain content when available, otherwise take the
+		// first non-empty sub-field fragment.
 		headline := ""
 		if contentHL, ok := hit.Highlight["content"]; ok && len(contentHL) > 0 {
 			headline = contentHL[0]
+		} else {
+			for k, v := range hit.Highlight {
+				if strings.HasPrefix(k, "content.") && len(v) > 0 {
+					headline = v[0]
+					break
+				}
+			}
 		}
 
 		score := float64(hit.Score)

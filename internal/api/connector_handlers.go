@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -355,6 +356,77 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetConnectorAvatar godoc
+//
+//	@Summary		Fetch a cached profile avatar from a connector
+//	@Description	Streams the bytes of a profile photo the connector cached to the binary store (e.g. a Telegram sender's avatar, keyed by their external user ID). Auth-scoped to the connector's visibility; returns 404 (not 403) for connectors the caller can't read, to avoid leaking existence. Emits a private, caches-fine response so the browser reuses the blob across conversation views.
+//	@Tags			connectors
+//	@Produce		image/*
+//	@Param			id			path	string	true	"Connector UUID"
+//	@Param			external_id	path	string	true	"External (source-assigned) identifier whose avatar to fetch"
+//	@Success		200
+//	@Failure		400	{object}	APIResponse
+//	@Failure		404	{object}	APIResponse
+//	@Failure		500	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/connectors/{id}/avatars/{external_id} [get]
+func (h *handler) GetConnectorAvatar(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid connector id")
+		return
+	}
+	externalID := chi.URLParam(r, "external_id")
+	if externalID == "" {
+		writeError(w, http.StatusBadRequest, "external_id is required")
+		return
+	}
+
+	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "connector not found")
+			return
+		}
+		h.log.Error("get connector for avatar", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		return
+	}
+
+	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
+		writeError(w, http.StatusNotFound, "connector not found")
+		return
+	}
+
+	key, ok := avatarCacheKey(cfg.Type, externalID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "avatars not supported for this connector type")
+		return
+	}
+
+	if h.binaryStore == nil {
+		writeError(w, http.StatusNotFound, "avatar not cached")
+		return
+	}
+
+	rc, err := h.binaryStore.Get(r.Context(), cfg.Type, cfg.Name, key)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "avatar not cached")
+		return
+	}
+	defer func() { _ = rc.Close() }()
+
+	// Telegram avatars come back as JPEGs from the MTProto peer-photo
+	// endpoint. Hard-coding the content type avoids buffering the first
+	// N bytes just to run http.DetectContentType — cheap and correct for
+	// the only source that uses this endpoint today.
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	if _, err := io.Copy(w, rc); err != nil {
+		h.log.Warn("stream avatar failed", zap.Error(err))
+	}
 }
 
 func validateSchedule(schedule string) error {

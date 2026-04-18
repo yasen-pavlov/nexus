@@ -200,7 +200,7 @@ test("clicking a source facet updates the URL", async ({ page }) => {
   await expect(() => expect(lastSearchURL).toContain("sources=imap")).toPass();
 });
 
-test("open-in-chat navigates to the conversation placeholder", async ({
+test("open-in-chat opens the conversation at the anchor message", async ({
   page,
 }) => {
   await mockAuthed(page);
@@ -215,12 +215,13 @@ test("open-in-chat navigates to the conversation placeholder", async ({
               id: "h1",
               source_type: "telegram",
               source_name: "tg-main",
-              source_id: "12345:100",
+              source_id: "12345:100-120",
               title: "Family chat",
               content: "",
               metadata: {
                 chat_name: "Family",
                 anchor_message_id: 100,
+                anchor_created_at: "2026-04-05T18:00:00Z",
               },
               conversation_id: "12345",
               visibility: "private",
@@ -237,7 +238,207 @@ test("open-in-chat navigates to the conversation placeholder", async ({
     }),
   );
 
+  await page.route("**/api/me/identities", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          identities: [
+            {
+              connector_id: "c-tg",
+              source_type: "telegram",
+              source_name: "tg-main",
+              external_id: "9001",
+              external_name: "Me",
+              has_avatar: false,
+            },
+          ],
+        },
+      }),
+    }),
+  );
+
+  await page.route(
+    "**/api/conversations/telegram/12345/messages*",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            messages: [
+              {
+                id: "m1",
+                source_type: "telegram",
+                source_name: "tg-main",
+                source_id: "12345:99:msg",
+                title: "Family",
+                content: "earlier message",
+                metadata: {
+                  chat_id: "12345",
+                  chat_name: "Family",
+                  message_id: 99,
+                  sender_id: 1001,
+                  sender_name: "Alice",
+                },
+                relations: [],
+                conversation_id: "12345",
+                hidden: true,
+                visibility: "private",
+                created_at: "2026-04-05T17:59:00Z",
+                indexed_at: "2026-04-05T18:05:00Z",
+              },
+              {
+                id: "m2",
+                source_type: "telegram",
+                source_name: "tg-main",
+                source_id: "12345:100:msg",
+                title: "Family",
+                content: "dinner at 7",
+                metadata: {
+                  chat_id: "12345",
+                  chat_name: "Family",
+                  message_id: 100,
+                  sender_id: 1001,
+                  sender_name: "Alice",
+                },
+                relations: [],
+                conversation_id: "12345",
+                hidden: true,
+                visibility: "private",
+                created_at: "2026-04-05T18:00:00Z",
+                indexed_at: "2026-04-05T18:05:00Z",
+              },
+            ],
+          },
+        }),
+      }),
+  );
+
   await page.goto("/?q=hi");
   await page.getByRole("button", { name: /open in chat/i }).click();
   await expect(page).toHaveURL(/\/conversations\/telegram\/12345/);
+  await expect(page).toHaveURL(/anchor_id=100/);
+
+  // The anchor message and at least one surrounding message are visible.
+  await expect(page.getByText("dinner at 7")).toBeVisible();
+  await expect(page.getByText("earlier message")).toBeVisible();
+
+  // Anchor highlight: the article with id msg-12345:100:msg sits inside
+  // the anchor wrapper which applies ring classes on mount.
+  const anchor = page.locator("#msg-12345\\:100\\:msg");
+  await expect(anchor).toBeVisible();
+});
+
+test("clicking an inline image in the chat opens a lightbox dismissed by Escape", async ({
+  page,
+}) => {
+  await mockAuthed(page);
+
+  await page.route("**/api/me/identities", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          identities: [
+            {
+              connector_id: "c-tg",
+              source_type: "telegram",
+              source_name: "tg-main",
+              external_id: "9001",
+              external_name: "Me",
+              has_avatar: false,
+            },
+          ],
+        },
+      }),
+    }),
+  );
+
+  // One message in the conversation carrying an image attachment.
+  await page.route(
+    "**/api/conversations/telegram/12345/messages*",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            messages: [
+              {
+                id: "m1",
+                source_type: "telegram",
+                source_name: "tg-main",
+                source_id: "12345:100:msg",
+                title: "Family",
+                content: "check this",
+                metadata: {
+                  chat_id: "12345",
+                  chat_name: "Family",
+                  message_id: 100,
+                  sender_id: 1001,
+                  sender_name: "Alice",
+                  attachments: [
+                    {
+                      id: "d-img-1",
+                      source_id: "12345:100:media",
+                      filename: "photo.jpg",
+                      mime_type: "image/jpeg",
+                      size: 2048,
+                    },
+                  ],
+                },
+                relations: [],
+                conversation_id: "12345",
+                hidden: true,
+                visibility: "private",
+                created_at: "2026-04-05T18:00:00Z",
+                indexed_at: "2026-04-05T18:05:00Z",
+              },
+            ],
+          },
+        }),
+      }),
+  );
+
+  // 1x1 transparent PNG so the <img> actually has an image to render.
+  const pngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const pngBytes = Buffer.from(pngBase64, "base64");
+  await page.route("**/api/documents/d-img-1/content", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "image/png",
+      body: pngBytes,
+    }),
+  );
+
+  await page.goto("/conversations/telegram/12345");
+
+  // Inline image is rendered inside the message bubble.
+  const thumb = page.getByAltText("photo.jpg").first();
+  await expect(thumb).toBeVisible();
+
+  // No dialog before click.
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  await thumb.click();
+
+  // Lightbox appears.
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  // Body scroll is locked while the lightbox is open.
+  const bodyOverflow = await page.evaluate(() => document.body.style.overflow);
+  expect(bodyOverflow).toBe("hidden");
+
+  // Escape closes.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // Body overflow restored.
+  const restored = await page.evaluate(() => document.body.style.overflow);
+  expect(restored).not.toBe("hidden");
 });

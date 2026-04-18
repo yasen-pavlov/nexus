@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { render as renderWithProviders } from "@/test/test-utils";
 import type { DocumentHit } from "@/lib/api-types";
 import { EmailCardBody } from "../cards/email";
 import { TelegramCardBody } from "../cards/telegram";
@@ -115,6 +116,88 @@ describe("TelegramCardBody", () => {
     expect(
       screen.queryByRole("button", { name: /open in chat/i }),
     ).not.toBeInTheDocument();
+  });
+
+  // Match mode: backend pinpointed the exact matched message inside the
+  // window. The card should render a single-message row: sender name,
+  // timestamp, highlighted body, and a muted "in <chat>" tail.
+  it("renders match mode with sender, timestamp, and highlighted snippet", async () => {
+    const hit = baseHit({
+      source_type: "telegram",
+      source_name: "tg-main",
+      conversation_id: "12345",
+      headline: "По малкото <mark>пипонче</mark>",
+      match_source_id: "12345:228870:msg",
+      match_message_id: 228870,
+      match_sender_id: 577483548,
+      match_sender_name: "Yasen Pavlov",
+      match_created_at: "2026-04-08T19:18:37+02:00",
+      match_avatar_key: "avatars:577483548",
+      metadata: { chat_name: "Family", message_count: 21 },
+    });
+    renderWithProviders(<TelegramCardBody hit={hit} onOpenChat={() => {}} />);
+
+    expect(screen.getByText("Yasen Pavlov")).toBeInTheDocument();
+    // Chat name moves to the muted tail, not the main body.
+    expect(screen.getByText(/Family/)).toBeInTheDocument();
+    expect(screen.getByText(/21 in thread/)).toBeInTheDocument();
+    expect(screen.getByText("пипонче")).toBeInTheDocument();
+  });
+
+  // Semantic-fallback mode: no match_source_id, but message_lines has
+  // enough data to render a bookended preview + semantic-match pill.
+  it("renders semantic mode with bookended messages and semantic-match pill", () => {
+    const hit = baseHit({
+      source_type: "telegram",
+      source_name: "tg-main",
+      conversation_id: "12345",
+      metadata: {
+        chat_name: "Family",
+        message_count: 5,
+        message_lines: [
+          {
+            id: 100,
+            text: "Zimmer 243",
+            created_at: "2026-04-08T16:16:00Z",
+            sender_id: 111,
+            sender_name: "Maria",
+          },
+          {
+            id: 104,
+            text: "Малко става тъмно",
+            created_at: "2026-04-08T19:24:00Z",
+            sender_id: 222,
+            sender_name: "Yasen",
+          },
+        ],
+      },
+    });
+    renderWithProviders(<TelegramCardBody hit={hit} onOpenChat={() => {}} />);
+
+    expect(screen.getByText("Maria")).toBeInTheDocument();
+    expect(screen.getByText("Yasen")).toBeInTheDocument();
+    expect(screen.getByText(/Zimmer 243/)).toBeInTheDocument();
+    expect(screen.getByText(/Малко става тъмно/)).toBeInTheDocument();
+    expect(screen.getByText(/semantic match/i)).toBeInTheDocument();
+  });
+
+  it("match mode fires onOpenChat when the button is clicked", async () => {
+    const onOpenChat = vi.fn();
+    const hit = baseHit({
+      source_type: "telegram",
+      conversation_id: "12345",
+      headline: "<mark>hi</mark>",
+      match_source_id: "12345:1:msg",
+      match_message_id: 1,
+      match_sender_name: "Alice",
+      match_created_at: "2026-04-08T18:00:00Z",
+      metadata: { chat_name: "Family" },
+    });
+    renderWithProviders(<TelegramCardBody hit={hit} onOpenChat={onOpenChat} />);
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: /open in chat/i }),
+    );
+    expect(onOpenChat).toHaveBeenCalledWith(hit);
   });
 });
 

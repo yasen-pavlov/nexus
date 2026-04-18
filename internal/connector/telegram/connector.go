@@ -34,11 +34,25 @@ const (
 )
 
 // messageRecord is a temporary representation of a Telegram message used
-// during the windowing pass before producing model.Documents.
+// during the windowing pass before producing model.Documents. Carries
+// the fields needed to attribute each message to a sender in both
+// group chats (via FromID) and DMs (via Out + dmPeerID context), so
+// window docs can emit per-line sender metadata matching what the
+// per-message docs emit.
 type messageRecord struct {
-	ID   int
-	Text string
-	Date time.Time
+	ID     int
+	Text   string
+	Date   time.Time
+	FromID tg.PeerClass
+	Out    bool
+}
+
+// AvatarSourceID returns the binary-cache source ID used to store a
+// Telegram user's profile photo. Kept as a package-level helper so the
+// HTTP avatar endpoint can read the same key without cross-package
+// coupling on the connector.
+func AvatarSourceID(userID int64) string {
+	return fmt.Sprintf("avatars:%d", userID)
 }
 
 // telegramAPI abstracts the Telegram API calls for testability.
@@ -189,8 +203,17 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	var docs []model.Document
 
 	err := client.Run(ctx, func(ctx context.Context) error {
+		// Resolve the authenticated user's own ID once per sync. Used
+		// to attribute DM messages where m.Out=true but m.FromID is
+		// nil (Telegram commonly omits FromID in private chats since
+		// the sender is implicit). Failure is non-fatal — falls back
+		// to FromID-only resolution.
+		var selfID int64
+		if self, err := client.Self(ctx); err == nil && self != nil {
+			selfID = self.ID
+		}
 		var fetchErr error
-		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor)
+		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor, selfID)
 		return fetchErr
 	})
 
@@ -212,7 +235,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}, nil
 }
 
-func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor) ([]model.Document, error) {
+func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor, selfID int64) ([]model.Document, error) {
 	var sinceDate int
 	if cursor != nil {
 		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
@@ -244,12 +267,28 @@ func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaD
 		return nil, nil
 	}
 
-	return c.processDialogs(ctx, api, dl, chats, users, sinceDate)
+	userMap := buildUserMap(users)
+	return c.processDialogs(ctx, api, dl, chats, users, userMap, selfID, sinceDate)
 }
 
-func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, users []tg.UserClass, sinceDate int) ([]model.Document, error) {
+// buildUserMap indexes a slice of Telegram UserClass values by their
+// numeric user ID so downstream message emission can look up sender
+// display metadata without a second API round-trip per message.
+func buildUserMap(users []tg.UserClass) map[int64]*tg.User {
+	m := make(map[int64]*tg.User, len(users))
+	for _, u := range users {
+		if tu, ok := u.(*tg.User); ok {
+			m[tu.ID] = tu
+		}
+	}
+	return m
+}
+
+func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, users []tg.UserClass, userMap map[int64]*tg.User, selfID int64, sinceDate int) ([]model.Document, error) {
 	var allDocs []model.Document
 
+	// Group chats & channels — dmPeerID=0 because the sender is
+	// always explicit via m.FromID in multi-user rooms.
 	for _, chat := range chats {
 		chatName := chatTitle(chat)
 		chatID := chatIdentifier(chat)
@@ -263,14 +302,17 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl medi
 			continue
 		}
 
-		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, sinceDate)
+		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate)
 		if err != nil {
 			continue
 		}
 		allDocs = append(allDocs, docs...)
 	}
 
-	// Also process user DMs
+	// Private chats — every message is between two knowable users, so
+	// we pass u.ID as dmPeerID. makeMessageDoc uses that to attribute
+	// m.Out=false messages to the peer when FromID is nil (the common
+	// case in Telegram DMs).
 	for _, user := range users {
 		u, ok := user.(*tg.User)
 		if !ok || u.Bot || u.Self {
@@ -284,8 +326,12 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl medi
 			continue
 		}
 
+		// Cache the DM peer's avatar — it'll be used as the sender avatar
+		// for all of their messages in the DM.
+		c.ensureAvatarCached(ctx, dl, u)
+
 		inputPeer := &tg.InputPeerUser{UserID: u.ID, AccessHash: u.AccessHash}
-		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, sinceDate)
+		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate)
 		if err != nil {
 			continue
 		}
@@ -295,7 +341,7 @@ func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl medi
 	return allDocs, nil
 }
 
-func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, sinceDate int) ([]model.Document, error) {
+func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64, sinceDate int) ([]model.Document, error) {
 	// Dual emission: each Telegram message produces up to three documents:
 	//
 	//   1. a conversation *window* doc — the retrieval unit, embedded and
@@ -326,6 +372,16 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 			return nil, err
 		}
 
+		// GetHistory responses carry users for forwarded messages, reply
+		// targets, and participants. Merge them into the shared map so
+		// sender lookup works even for users not in the top-level dialog
+		// list.
+		for id, u := range buildUserMap(extractHistoryUsers(result)) {
+			if _, exists := userMap[id]; !exists {
+				userMap[id] = u
+			}
+		}
+
 		messages := extractMessages(result)
 		if len(messages) == 0 {
 			break
@@ -349,9 +405,11 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 			allMessages = append(allMessages, m)
 			if m.Message != "" {
 				records = append(records, messageRecord{
-					ID:   m.ID,
-					Text: m.Message,
-					Date: time.Unix(int64(m.Date), 0),
+					ID:     m.ID,
+					Text:   m.Message,
+					Date:   time.Unix(int64(m.Date), 0),
+					FromID: m.FromID,
+					Out:    m.Out,
 				})
 			}
 		}
@@ -374,7 +432,7 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 		}
 	}
 
-	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID)
+	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID, userMap, selfID, dmPeerID)
 
 	docs := make([]model.Document, 0, len(windowDocs)+len(allMessages))
 	docs = append(docs, windowDocs...)
@@ -387,12 +445,40 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 		if m.Message == "" && m.Media == nil {
 			continue
 		}
-		docs = append(docs, c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID]))
+		// Eagerly cache the sender's avatar before emitting the doc so
+		// the frontend's first render after sync can show the image
+		// without another sync round-trip. No-op when already cached.
+		if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
+			if user, known := userMap[senderID]; known {
+				c.ensureAvatarCached(ctx, dl, user)
+			}
+		}
+		msgDoc := c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID], userMap, selfID, dmPeerID)
 		if m.Media != nil {
 			if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
+				// Annotate the canonical message doc with attachment
+				// metadata so the chat UI can render attachment chips
+				// without a separate /related round-trip per message.
+				if msgDoc.Metadata == nil {
+					msgDoc.Metadata = map[string]any{}
+				}
+				att := map[string]any{
+					"id":        mediaDoc.ID.String(),
+					"source_id": mediaDoc.SourceID,
+					"mime_type": mediaDoc.MimeType,
+					"size":      mediaDoc.Size,
+				}
+				if filename, _ := mediaDoc.Metadata["filename"].(string); filename != "" {
+					att["filename"] = filename
+				} else {
+					att["filename"] = mediaDoc.Title
+				}
+				existing, _ := msgDoc.Metadata["attachments"].([]map[string]any)
+				msgDoc.Metadata["attachments"] = append(existing, att)
 				docs = append(docs, mediaDoc)
 			}
 		}
+		docs = append(docs, msgDoc)
 	}
 
 	return docs, nil
@@ -403,7 +489,27 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 // hit) but carries everything the chat browser and relation resolver need:
 // the text, the reply edge, the member-of-window edge (when the message is
 // part of a text window), and sender metadata.
-func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSourceID string) model.Document {
+// resolveSenderID picks the numeric sender ID for a Telegram message
+// across group chats and DMs. Group messages carry m.FromID explicitly.
+// DMs commonly leave FromID nil because the sender is implicit: if
+// m.Out=true the caller sent it (selfID), otherwise the DM peer sent
+// it (dmPeerID). Returns 0 when nothing attributable is available
+// (channel posts, service messages, or group DMs where the sender
+// wasn't in the dialog batch).
+func resolveSenderID(m *tg.Message, selfID, dmPeerID int64) int64 {
+	if u, ok := m.FromID.(*tg.PeerUser); ok && u.UserID != 0 {
+		return u.UserID
+	}
+	if dmPeerID == 0 {
+		return 0
+	}
+	if m.Out {
+		return selfID
+	}
+	return dmPeerID
+}
+
+func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSourceID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) model.Document {
 	sourceID := fmt.Sprintf("%s:%d:msg", chatID, m.ID)
 
 	relations := make([]model.Relation, 0, 2)
@@ -438,8 +544,17 @@ func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSource
 		"chat_name":  chatName,
 		"message_id": m.ID,
 	}
-	if u, ok := m.FromID.(*tg.PeerUser); ok {
-		metadata["sender_id"] = u.UserID
+	if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
+		metadata["sender_id"] = senderID
+		if user, known := userMap[senderID]; known {
+			metadata["sender_name"] = userDisplayName(user)
+			if user.Username != "" {
+				metadata["sender_username"] = user.Username
+			}
+			if hasDownloadableAvatar(user) {
+				metadata["sender_avatar_key"] = AvatarSourceID(senderID)
+			}
+		}
 	}
 
 	return model.Document{
@@ -467,7 +582,7 @@ func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSource
 // Input records may be in any order — they are sorted by date ascending here
 // before windowing so the resulting windows are chronological regardless of
 // how the records arrived from the API.
-func (c *Connector) windowMessages(records []messageRecord, chatName, chatID string) ([]model.Document, map[int]string) {
+func (c *Connector) windowMessages(records []messageRecord, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) ([]model.Document, map[int]string) {
 	msgIDToWindow := map[int]string{}
 	if len(records) == 0 {
 		return nil, msgIDToWindow
@@ -486,7 +601,7 @@ func (c *Connector) windowMessages(records []messageRecord, chatName, chatID str
 		if len(window) == 0 {
 			return
 		}
-		doc := c.makeWindowDoc(window, chatName, chatID)
+		doc := c.makeWindowDoc(window, chatName, chatID, userMap, selfID, dmPeerID)
 		docs = append(docs, doc)
 		for _, r := range window {
 			msgIDToWindow[r.ID] = doc.SourceID
@@ -512,19 +627,57 @@ func (c *Connector) windowMessages(records []messageRecord, chatName, chatID str
 	return docs, msgIDToWindow
 }
 
+// messageLine is the per-entry shape inside a window doc's
+// message_lines metadata array. Carries exactly the identity bits the
+// search card needs to render a message row without a secondary fetch,
+// plus the id/created_at the chat view needs for anchor navigation.
+// Kept as a plain map[string]any when emitted to avoid any encoding
+// surprises across the index → response boundary.
+func buildMessageLine(r messageRecord, userMap map[int64]*tg.User, selfID, dmPeerID int64) map[string]any {
+	line := map[string]any{
+		"id":         r.ID,
+		"text":       r.Text,
+		"created_at": r.Date.Format(time.RFC3339),
+	}
+	// Resolve the sender using the same rules per-message docs apply,
+	// so group chats and DMs attribute consistently across both doc
+	// types. We build a lightweight *tg.Message for reuse of
+	// resolveSenderID — avoids a parallel helper that could drift.
+	probe := &tg.Message{FromID: r.FromID, Out: r.Out}
+	if senderID := resolveSenderID(probe, selfID, dmPeerID); senderID != 0 {
+		line["sender_id"] = senderID
+		if user, known := userMap[senderID]; known {
+			line["sender_name"] = userDisplayName(user)
+			if user.Username != "" {
+				line["sender_username"] = user.Username
+			}
+			if hasDownloadableAvatar(user) {
+				line["sender_avatar_key"] = AvatarSourceID(senderID)
+			}
+		}
+	}
+	return line
+}
+
 // makeWindowDoc converts a non-empty slice of message records into a single
 // Document. The window's content is the joined message texts (preserving
 // message boundaries with newlines). CreatedAt is the latest message in the
 // window, so recency decay reflects when the conversation last had activity.
-func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID string) model.Document {
+//
+// The per-line message_lines metadata array is what drives the search
+// card's match-mode rendering (via highlight→line mapping) and the
+// semantic-fallback bookended preview. One array, two consumers.
+func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) model.Document {
 	first := window[0]
 	last := window[len(window)-1]
 
 	texts := make([]string, len(window))
 	messageIDs := make([]int, len(window))
+	messageLines := make([]map[string]any, len(window))
 	for i, r := range window {
 		texts[i] = r.Text
 		messageIDs[i] = r.ID
+		messageLines[i] = buildMessageLine(r, userMap, selfID, dmPeerID)
 	}
 	content := strings.Join(texts, "\n")
 
@@ -546,7 +699,9 @@ func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID strin
 			"date_range_start":     first.Date.Format(time.RFC3339),
 			"date_range_end":       last.Date.Format(time.RFC3339),
 			"anchor_message_id":    first.ID,
+			"anchor_created_at":    first.Date.Format(time.RFC3339),
 			"included_message_ids": messageIDs,
+			"message_lines":        messageLines,
 		},
 		ConversationID: chatID,
 		Visibility:     "private",
@@ -618,6 +773,17 @@ func chatToInputPeer(chat tg.ChatClass) tg.InputPeerClass {
 }
 
 func userDisplayName(u *tg.User) string {
+	return DisplayName(u)
+}
+
+// DisplayName returns a human-readable label for a Telegram user,
+// preferring the concatenated first + last name, falling back through
+// username to a "User <id>" placeholder. Exposed so the auth handler
+// can use the same rule when persisting self-identity.
+func DisplayName(u *tg.User) string {
+	if u == nil {
+		return ""
+	}
 	if u.FirstName != "" && u.LastName != "" {
 		return u.FirstName + " " + u.LastName
 	}
@@ -856,4 +1022,69 @@ func extractMessages(result tg.MessagesMessagesClass) []tg.MessageClass {
 	default:
 		return nil
 	}
+}
+
+// extractHistoryUsers returns the Users slice from a GetHistory response.
+// Telegram populates this with senders of forwarded messages, reply
+// targets, and participants referenced by the returned messages — useful
+// for resolving sender display info without a second API call.
+func extractHistoryUsers(result tg.MessagesMessagesClass) []tg.UserClass {
+	switch r := result.(type) {
+	case *tg.MessagesMessages:
+		return r.Users
+	case *tg.MessagesMessagesSlice:
+		return r.Users
+	case *tg.MessagesChannelMessages:
+		return r.Users
+	default:
+		return nil
+	}
+}
+
+// hasDownloadableAvatar reports whether a Telegram user has a profile
+// photo the connector can fetch. Returns false for accounts that never
+// set a photo or whose photo is the empty placeholder.
+func hasDownloadableAvatar(u *tg.User) bool {
+	if u == nil {
+		return false
+	}
+	photo, ok := u.Photo.(*tg.UserProfilePhoto)
+	return ok && photo.PhotoID != 0
+}
+
+// ensureAvatarCached fetches and caches a Telegram user's profile photo
+// if one exists and isn't already in the binary store. No-op when the
+// user has no photo, when the store is unwired, or when the connector
+// isn't in eager cache mode. Failures are silent — avatar pipeline
+// failures must never block message indexing, and the frontend has an
+// initials fallback.
+func (c *Connector) ensureAvatarCached(ctx context.Context, dl mediaDownloader, user *tg.User) {
+	if c.binaryStore == nil || c.cacheConfig.Mode != "eager" {
+		return
+	}
+	if !hasDownloadableAvatar(user) {
+		return
+	}
+
+	sourceID := AvatarSourceID(user.ID)
+	if exists, _ := c.binaryStore.Exists(ctx, "telegram", c.name, sourceID); exists {
+		return
+	}
+
+	photo, ok := user.Photo.(*tg.UserProfilePhoto)
+	if !ok {
+		return
+	}
+
+	loc := &tg.InputPeerPhotoFileLocation{
+		Big:     false,
+		Peer:    &tg.InputPeerUser{UserID: user.ID, AccessHash: user.AccessHash},
+		PhotoID: photo.PhotoID,
+	}
+	data, err := dl.Download(ctx, loc)
+	if err != nil || len(data) == 0 {
+		return
+	}
+
+	_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
 }

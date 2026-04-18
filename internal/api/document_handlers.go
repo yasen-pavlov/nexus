@@ -290,13 +290,14 @@ const (
 // GetConversationMessages godoc
 //
 //	@Summary		Paginated chronological browse of a conversation
-//	@Description	Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via `before` and `after` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.
+//	@Description	Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via `before` / `after` RFC3339 timestamps, plus `around=RFC3339` for anchor-seeded opens (returns half the limit older + half newer, centered on the anchor). Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.
 //	@Tags			conversations
 //	@Produce		json
 //	@Param			source_type		path	string	true	"Connector source type (e.g. telegram)"
 //	@Param			conversation_id	path	string	true	"Conversation identifier (e.g. Telegram chat ID)"
 //	@Param			before			query	string	false	"RFC3339 timestamp — return messages strictly before this time"
 //	@Param			after			query	string	false	"RFC3339 timestamp — return messages strictly after this time"
+//	@Param			around			query	string	false	"RFC3339 timestamp — return limit/2 messages before and limit/2 after, centered on this time. Cannot be combined with before/after."
 //	@Param			limit			query	int		false	"Page size (default 50, max 200)"
 //	@Success		200	{object}	conversationMessagesResponse
 //	@Failure		400	{object}	APIResponse
@@ -312,28 +313,8 @@ func (h *handler) GetConversationMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	opts := search.ConversationMessagesOptions{
-		SourceType:   sourceType,
-		Conversation: conversationID,
-		Limit:        defaultConversationLimit,
-	}
 	q := r.URL.Query()
-	if s := q.Get("before"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'before' timestamp (expected RFC3339)")
-			return
-		}
-		opts.Before = t
-	}
-	if s := q.Get("after"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'after' timestamp (expected RFC3339)")
-			return
-		}
-		opts.After = t
-	}
+	limit := defaultConversationLimit
 	if s := q.Get("limit"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n <= 0 {
@@ -343,45 +324,81 @@ func (h *handler) GetConversationMessages(w http.ResponseWriter, r *http.Request
 		if n > maxConversationLimit {
 			n = maxConversationLimit
 		}
-		opts.Limit = n
+		limit = n
+	}
+
+	var beforeTS, afterTS, aroundTS time.Time
+	var err error
+	if s := q.Get("before"); s != "" {
+		beforeTS, err = time.Parse(time.RFC3339, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'before' timestamp (expected RFC3339)")
+			return
+		}
+	}
+	if s := q.Get("after"); s != "" {
+		afterTS, err = time.Parse(time.RFC3339, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'after' timestamp (expected RFC3339)")
+			return
+		}
+	}
+	if s := q.Get("around"); s != "" {
+		aroundTS, err = time.Parse(time.RFC3339, s)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid 'around' timestamp (expected RFC3339)")
+			return
+		}
+		if !beforeTS.IsZero() || !afterTS.IsZero() {
+			writeError(w, http.StatusBadRequest, "'around' cannot be combined with 'before' or 'after'")
+			return
+		}
 	}
 
 	claims := auth.UserFromContext(r.Context())
-	// Over-fetch so we can still fill a full page after per-chunk auth
-	// filtering. Simpler than pushing the ownership filter into the
-	// OpenSearch query — the auth boundary stays centralized in
-	// canReadDocument. Worst case: doubling the fetch is cheap compared
-	// to the ergonomic cost of duplicating auth logic into the query.
-	opts.Limit *= 2
-
-	chunks, err := h.search.GetConversationMessages(r.Context(), opts)
-	if err != nil {
-		h.log.Error("conversation messages query failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to load conversation")
+	if !aroundTS.IsZero() {
+		resp := h.buildAroundResponse(r.Context(), sourceType, conversationID, aroundTS, limit, claims)
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
+	resp := h.buildDirectionalResponse(r.Context(), sourceType, conversationID, beforeTS, afterTS, limit, claims)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// buildDirectionalResponse handles the single-direction tail / before /
+// after modes. Over-fetches 2x to absorb per-chunk auth filtering.
+func (h *handler) buildDirectionalResponse(ctx context.Context, sourceType, conversationID string, beforeTS, afterTS time.Time, limit int, claims *auth.Claims) conversationMessagesResponse {
+	opts := search.ConversationMessagesOptions{
+		SourceType:   sourceType,
+		Conversation: conversationID,
+		Before:       beforeTS,
+		After:        afterTS,
+		Limit:        limit * 2,
+	}
+	chunks, err := h.search.GetConversationMessages(ctx, opts)
+	if err != nil {
+		h.log.Error("conversation messages query failed", zap.Error(err))
+		return conversationMessagesResponse{Messages: []*model.Document{}}
+	}
+
 	resp := conversationMessagesResponse{Messages: []*model.Document{}}
-	requested := opts.Limit / 2
 	for i := range chunks {
 		if !canReadDocument(claims, chunks[i].OwnerID, chunks[i].Shared) {
 			continue
 		}
 		resp.Messages = append(resp.Messages, chunkToDocument(&chunks[i]))
-		if len(resp.Messages) >= requested {
+		if len(resp.Messages) >= limit {
 			break
 		}
 	}
 
-	// Cursors reflect the direction the caller moved. When the caller
-	// paged forward (after=X) a full page means more newer messages
-	// may exist → emit next_after. When the caller paged backward (or
-	// did the initial tail load) a full page means more older messages
-	// may exist → emit next_before. Emitting both would be misleading:
-	// scrolling up from the initial load should not advertise a
-	// "newer" cursor (the caller already has the latest).
-	if len(resp.Messages) >= requested && len(resp.Messages) > 0 {
-		if !opts.After.IsZero() {
+	// Single-direction cursor: scrolling forward (after=X) may have
+	// more newer → emit next_after. Scrolling backward or tail-loading
+	// may have more older → emit next_before. Never both here; around
+	// handles the bidirectional case.
+	if len(resp.Messages) >= limit && len(resp.Messages) > 0 {
+		if !afterTS.IsZero() {
 			last := resp.Messages[len(resp.Messages)-1].CreatedAt
 			resp.NextAfter = &last
 		} else {
@@ -389,8 +406,146 @@ func (h *handler) GetConversationMessages(w http.ResponseWriter, r *http.Request
 			resp.NextBefore = &first
 		}
 	}
+	return resp
+}
 
-	writeJSON(w, http.StatusOK, resp)
+// buildAroundResponse handles anchor-seeded opens. Fetches ~limit/2
+// messages on each side of the anchor in a single response, so the
+// chat view can open centered on the anchor with proper bi-directional
+// cursors from the first render.
+//
+// A message exactly at the anchor timestamp falls on the "before" side
+// (the before half includes messages at-or-before anchor; after side
+// is strictly later). Dedup is unnecessary because the halves don't
+// overlap by construction.
+func (h *handler) buildAroundResponse(ctx context.Context, sourceType, conversationID string, aroundTS time.Time, limit int, claims *auth.Claims) conversationMessagesResponse {
+	half := max(limit/2, 1)
+
+	// Before half: messages up to and including the anchor. Use a
+	// 1-second inclusive bump since the search uses strict `<`.
+	beforeOpts := search.ConversationMessagesOptions{
+		SourceType:   sourceType,
+		Conversation: conversationID,
+		Before:       aroundTS.Add(time.Second),
+		Limit:        half * 2,
+	}
+	beforeChunks, err := h.search.GetConversationMessages(ctx, beforeOpts)
+	if err != nil {
+		h.log.Error("conversation around (before) query failed", zap.Error(err))
+		return conversationMessagesResponse{Messages: []*model.Document{}}
+	}
+
+	// After half: strictly newer than the anchor.
+	afterOpts := search.ConversationMessagesOptions{
+		SourceType:   sourceType,
+		Conversation: conversationID,
+		After:        aroundTS,
+		Limit:        half * 2,
+	}
+	afterChunks, err := h.search.GetConversationMessages(ctx, afterOpts)
+	if err != nil {
+		h.log.Error("conversation around (after) query failed", zap.Error(err))
+		return conversationMessagesResponse{Messages: []*model.Document{}}
+	}
+
+	resp := conversationMessagesResponse{Messages: []*model.Document{}}
+
+	// beforeChunks is ASC ending at the anchor — take the tail (most
+	// recent half entries that pass auth) so we get messages closest
+	// to the anchor, not the oldest.
+	beforeFiltered := filterReadable(beforeChunks, claims)
+	if len(beforeFiltered) > half {
+		beforeFiltered = beforeFiltered[len(beforeFiltered)-half:]
+	}
+	for _, ch := range beforeFiltered {
+		resp.Messages = append(resp.Messages, chunkToDocument(&ch))
+	}
+
+	// afterChunks is ASC starting strictly after anchor — take the
+	// head half entries (closest to anchor, same direction we'd
+	// paginate on scroll-down).
+	afterFiltered := filterReadable(afterChunks, claims)
+	if len(afterFiltered) > half {
+		afterFiltered = afterFiltered[:half]
+	}
+	for _, ch := range afterFiltered {
+		resp.Messages = append(resp.Messages, chunkToDocument(&ch))
+	}
+
+	// Bidirectional cursors: emit next_before when the before half
+	// was full (older messages might exist), next_after when the
+	// after half was full (newer messages might exist). Edges are
+	// the oldest/newest created_at in the merged response.
+	if len(resp.Messages) == 0 {
+		return resp
+	}
+	if len(beforeFiltered) >= half {
+		first := resp.Messages[0].CreatedAt
+		resp.NextBefore = &first
+	}
+	if len(afterFiltered) >= half {
+		last := resp.Messages[len(resp.Messages)-1].CreatedAt
+		resp.NextAfter = &last
+	}
+	return resp
+}
+
+// filterReadable copies only the chunks the given claims can read.
+// Centralizes the auth gate so both halves of the around query apply
+// it consistently.
+func filterReadable(chunks []model.Chunk, claims *auth.Claims) []model.Chunk {
+	out := make([]model.Chunk, 0, len(chunks))
+	for i := range chunks {
+		if canReadDocument(claims, chunks[i].OwnerID, chunks[i].Shared) {
+			out = append(out, chunks[i])
+		}
+	}
+	return out
+}
+
+// GetDocumentBySource godoc
+//
+//	@Summary		Look up a document by (source_type, source_id)
+//	@Description	Resolves a chunk identified by its canonical per-connector identifiers into a Document. Used by the conversation view to lazy-fetch reply targets whose message falls outside the loaded window — when walking a reply_to relation the frontend only has the target's source identifiers and needs to fetch the full doc. Auth-scoped: returns 404 (not 403) when the doc isn't readable, to avoid leaking existence.
+//	@Tags			documents
+//	@Produce		json
+//	@Param			source_type	query	string	true	"Source type (e.g. telegram, imap)"
+//	@Param			source_id	query	string	true	"Source-assigned identifier of the chunk"
+//	@Success		200	{object}	model.Document
+//	@Failure		400	{object}	APIResponse
+//	@Failure		401	{object}	APIResponse
+//	@Failure		404	{object}	APIResponse
+//	@Failure		500	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/documents/by-source [get]
+func (h *handler) GetDocumentBySource(w http.ResponseWriter, r *http.Request) {
+	sourceType := r.URL.Query().Get("source_type")
+	sourceID := r.URL.Query().Get("source_id")
+	if sourceType == "" || sourceID == "" {
+		writeError(w, http.StatusBadRequest, "source_type and source_id are required")
+		return
+	}
+
+	hits, err := h.search.FindChunksByTerm(r.Context(), "source_id", sourceID)
+	if err != nil {
+		h.log.Error("find chunk by source_id failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to look up document")
+		return
+	}
+
+	claims := auth.UserFromContext(r.Context())
+	for i := range hits {
+		if hits[i].SourceType != sourceType {
+			continue
+		}
+		if !canReadDocument(claims, hits[i].OwnerID, hits[i].Shared) {
+			continue
+		}
+		writeJSON(w, http.StatusOK, chunkToDocument(&hits[i]))
+		return
+	}
+
+	writeError(w, http.StatusNotFound, "document not found")
 }
 
 // chunkToDocument projects a chunk into the Document shape returned by

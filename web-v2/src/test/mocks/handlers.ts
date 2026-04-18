@@ -7,6 +7,9 @@ import type {
   DocumentHit,
   RelatedResponse,
   ConnectorConfig,
+  ConversationMessagesResponse,
+  Document,
+  IdentitiesResponse,
 } from "@/lib/api-types";
 
 const fakeAdmin: User = { id: "u1", username: "admin", role: "admin" };
@@ -229,6 +232,45 @@ export const handlers = [
     });
   }),
 
+  http.get("*/api/me/identities", () =>
+    HttpResponse.json(
+      wrapData<IdentitiesResponse>({
+        identities: [
+          {
+            connector_id: "c-telegram-1",
+            source_type: "telegram",
+            source_name: "tg-main",
+            external_id: "9001",
+            external_name: "Me",
+            has_avatar: false,
+          },
+        ],
+      }),
+    ),
+  ),
+
+  http.get("*/api/conversations/:sourceType/:conversationId/messages", () => {
+    return HttpResponse.json(
+      wrapData<ConversationMessagesResponse>({
+        messages: sampleConversationMessages,
+      }),
+    );
+  }),
+
+  http.get("*/api/documents/by-source", ({ request }) => {
+    const url = new URL(request.url);
+    const sid = url.searchParams.get("source_id");
+    const match = sampleConversationMessages.find((m) => m.source_id === sid);
+    if (!match) {
+      return HttpResponse.json({ error: "not found" }, { status: 404 });
+    }
+    return HttpResponse.json(wrapData<Document>(match));
+  }),
+
+  http.get("*/api/connectors/:id/avatars/:externalId", () =>
+    new HttpResponse(null, { status: 404 }),
+  ),
+
   http.get("*/api/connectors/", ({ request }) => {
     const auth = request.headers.get("Authorization");
     if (!auth) {
@@ -255,4 +297,93 @@ export const handlers = [
   }),
 ];
 
-export { fakeAdmin, fakeUser, fakeToken, fakeUserToken, sampleHits };
+// sampleConversationMessages covers the Telegram-style chunks the
+// conversation endpoint returns: two senders, a reply relation, and one
+// message with an attachment. Kept as a module-level constant so tests
+// can reason about the fixture.
+const sampleConversationMessages: Document[] = [
+  {
+    id: "d-tg-msg-1",
+    source_type: "telegram",
+    source_name: "tg-main",
+    source_id: "12345:100:msg",
+    title: "Family",
+    content: "Hey everyone, dinner at 7?",
+    metadata: {
+      chat_id: "12345",
+      chat_name: "Family",
+      message_id: 100,
+      sender_id: 1001,
+      sender_name: "Alice",
+      sender_username: "alice_k",
+    },
+    relations: [],
+    conversation_id: "12345",
+    hidden: true,
+    visibility: "private",
+    created_at: "2026-04-10T18:00:00Z",
+    indexed_at: "2026-04-10T18:05:00Z",
+  },
+  {
+    id: "d-tg-msg-2",
+    source_type: "telegram",
+    source_name: "tg-main",
+    source_id: "12345:101:msg",
+    title: "Family",
+    content: "Sounds good, I'll be there",
+    metadata: {
+      chat_id: "12345",
+      chat_name: "Family",
+      message_id: 101,
+      sender_id: 9001,
+      sender_name: "Me",
+    },
+    relations: [
+      { type: "reply_to", target_source_id: "12345:100:msg" },
+    ],
+    conversation_id: "12345",
+    hidden: true,
+    visibility: "private",
+    created_at: "2026-04-10T18:02:00Z",
+    indexed_at: "2026-04-10T18:05:00Z",
+  },
+  {
+    id: "d-tg-msg-3",
+    source_type: "telegram",
+    source_name: "tg-main",
+    source_id: "12345:102:msg",
+    title: "Family",
+    content: "here's the receipt",
+    metadata: {
+      chat_id: "12345",
+      chat_name: "Family",
+      message_id: 102,
+      sender_id: 1001,
+      sender_name: "Alice",
+      attachments: [
+        {
+          id: "d-tg-media-3",
+          source_id: "12345:102:media",
+          filename: "receipt.pdf",
+          mime_type: "application/pdf",
+          size: 24576,
+        },
+      ],
+    },
+    relations: [],
+    conversation_id: "12345",
+    hidden: true,
+    visibility: "private",
+    created_at: "2026-04-10T18:05:00Z",
+    indexed_at: "2026-04-10T18:05:00Z",
+  },
+];
+
+export {
+  fakeAdmin,
+  fakeUser,
+  fakeToken,
+  fakeUserToken,
+  sampleHits,
+  sampleConversationMessages,
+};

@@ -55,7 +55,7 @@ export function AppShell({ user, children }: AppShellProps) {
   const isAdmin = user.role === "admin";
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="h-svh min-h-0 overflow-hidden">
       <Sidebar collapsible="icon">
         <SidebarHeader className="px-3 py-4">
           <Link
@@ -118,7 +118,9 @@ export function AppShell({ user, children }: AppShellProps) {
 
       <SidebarInset>
         <TopBar />
-        <main className="flex flex-1 flex-col">{children}</main>
+        <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {children}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   );

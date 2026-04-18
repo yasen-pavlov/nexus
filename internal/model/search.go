@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // SearchRequest contains search parameters including filters.
 type SearchRequest struct {
 	Query       string   `json:"query"`
@@ -38,6 +40,20 @@ type DocumentHit struct {
 	// frontend uses this to hide the "Related" toggle for docs with nothing
 	// to expand, without triggering an extra /related call per hit.
 	RelatedCount int `json:"related_count,omitempty"`
+
+	// Match* fields pinpoint the specific message inside a
+	// conversation-window document that matched the query. Populated
+	// by the search pipeline when a BM25 highlight can be mapped back
+	// to a message_lines entry (telegram window hits today). Empty
+	// for semantic-only hits and for non-window documents — the
+	// frontend renders a bookended window preview in those cases
+	// instead of a pinpoint message card.
+	MatchSourceID   string     `json:"match_source_id,omitempty"`
+	MatchMessageID  int64      `json:"match_message_id,omitempty"`
+	MatchCreatedAt  *time.Time `json:"match_created_at,omitempty"`
+	MatchSenderID   int64      `json:"match_sender_id,omitempty"`
+	MatchSenderName string     `json:"match_sender_name,omitempty"`
+	MatchAvatarKey  string     `json:"match_avatar_key,omitempty"`
 }
 
 // ScoreDetails provides a breakdown of how the final rank was computed.

@@ -542,6 +542,62 @@ func TestHybridSearch(t *testing.T) {
 	}
 }
 
+// TestHybridSearch_ExcludesHiddenDocs guards against the bug where
+// HybridSearch built its BM25 sub-query inline without the `must_not
+// hidden` clause that the BM25-only path gets via buildSearchQuery,
+// causing per-message Telegram docs (Hidden=true) to leak into search
+// results. Seed one hidden and one visible doc that both match the
+// query and verify only the visible one comes back.
+func TestHybridSearch_ExcludesHiddenDocs(t *testing.T) {
+	url, index := testutil.TestOSConfig(t, "hybrid-hidden")
+	ctx := context.Background()
+	c, err := NewWithIndex(ctx, url, index, nil, lang.Default())
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	if err := c.EnsureIndex(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.DeleteIndex(context.Background()) }) //nolint:errcheck // test
+
+	now := time.Now()
+	chunks := []model.Chunk{
+		{
+			ID: "tg:main:win:0", ParentID: "tg:main:win", DocID: "tg:main:win",
+			ChunkIndex: 0, Title: "Chat", Content: "dinner plans tonight",
+			SourceType: "telegram", SourceName: "main", SourceID: "win",
+			Embedding: []float32{0.9, 0.1, 0.0}, Visibility: "private",
+			Shared: true, CreatedAt: now,
+		},
+		{
+			ID: "tg:main:msg:0", ParentID: "tg:main:msg", DocID: "tg:main:msg",
+			ChunkIndex: 0, Title: "Chat", Content: "dinner plans tonight",
+			SourceType: "telegram", SourceName: "main", SourceID: "msg",
+			Embedding: []float32{0.9, 0.1, 0.0}, Visibility: "private",
+			Shared: true, Hidden: true, CreatedAt: now,
+		},
+	}
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatal(err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	queryEmb := []float32{0.9, 0.1, 0.0}
+	result, err := c.HybridSearch(ctx, model.SearchRequest{Query: "dinner", Limit: 10}, queryEmb)
+	if err != nil {
+		t.Fatalf("hybrid search failed: %v", err)
+	}
+
+	for _, hit := range result.Documents {
+		if hit.SourceID == "msg" {
+			t.Errorf("hidden doc leaked into hybrid results: %+v", hit)
+		}
+	}
+	if len(result.Documents) == 0 {
+		t.Errorf("expected the visible window doc to match, got zero results")
+	}
+}
+
 func TestHybridSearch_CancelledContext(t *testing.T) {
 	c := newTestClient(t)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -487,6 +487,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connectors/{id}/avatars/{external_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch a cached profile avatar from a connector
+         * @description Streams the bytes of a profile photo the connector cached to the binary store (e.g. a Telegram sender's avatar, keyed by their external user ID). Auth-scoped to the connector's visibility; returns 404 (not 403) for connectors the caller can't read, to avoid leaking existence. Emits a private, caches-fine response so the browser reuses the blob across conversation views.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Connector UUID */
+                    id: string;
+                    /** @description External (source-assigned) identifier whose avatar to fetch */
+                    external_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{source_type}/{conversation_id}/messages": {
         parameters: {
             query?: never;
@@ -539,6 +608,86 @@ export interface paths {
                 };
                 /** @description Unauthorized */
                 401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/by-source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Look up a document by (source_type, source_id)
+         * @description Resolves a chunk identified by its canonical per-connector identifiers into a Document. Used by the conversation view to lazy-fetch reply targets whose message falls outside the loaded window — when walking a reply_to relation the frontend only has the target's source identifiers and needs to fetch the full doc. Auth-scoped: returns 404 (not 403) when the doc isn't readable, to avoid leaking existence.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description Source type (e.g. telegram, imap) */
+                    source_type: string;
+                    /** @description Source-assigned identifier of the chunk */
+                    source_id: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_model.Document"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -748,6 +897,63 @@ export interface paths {
                         "application/json": {
                             [key: string]: string;
                         };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List self-identities across connected sources
+         * @description Returns the requesting user's external identities on each of their *owned* connectors (shared connectors are skipped — they don't represent "me"). Only connectors that have completed auth and populated `external_id` emit an entry. Chat-like UI uses this to distinguish own messages from others.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.identitiesResponse"];
+                    };
+                };
+                /** @description Unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
                     };
                 };
             };
@@ -1676,6 +1882,15 @@ export interface components {
             };
             created_at?: string;
             enabled?: boolean;
+            /**
+             * @description ExternalID and ExternalName identify who the Nexus user IS on the
+             *     external system this connector represents (e.g. own Telegram user
+             *     ID + display name after OAuth). Empty when the connector has no
+             *     notion of "self" (filesystem) or hasn't completed auth yet. Used
+             *     by the /api/me/identities endpoint to drive self-aware UI.
+             */
+            external_id?: string;
+            external_name?: string;
             id?: string;
             last_run?: string;
             name?: string;
@@ -1715,6 +1930,21 @@ export interface components {
             id?: string;
             imap_message_id?: string;
             indexed_at?: string;
+            match_avatar_key?: string;
+            match_created_at?: string;
+            match_message_id?: number;
+            match_sender_id?: number;
+            match_sender_name?: string;
+            /**
+             * @description Match* fields pinpoint the specific message inside a
+             *     conversation-window document that matched the query. Populated
+             *     by the search pipeline when a BM25 highlight can be mapped back
+             *     to a message_lines entry (telegram window hits today). Empty
+             *     for semantic-only hits and for non-window documents — the
+             *     frontend renders a bookended window preview in those cases
+             *     instead of a pinpoint message card.
+             */
+            match_source_id?: string;
             metadata?: {
                 [key: string]: unknown;
             };
@@ -1793,6 +2023,15 @@ export interface components {
             };
             created_at?: string;
             enabled?: boolean;
+            /**
+             * @description ExternalID and ExternalName identify who the Nexus user IS on the
+             *     external system this connector represents (e.g. own Telegram user
+             *     ID + display name after OAuth). Empty when the connector has no
+             *     notion of "self" (filesystem) or hasn't completed auth yet. Used
+             *     by the /api/me/identities endpoint to drive self-aware UI.
+             */
+            external_id?: string;
+            external_name?: string;
             id?: string;
             last_run?: string;
             name?: string;
@@ -1834,6 +2073,17 @@ export interface components {
             model?: string;
             ollama_url?: string;
             provider?: string;
+        };
+        "internal_api.identitiesResponse": {
+            identities?: components["schemas"]["internal_api.identityItem"][];
+        };
+        "internal_api.identityItem": {
+            connector_id?: string;
+            external_id?: string;
+            external_name?: string;
+            has_avatar?: boolean;
+            source_name?: string;
+            source_type?: string;
         };
         "internal_api.loginRequest": {
             password?: string;

@@ -79,8 +79,10 @@ func NewRouter(
 			r.Use(auth.Middleware(jwtSecret))
 
 			r.Get("/auth/me", h.Me)
+			r.Get("/me/identities", h.GetMyIdentities)
 			r.Get("/search", h.Search)
 
+			r.Get("/documents/by-source", h.GetDocumentBySource)
 			r.Get("/documents/{id}/content", h.DownloadDocument)
 			r.Get("/documents/{id}/related", h.GetRelatedDocuments)
 			r.Get("/conversations/{source_type}/{conversation_id}/messages", h.GetConversationMessages)
@@ -96,6 +98,7 @@ func NewRouter(
 				r.Get("/{id}", h.GetConnector)
 				r.Put("/{id}", h.UpdateConnector)
 				r.Delete("/{id}", h.DeleteConnector)
+				r.Get("/{id}/avatars/{external_id}", h.GetConnectorAvatar)
 			})
 
 			r.Route("/connectors/{id}/auth", func(r chi.Router) {

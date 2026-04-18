@@ -38,6 +38,16 @@ export function ResultCard({
   const relatedCount = hit.related_count ?? 0;
   const sourceLabel = sourceMetaFor(hit.source_type).label;
 
+  // Telegram result cards own their own body layout: match mode
+  // renders a pinpoint message row, semantic-fallback renders a
+  // bookended window preview. In both cases the stock title/headline
+  // section above would duplicate information, so we hide it for
+  // telegram and let the body carry the identity chrome.
+  const isTelegramCustomBody =
+    hit.source_type === "telegram" &&
+    (!!hit.match_source_id ||
+      Array.isArray(hit.metadata?.message_lines));
+
   return (
     <article
       className={cn(
@@ -91,24 +101,28 @@ export function ResultCard({
           )}
         </div>
 
-        <h3 className="text-[15px] font-medium leading-[1.35] tracking-[-0.005em] text-foreground">
-          <span className="line-clamp-2">{titleText}</span>
-        </h3>
+        {!isTelegramCustomBody && (
+          <>
+            <h3 className="text-[15px] font-medium leading-[1.35] tracking-[-0.005em] text-foreground">
+              <span className="line-clamp-2">{titleText}</span>
+            </h3>
 
-        {hit.headline ? (
-          <p
-            className={cn(
-              "line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground",
-              "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
-              "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
-            )}
-            dangerouslySetInnerHTML={{ __html: hit.headline }}
-          />
-        ) : hit.content ? (
-          <p className="line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground">
-            {hit.content}
-          </p>
-        ) : null}
+            {hit.headline ? (
+              <p
+                className={cn(
+                  "line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground",
+                  "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
+                  "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
+                )}
+                dangerouslySetInnerHTML={{ __html: hit.headline }}
+              />
+            ) : hit.content ? (
+              <p className="line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground">
+                {hit.content}
+              </p>
+            ) : null}
+          </>
+        )}
 
         <CardBody
           hit={hit}

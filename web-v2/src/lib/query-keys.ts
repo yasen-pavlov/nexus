@@ -21,4 +21,28 @@ export const searchKeys = {
 export const documentKeys = {
   all: ["documents"] as const,
   related: (id: string) => [...documentKeys.all, id, "related"] as const,
+  bySource: (sourceType: string, sourceID: string) =>
+    [...documentKeys.all, "by-source", sourceType, sourceID] as const,
+};
+
+export const conversationKeys = {
+  all: ["conversations"] as const,
+  messages: (sourceType: string, conversationID: string, anchorTs?: string) =>
+    [
+      ...conversationKeys.all,
+      sourceType,
+      conversationID,
+      anchorTs ?? "tail",
+    ] as const,
+};
+
+export const identityKeys = {
+  all: ["identities"] as const,
+  list: () => [...identityKeys.all, "list"] as const,
+};
+
+export const avatarKeys = {
+  all: ["avatars"] as const,
+  blob: (connectorID: string, externalID: string) =>
+    [...avatarKeys.all, connectorID, externalID] as const,
 };

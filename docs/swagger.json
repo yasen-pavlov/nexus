@@ -429,6 +429,62 @@
                 }
             }
         },
+        "/connectors/{id}/avatars/{external_id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Streams the bytes of a profile photo the connector cached to the binary store (e.g. a Telegram sender's avatar, keyed by their external user ID). Auth-scoped to the connector's visibility; returns 404 (not 403) for connectors the caller can't read, to avoid leaking existence. Emits a private, caches-fine response so the browser reuses the blob across conversation views.",
+                "produces": [
+                    "image/*"
+                ],
+                "tags": [
+                    "connectors"
+                ],
+                "summary": "Fetch a cached profile avatar from a connector",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Connector UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "External (source-assigned) identifier whose avatar to fetch",
+                        "name": "external_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/conversations/{source_type}/{conversation_id}/messages": {
             "get": {
                 "security": [
@@ -493,6 +549,71 @@
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/by-source": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Resolves a chunk identified by its canonical per-connector identifiers into a Document. Used by the conversation view to lazy-fetch reply targets whose message falls outside the loaded window — when walking a reply_to relation the frontend only has the target's source identifiers and needs to fetch the full doc. Auth-scoped: returns 404 (not 403) when the doc isn't readable, to avoid leaking existence.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Look up a document by (source_type, source_id)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Source type (e.g. telegram, imap)",
+                        "name": "source_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Source-assigned identifier of the chunk",
+                        "name": "source_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_muty_nexus_internal_model.Document"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/internal_api.APIResponse"
                         }
@@ -642,6 +763,43 @@
                             "additionalProperties": {
                                 "type": "string"
                             }
+                        }
+                    }
+                }
+            }
+        },
+        "/me/identities": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the requesting user's external identities on each of their *owned* connectors (shared connectors are skipped — they don't represent \"me\"). Only connectors that have completed auth and populated `external_id` emit an entry. Chat-like UI uses this to distinguish own messages from others.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "identity"
+                ],
+                "summary": "List self-identities across connected sources",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.identitiesResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
                         }
                     }
                 }
@@ -1434,6 +1592,13 @@
                 "enabled": {
                     "type": "boolean"
                 },
+                "external_id": {
+                    "description": "ExternalID and ExternalName identify who the Nexus user IS on the\nexternal system this connector represents (e.g. own Telegram user\nID + display name after OAuth). Empty when the connector has no\nnotion of \"self\" (filesystem) or hasn't completed auth yet. Used\nby the /api/me/identities endpoint to drive self-aware UI.",
+                    "type": "string"
+                },
+                "external_name": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -1545,6 +1710,25 @@
                     "type": "string"
                 },
                 "indexed_at": {
+                    "type": "string"
+                },
+                "match_avatar_key": {
+                    "type": "string"
+                },
+                "match_created_at": {
+                    "type": "string"
+                },
+                "match_message_id": {
+                    "type": "integer"
+                },
+                "match_sender_id": {
+                    "type": "integer"
+                },
+                "match_sender_name": {
+                    "type": "string"
+                },
+                "match_source_id": {
+                    "description": "Match* fields pinpoint the specific message inside a\nconversation-window document that matched the query. Populated\nby the search pipeline when a BM25 highlight can be mapped back\nto a message_lines entry (telegram window hits today). Empty\nfor semantic-only hits and for non-window documents — the\nfrontend renders a bookended window preview in those cases\ninstead of a pinpoint message card.",
                     "type": "string"
                 },
                 "metadata": {
@@ -1747,6 +1931,13 @@
                 "enabled": {
                     "type": "boolean"
                 },
+                "external_id": {
+                    "description": "ExternalID and ExternalName identify who the Nexus user IS on the\nexternal system this connector represents (e.g. own Telegram user\nID + display name after OAuth). Empty when the connector has no\nnotion of \"self\" (filesystem) or hasn't completed auth yet. Used\nby the /api/me/identities endpoint to drive self-aware UI.",
+                    "type": "string"
+                },
+                "external_name": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -1861,6 +2052,40 @@
                     "type": "string"
                 },
                 "provider": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.identitiesResponse": {
+            "type": "object",
+            "properties": {
+                "identities": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_api.identityItem"
+                    }
+                }
+            }
+        },
+        "internal_api.identityItem": {
+            "type": "object",
+            "properties": {
+                "connector_id": {
+                    "type": "string"
+                },
+                "external_id": {
+                    "type": "string"
+                },
+                "external_name": {
+                    "type": "string"
+                },
+                "has_avatar": {
+                    "type": "boolean"
+                },
+                "source_name": {
+                    "type": "string"
+                },
+                "source_type": {
                     "type": "string"
                 }
             }

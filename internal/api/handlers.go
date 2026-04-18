@@ -183,6 +183,13 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	// query terms (filename, sender, tags, etc.).
 	search.ApplyMetadataBonus(result, query)
 
+	// Stage 6b: per-hit match attribution. For telegram window hits,
+	// map the BM25 highlight fragment back to the exact message_lines
+	// entry so the search card can render a pinpoint message row
+	// instead of a generic "N messages" window chip. No-op when the
+	// hit has no highlight (semantic-only) or isn't a telegram window.
+	applyWindowMatches(result)
+
 	// Stage 7: pagination. TotalCount reflects the post-filter total so callers
 	// know how many results are available across pages.
 	result.TotalCount = len(result.Documents)

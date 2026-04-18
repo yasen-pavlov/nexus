@@ -160,10 +160,28 @@
   * {
     @apply border-border outline-ring/50;
     }
+  /* Pin the document to the viewport so nested `flex-1 overflow-y-auto`
+     regions (the conversation scroller, future sidebars) get a bounded
+     parent height to overflow inside of. Without this cap, flex
+     containers grow to fit content and `overflow-y-auto` has nothing
+     to clip — the page grows instead of scrolling, and any
+     IntersectionObserver-driven pagination runs away. */
+  html, body, #root {
+    @apply h-svh;
+    overflow: hidden;
+    }
   body {
     @apply bg-background text-foreground;
     }
   html {
     @apply font-sans;
     }
+}
+
+/* Conversation anchor highlight — marmalade wash pulses in, fades out,
+   leaving the persistent 2px primary rule handled by the wrapper class. */
+@keyframes nexus-anchor-glow {
+    0%   { opacity: 0; }
+    12%  { opacity: 1; }
+    100% { opacity: 0; }
 }

@@ -317,7 +317,7 @@ func TestProcessDialogs_GroupChat(t *testing.T) {
 		&tg.Chat{ID: 123, Title: "Test Group"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatalf("processDialogs failed: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestProcessDialogs_WithFilter(t *testing.T) {
 		&tg.Chat{ID: 123, Title: "Test Group"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +392,7 @@ func TestProcessDialogs_UserDMs(t *testing.T) {
 		&tg.User{ID: 456, FirstName: "John", LastName: "Doe"},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, buildUserMap(users), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestProcessDialogs_SkipsBots(t *testing.T) {
 		&tg.User{ID: 2, FirstName: "Self", Self: true},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, nil, users, buildUserMap(users), 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestFetchChatMessages_SinceDateFilter(t *testing.T) {
 	c := &Connector{name: "test"}
 	inputPeer := &tg.InputPeerChat{ChatID: 123}
 
-	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, inputPeer, "Test", "123", sinceDate)
+	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, inputPeer, "Test", "123", map[int64]*tg.User{}, 0, 0, sinceDate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestFetchChatMessages_SkipsEmptyMessages(t *testing.T) {
 	}
 
 	c := &Connector{name: "test"}
-	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, &tg.InputPeerChat{ChatID: 1}, "Chat", "1", 0)
+	docs, err := c.fetchChatMessages(context.Background(), api, &stubDownloader{}, &tg.InputPeerChat{ChatID: 1}, "Chat", "1", map[int64]*tg.User{}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestFetchWithAPI(t *testing.T) {
 	}
 
 	c := &Connector{name: "test"}
-	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func TestFetchWithAPI_WithCursor(t *testing.T) {
 			"last_message_date": float64(now - 3600),
 		},
 	}
-	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, cursor)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, cursor, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestFetchWithAPI_SyncSince(t *testing.T) {
 	}
 
 	c := &Connector{name: "test", syncSince: time.Now().Add(-24 * time.Hour)}
-	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil)
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +593,7 @@ func TestProcessDialogs_Channel(t *testing.T) {
 		&tg.Channel{ID: 789, Title: "News Channel", AccessHash: 12345},
 	}
 
-	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, 0)
+	docs, err := c.processDialogs(context.Background(), api, &stubDownloader{}, chats, nil, nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,7 +776,7 @@ func TestWindowMessages_GroupsByTimeGap(t *testing.T) {
 		{ID: 5, Text: "fifth", Date: base.Add(2*time.Hour + 5*time.Minute)}, // same as fourth
 	}
 
-	docs, _ := c.windowMessages(records, "Test Chat", "100")
+	docs, _ := c.windowMessages(records, "Test Chat", "100", nil, 0, 0)
 
 	if len(docs) != 2 {
 		t.Fatalf("expected 2 windows, got %d", len(docs))
@@ -806,7 +806,7 @@ func TestWindowMessages_RespectsCharCap(t *testing.T) {
 		{ID: 4, Text: bigText, Date: base.Add(3 * time.Minute)},
 	}
 
-	docs, _ := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100", nil, 0, 0)
 	if len(docs) < 2 {
 		t.Errorf("expected multiple windows due to char cap, got %d", len(docs))
 	}
@@ -817,7 +817,7 @@ func TestWindowMessages_SingleMessage(t *testing.T) {
 	records := []messageRecord{
 		{ID: 1, Text: "lonely message", Date: time.Now()},
 	}
-	docs, _ := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100", nil, 0, 0)
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 doc for 1 message, got %d", len(docs))
 	}
@@ -839,7 +839,7 @@ func TestWindowMessages_SortsChronologically(t *testing.T) {
 		{ID: 2, Text: "second", Date: base.Add(5 * time.Minute)},
 		{ID: 1, Text: "first", Date: base},
 	}
-	docs, _ := c.windowMessages(records, "Test", "100")
+	docs, _ := c.windowMessages(records, "Test", "100", nil, 0, 0)
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(docs))
 	}
@@ -852,7 +852,7 @@ func TestWindowMessages_SortsChronologically(t *testing.T) {
 
 func TestWindowMessages_EmptyInput(t *testing.T) {
 	c := &Connector{name: "test"}
-	docs, _ := c.windowMessages(nil, "Test", "100")
+	docs, _ := c.windowMessages(nil, "Test", "100", nil, 0, 0)
 	if len(docs) != 0 {
 		t.Errorf("expected 0 docs for empty input, got %d", len(docs))
 	}
@@ -865,7 +865,7 @@ func TestWindowMessages_DocMetadata(t *testing.T) {
 		{ID: 100, Text: "hi", Date: base},
 		{ID: 101, Text: "there", Date: base.Add(1 * time.Minute)},
 	}
-	docs, _ := c.windowMessages(records, "Friends", "42")
+	docs, _ := c.windowMessages(records, "Friends", "42", nil, 0, 0)
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 doc, got %d", len(docs))
 	}
@@ -1157,7 +1157,7 @@ func TestFetchChatMessages_CaptionedMedia_EmitsBothDocs(t *testing.T) {
 	}
 	dl := &stubDownloader{payload: []byte("photo-bytes")}
 
-	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", map[int64]*tg.User{}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1218,7 +1218,7 @@ func TestFetchChatMessages_MediaOnlyMessage_EmitsMediaDoc(t *testing.T) {
 	c := &Connector{name: "tg"}
 	dl := &stubDownloader{payload: []byte("pdf-bytes")}
 
-	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", map[int64]*tg.User{}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1263,7 +1263,7 @@ func TestFetchChatMessages_DownloadFailure_TextStillWindowed(t *testing.T) {
 	c := &Connector{name: "tg"}
 	dl := &stubDownloader{err: errors.New("network")}
 
-	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", 0)
+	docs, err := c.fetchChatMessages(context.Background(), api, dl, &tg.InputPeerChat{ChatID: 1}, "Chat", "55", map[int64]*tg.User{}, 0, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1411,7 +1411,7 @@ func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
 			FromID:  &tg.PeerUser{UserID: 42},
 			ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 499},
 		}
-		doc := c.makeMessageDoc(m, "Chat", "10", "10:499-500")
+		doc := c.makeMessageDoc(m, "Chat", "10", "10:499-500", nil, 0, 0)
 		// Expect both member_of_window and reply_to relations.
 		kinds := []string{}
 		for _, r := range doc.Relations {
@@ -1444,7 +1444,7 @@ func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
 					ReplyToPeerID: tc.peer,
 				},
 			}
-			doc := c.makeMessageDoc(m, "Chat", "10", "")
+			doc := c.makeMessageDoc(m, "Chat", "10", "", nil, 0, 0)
 			var got *model.Relation
 			for i, r := range doc.Relations {
 				if r.Type == model.RelationReplyTo {
@@ -1463,7 +1463,7 @@ func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
 
 	t.Run("no FromID leaves sender_id unset", func(t *testing.T) {
 		m := &tg.Message{ID: 1, Date: int(base.Unix()), Message: "x"}
-		doc := c.makeMessageDoc(m, "Chat", "10", "")
+		doc := c.makeMessageDoc(m, "Chat", "10", "", nil, 0, 0)
 		if _, ok := doc.Metadata["sender_id"]; ok {
 			t.Errorf("sender_id should be unset when FromID is nil")
 		}
@@ -1471,13 +1471,380 @@ func TestMakeMessageDoc_ReplyAndSender(t *testing.T) {
 
 	t.Run("no window means no member_of_window edge", func(t *testing.T) {
 		m := &tg.Message{ID: 1, Date: int(base.Unix())}
-		doc := c.makeMessageDoc(m, "Chat", "10", "")
+		doc := c.makeMessageDoc(m, "Chat", "10", "", nil, 0, 0)
 		for _, r := range doc.Relations {
 			if r.Type == model.RelationMemberOfWindow {
 				t.Error("should have no member_of_window when windowSourceID is empty")
 			}
 		}
 	})
+
+	t.Run("DM outgoing with nil FromID attributes to selfID", func(t *testing.T) {
+		m := &tg.Message{ID: 20, Date: int(base.Unix()), Message: "hi", Out: true}
+		userMap := map[int64]*tg.User{
+			7001: {ID: 7001, FirstName: "Me", Username: "me_u"},
+		}
+		doc := c.makeMessageDoc(m, "DM Peer", "8888", "", userMap, 7001, 8888)
+		if doc.Metadata["sender_id"] != int64(7001) {
+			t.Errorf("sender_id = %v, want 7001 (self)", doc.Metadata["sender_id"])
+		}
+		if name, _ := doc.Metadata["sender_name"].(string); name != "Me" {
+			t.Errorf("sender_name = %q, want Me", name)
+		}
+	})
+
+	t.Run("DM incoming with nil FromID attributes to dmPeerID", func(t *testing.T) {
+		m := &tg.Message{ID: 21, Date: int(base.Unix()), Message: "hey", Out: false}
+		userMap := map[int64]*tg.User{
+			8888: {ID: 8888, FirstName: "Maria"},
+		}
+		doc := c.makeMessageDoc(m, "DM Peer", "8888", "", userMap, 7001, 8888)
+		if doc.Metadata["sender_id"] != int64(8888) {
+			t.Errorf("sender_id = %v, want 8888 (dm peer)", doc.Metadata["sender_id"])
+		}
+		if name, _ := doc.Metadata["sender_name"].(string); name != "Maria" {
+			t.Errorf("sender_name = %q, want Maria", name)
+		}
+	})
+
+	t.Run("group chat with nil FromID and no dm context stays anonymous", func(t *testing.T) {
+		m := &tg.Message{ID: 22, Date: int(base.Unix()), Message: "x"}
+		doc := c.makeMessageDoc(m, "Group", "10", "", nil, 0, 0)
+		if _, ok := doc.Metadata["sender_id"]; ok {
+			t.Errorf("sender_id should not be set without FromID or DM context")
+		}
+	})
+
+	t.Run("user map populates sender_name and sender_username", func(t *testing.T) {
+		m := &tg.Message{
+			ID: 7, Date: int(base.Unix()), Message: "hi",
+			FromID: &tg.PeerUser{UserID: 42},
+		}
+		userMap := map[int64]*tg.User{
+			42: {ID: 42, FirstName: "Alice", LastName: "Kim", Username: "alice_k"},
+		}
+		doc := c.makeMessageDoc(m, "Chat", "10", "", userMap, 0, 0)
+		if name, _ := doc.Metadata["sender_name"].(string); name != "Alice Kim" {
+			t.Errorf("sender_name = %q, want Alice Kim", name)
+		}
+		if uname, _ := doc.Metadata["sender_username"].(string); uname != "alice_k" {
+			t.Errorf("sender_username = %q, want alice_k", uname)
+		}
+	})
+
+	t.Run("unknown sender falls back to plain sender_id", func(t *testing.T) {
+		m := &tg.Message{
+			ID: 8, Date: int(base.Unix()), Message: "hi",
+			FromID: &tg.PeerUser{UserID: 99},
+		}
+		doc := c.makeMessageDoc(m, "Chat", "10", "", map[int64]*tg.User{}, 0, 0)
+		if _, ok := doc.Metadata["sender_name"]; ok {
+			t.Errorf("sender_name should be unset when user not in map")
+		}
+		if doc.Metadata["sender_id"] != int64(99) {
+			t.Errorf("sender_id = %v, want 99", doc.Metadata["sender_id"])
+		}
+	})
+
+	t.Run("sender_avatar_key set only when user has a profile photo", func(t *testing.T) {
+		m := &tg.Message{
+			ID: 9, Date: int(base.Unix()), Message: "hi",
+			FromID: &tg.PeerUser{UserID: 42},
+		}
+		userMap := map[int64]*tg.User{
+			42: {ID: 42, FirstName: "Alice", Photo: &tg.UserProfilePhoto{PhotoID: 5555}},
+		}
+		doc := c.makeMessageDoc(m, "Chat", "10", "", userMap, 0, 0)
+		if got, _ := doc.Metadata["sender_avatar_key"].(string); got != AvatarSourceID(42) {
+			t.Errorf("sender_avatar_key = %q, want %q", got, AvatarSourceID(42))
+		}
+
+		userMap[42] = &tg.User{ID: 42, FirstName: "Alice"}
+		doc2 := c.makeMessageDoc(m, "Chat", "10", "", userMap, 0, 0)
+		if _, ok := doc2.Metadata["sender_avatar_key"]; ok {
+			t.Errorf("sender_avatar_key should be unset when no profile photo")
+		}
+	})
+}
+
+func TestMakeWindowDoc_EmitsAnchorCreatedAt(t *testing.T) {
+	c := &Connector{name: "tg"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+	records := []messageRecord{
+		{ID: 1, Text: "hi", Date: base},
+		{ID: 2, Text: "there", Date: base.Add(time.Minute)},
+	}
+	docs, _ := c.windowMessages(records, "Chat", "10", nil, 0, 0)
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 window doc, got %d", len(docs))
+	}
+	meta := docs[0].Metadata
+	if got, _ := meta["anchor_message_id"].(int); got != 1 {
+		t.Errorf("anchor_message_id = %v, want 1", meta["anchor_message_id"])
+	}
+	if got, _ := meta["anchor_created_at"].(string); got != base.Format(time.RFC3339) {
+		t.Errorf("anchor_created_at = %q, want %q", got, base.Format(time.RFC3339))
+	}
+}
+
+func TestMakeWindowDoc_EmitsMessageLines(t *testing.T) {
+	c := &Connector{name: "tg"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	records := []messageRecord{
+		{ID: 1, Text: "hi", Date: base, FromID: &tg.PeerUser{UserID: 42}},
+		{ID: 2, Text: "you too", Date: base.Add(time.Minute), Out: true},
+		{ID: 3, Text: "ok", Date: base.Add(2 * time.Minute)},
+	}
+	userMap := map[int64]*tg.User{
+		42:   {ID: 42, FirstName: "Alice", Username: "alice_k", Photo: &tg.UserProfilePhoto{PhotoID: 1}},
+		7001: {ID: 7001, FirstName: "Me"},
+		8888: {ID: 8888, FirstName: "Maria"},
+	}
+
+	docs, _ := c.windowMessages(records, "Chat", "10", userMap, 7001, 8888)
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 window doc, got %d", len(docs))
+	}
+	lines, ok := docs[0].Metadata["message_lines"].([]map[string]any)
+	if !ok {
+		t.Fatalf("message_lines missing or wrong type: %T", docs[0].Metadata["message_lines"])
+	}
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+	if name := lines[0]["sender_name"]; name != "Alice" {
+		t.Errorf("line[0].sender_name = %v, want Alice", name)
+	}
+	if key, _ := lines[0]["sender_avatar_key"].(string); key != AvatarSourceID(42) {
+		t.Errorf("line[0].sender_avatar_key = %q, want %s", key, AvatarSourceID(42))
+	}
+	if sid, _ := lines[1]["sender_id"].(int64); sid != 7001 {
+		t.Errorf("line[1].sender_id = %v, want 7001 (self)", sid)
+	}
+	if sid, _ := lines[2]["sender_id"].(int64); sid != 8888 {
+		t.Errorf("line[2].sender_id = %v, want 8888 (dm peer)", sid)
+	}
+	if lines[0]["text"] != "hi" {
+		t.Errorf("line[0].text = %v, want hi", lines[0]["text"])
+	}
+	if lines[0]["id"] != 1 {
+		t.Errorf("line[0].id = %v, want 1", lines[0]["id"])
+	}
+}
+
+func TestExtractHistoryUsers(t *testing.T) {
+	u := []tg.UserClass{&tg.User{ID: 1}, &tg.User{ID: 2}}
+
+	cases := []struct {
+		name string
+		in   tg.MessagesMessagesClass
+		want int
+	}{
+		{"MessagesMessages", &tg.MessagesMessages{Users: u}, 2},
+		{"MessagesMessagesSlice", &tg.MessagesMessagesSlice{Users: u}, 2},
+		{"MessagesChannelMessages", &tg.MessagesChannelMessages{Users: u}, 2},
+		{"unsupported type returns nil", &tg.MessagesMessagesNotModified{}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractHistoryUsers(tc.in)
+			if len(got) != tc.want {
+				t.Errorf("len = %d, want %d", len(got), tc.want)
+			}
+		})
+	}
+}
+
+func TestPeerChatID(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     tg.PeerClass
+		want   string
+		wantOK bool
+	}{
+		{"user", &tg.PeerUser{UserID: 42}, "42", true},
+		{"chat", &tg.PeerChat{ChatID: 100}, "100", true},
+		{"channel", &tg.PeerChannel{ChannelID: 500}, "500", true},
+		{"unsupported", nil, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := peerChatID(tc.in)
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildUserMap_FiltersNonUsers(t *testing.T) {
+	users := []tg.UserClass{
+		&tg.User{ID: 1, FirstName: "A"},
+		&tg.UserEmpty{ID: 2},
+		&tg.User{ID: 3, FirstName: "B"},
+	}
+	got := buildUserMap(users)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 users (empty filtered), got %d: %+v", len(got), got)
+	}
+	if _, ok := got[2]; ok {
+		t.Errorf("UserEmpty should not appear in map")
+	}
+}
+
+func TestHasDownloadableAvatar(t *testing.T) {
+	cases := []struct {
+		name string
+		u    *tg.User
+		want bool
+	}{
+		{"nil user", nil, false},
+		{"no photo field", &tg.User{ID: 1}, false},
+		{"photo with id=0 is empty placeholder", &tg.User{ID: 1, Photo: &tg.UserProfilePhoto{PhotoID: 0}}, false},
+		{"photo with non-zero id is downloadable", &tg.User{ID: 1, Photo: &tg.UserProfilePhoto{PhotoID: 5}}, true},
+		{"empty UserProfilePhoto type is not downloadable", &tg.User{ID: 1, Photo: &tg.UserProfilePhotoEmpty{}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasDownloadableAvatar(tc.u); got != tc.want {
+				t.Errorf("hasDownloadableAvatar = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAvatarSourceID_IsStable(t *testing.T) {
+	if AvatarSourceID(42) != "avatars:42" {
+		t.Errorf("unexpected format: %q", AvatarSourceID(42))
+	}
+	if AvatarSourceID(-1) != "avatars:-1" {
+		t.Errorf("negative ids still encode as-is: %q", AvatarSourceID(-1))
+	}
+}
+
+type stubBinaryStore struct {
+	existsMap map[string]bool
+	puts      []stubPut
+	existsErr error
+	putErr    error
+}
+
+type stubPut struct {
+	sourceType, sourceName, sourceID string
+	size                             int64
+}
+
+func (s *stubBinaryStore) Put(ctx context.Context, sourceType, sourceName, sourceID string, r io.Reader, size int64) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	s.puts = append(s.puts, stubPut{sourceType, sourceName, sourceID, size})
+	if s.existsMap == nil {
+		s.existsMap = map[string]bool{}
+	}
+	s.existsMap[sourceType+"/"+sourceName+"/"+sourceID] = true
+	_, _ = io.Copy(io.Discard, r)
+	return nil
+}
+
+func (s *stubBinaryStore) Get(ctx context.Context, sourceType, sourceName, sourceID string) (io.ReadCloser, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubBinaryStore) Exists(ctx context.Context, sourceType, sourceName, sourceID string) (bool, error) {
+	if s.existsErr != nil {
+		return false, s.existsErr
+	}
+	return s.existsMap[sourceType+"/"+sourceName+"/"+sourceID], nil
+}
+
+func TestEnsureAvatarCached(t *testing.T) {
+	ctx := context.Background()
+	user := &tg.User{
+		ID: 42, AccessHash: 100,
+		Photo: &tg.UserProfilePhoto{PhotoID: 5555},
+	}
+
+	t.Run("no-op without binary store", func(t *testing.T) {
+		c := &Connector{name: "tg"}
+		c.ensureAvatarCached(ctx, &stubDownloader{}, user)
+	})
+
+	t.Run("no-op when cache mode is not eager", func(t *testing.T) {
+		store := &stubBinaryStore{}
+		c := &Connector{name: "tg", binaryStore: store, cacheConfig: connector.CacheConfig{Mode: "lazy"}}
+		c.ensureAvatarCached(ctx, &stubDownloader{}, user)
+		if len(store.puts) != 0 {
+			t.Errorf("should not have written anything in lazy mode")
+		}
+	})
+
+	t.Run("skips users without a photo", func(t *testing.T) {
+		store := &stubBinaryStore{}
+		c := &Connector{name: "tg", binaryStore: store, cacheConfig: connector.CacheConfig{Mode: "eager"}}
+		c.ensureAvatarCached(ctx, &stubDownloader{}, &tg.User{ID: 99})
+		if len(store.puts) != 0 {
+			t.Errorf("should not have fetched a photoless user")
+		}
+	})
+
+	t.Run("skips users already cached", func(t *testing.T) {
+		store := &stubBinaryStore{existsMap: map[string]bool{
+			"telegram/tg/" + AvatarSourceID(42): true,
+		}}
+		c := &Connector{name: "tg", binaryStore: store, cacheConfig: connector.CacheConfig{Mode: "eager"}}
+		c.ensureAvatarCached(ctx, &stubDownloader{}, user)
+		if len(store.puts) != 0 {
+			t.Errorf("should not re-fetch a cached avatar")
+		}
+	})
+
+	t.Run("downloads and stores when missing", func(t *testing.T) {
+		store := &stubBinaryStore{}
+		c := &Connector{name: "tg", binaryStore: store, cacheConfig: connector.CacheConfig{Mode: "eager"}}
+		c.ensureAvatarCached(ctx, &stubDownloader{payload: []byte("jpeg-bytes")}, user)
+		if len(store.puts) != 1 {
+			t.Fatalf("expected 1 put, got %d", len(store.puts))
+		}
+		if store.puts[0].sourceID != AvatarSourceID(42) {
+			t.Errorf("wrong sourceID: %s", store.puts[0].sourceID)
+		}
+	})
+
+	t.Run("silent on download failure", func(t *testing.T) {
+		store := &stubBinaryStore{}
+		c := &Connector{name: "tg", binaryStore: store, cacheConfig: connector.CacheConfig{Mode: "eager"}}
+		c.ensureAvatarCached(ctx, &stubDownloader{err: errors.New("boom")}, user)
+		if len(store.puts) != 0 {
+			t.Errorf("should not have written after download failure")
+		}
+	})
+}
+
+func TestDisplayName_FallbackOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		u    *tg.User
+		want string
+	}{
+		{"nil returns empty", nil, ""},
+		{"first+last", &tg.User{FirstName: "Alice", LastName: "Kim"}, "Alice Kim"},
+		{"first only", &tg.User{FirstName: "Alice"}, "Alice"},
+		{"username", &tg.User{Username: "alice_k"}, "alice_k"},
+		{"id fallback", &tg.User{ID: 42}, "User 42"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DisplayName(tc.u)
+			if got != tc.want {
+				t.Errorf("DisplayName = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestSetExtractor_AndBinaryStore(t *testing.T) {

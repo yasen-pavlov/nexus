@@ -15,7 +15,10 @@ import { SearchFilters } from "./search-filters";
 type AnyNavigate = (opts: {
   to?: string;
   params?: Record<string, string>;
-  search?: SearchParams | { anchor?: number };
+  search?:
+    | SearchParams
+    | { anchor_id?: number; anchor_ts?: string }
+    | undefined;
   replace?: boolean;
 }) => void;
 
@@ -47,19 +50,37 @@ export function SearchResults({ params }: Props) {
 
   const openChat = (hit: DocumentHit) => {
     if (!hit.conversation_id) return;
-    const anchor =
-      typeof hit.metadata?.anchor_message_id === "number"
-        ? hit.metadata.anchor_message_id
-        : typeof hit.metadata?.message_id === "number"
-          ? hit.metadata.message_id
-          : undefined;
+
+    // Precision anchor: when the search pipeline pinpointed the exact
+    // matching message inside a window, jump to that message. Falls
+    // back to the window's connector-emitted anchor (first message),
+    // then to the hit's own created_at for timestamp.
+    const anchorID =
+      typeof hit.match_message_id === "number"
+        ? hit.match_message_id
+        : typeof hit.metadata?.anchor_message_id === "number"
+          ? hit.metadata.anchor_message_id
+          : typeof hit.metadata?.message_id === "number"
+            ? hit.metadata.message_id
+            : undefined;
+
+    const anchorTs =
+      typeof hit.match_created_at === "string"
+        ? hit.match_created_at
+        : typeof hit.metadata?.anchor_created_at === "string"
+          ? hit.metadata.anchor_created_at
+          : hit.created_at;
+
     navigate({
       to: "/conversations/$sourceType/$conversationId",
       params: {
         sourceType: hit.source_type,
         conversationId: hit.conversation_id,
       },
-      search: anchor !== undefined ? { anchor } : undefined,
+      search:
+        anchorID !== undefined || anchorTs !== undefined
+          ? { anchor_id: anchorID, anchor_ts: anchorTs }
+          : undefined,
     });
   };
 
