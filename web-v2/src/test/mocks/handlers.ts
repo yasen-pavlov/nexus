@@ -1,5 +1,13 @@
 import { http, HttpResponse } from "msw";
-import type { User, AuthResponse, HealthResponse } from "@/lib/api-types";
+import type {
+  User,
+  AuthResponse,
+  HealthResponse,
+  SearchResult,
+  DocumentHit,
+  RelatedResponse,
+  ConnectorConfig,
+} from "@/lib/api-types";
 
 const fakeAdmin: User = { id: "u1", username: "admin", role: "admin" };
 const fakeUser: User = { id: "u2", username: "viewer", role: "user" };
@@ -9,6 +17,98 @@ const fakeUserToken = "fake-user-token";
 function wrapData<T>(data: T) {
   return { data };
 }
+
+// Sample hits covering every source type so per-source card tests can look
+// up representative fixtures by source_type.
+const sampleHits: DocumentHit[] = [
+  {
+    id: "d-email-1",
+    source_type: "imap",
+    source_name: "personal-email",
+    source_id: "INBOX:42",
+    title: "Subject of an email",
+    content: "Body preview…",
+    metadata: {
+      folder: "INBOX",
+      from: "Alice <alice@example.com>",
+      to: "me@example.com",
+      date: "2026-04-10T10:00:00Z",
+      has_attachments: true,
+      attachment_filenames: ["invoice.pdf"],
+    },
+    visibility: "private",
+    created_at: "2026-04-10T10:00:00Z",
+    indexed_at: "2026-04-10T10:01:00Z",
+    rank: 0.95,
+    headline: "Body preview <em>match</em>…",
+    related_count: 1,
+  },
+  {
+    id: "d-telegram-1",
+    source_type: "telegram",
+    source_name: "tg-main",
+    source_id: "12345:100-120",
+    title: "Chat window",
+    content: "Message preview",
+    metadata: {
+      chat_name: "Family",
+      chat_id: 12345,
+      first_message_id: 100,
+      last_message_id: 120,
+      message_count: 21,
+      anchor_message_id: 100,
+    },
+    conversation_id: "12345",
+    visibility: "private",
+    created_at: "2026-04-05T18:00:00Z",
+    indexed_at: "2026-04-05T18:05:00Z",
+    rank: 0.85,
+    headline: "Message <em>preview</em>",
+  },
+  {
+    id: "d-paperless-1",
+    source_type: "paperless",
+    source_name: "paperless-main",
+    source_id: "456",
+    title: "Hospital invoice",
+    content: "Bill content",
+    mime_type: "application/pdf",
+    size: 102400,
+    metadata: {
+      correspondent: "Hospital GmbH",
+      document_type: "Invoice",
+      tags: ["health", "2026"],
+      original_file_name: "invoice_hospital.pdf",
+    },
+    url: "http://paperless:8000/documents/456",
+    visibility: "shared",
+    created_at: "2026-03-20T00:00:00Z",
+    indexed_at: "2026-03-20T00:01:00Z",
+    rank: 0.88,
+    headline: "Bill <em>content</em>",
+  },
+  {
+    id: "d-fs-1",
+    source_type: "filesystem",
+    source_name: "filesystem",
+    source_id: "notes/meeting.md",
+    title: "meeting.md",
+    content: "Meeting notes",
+    mime_type: "text/markdown",
+    size: 2048,
+    metadata: {
+      path: "notes/meeting.md",
+      size: 2048,
+      extension: ".md",
+      content_type: "text/markdown",
+    },
+    visibility: "shared",
+    created_at: "2026-04-15T12:00:00Z",
+    indexed_at: "2026-04-15T12:01:00Z",
+    rank: 0.80,
+    headline: "Meeting <em>notes</em>",
+  },
+];
 
 export const handlers = [
   http.get("*/api/health", () =>
@@ -56,6 +156,103 @@ export const handlers = [
     }
     return HttpResponse.json({ error: "Unauthorized" }, { status: 401 });
   }),
+
+  http.get("*/api/search", ({ request }) => {
+    const url = new URL(request.url);
+    const q = url.searchParams.get("q") ?? "";
+    const limit = Number(url.searchParams.get("limit") ?? 20);
+    const offset = Number(url.searchParams.get("offset") ?? 0);
+    const sources = url.searchParams.get("sources")?.split(",") ?? [];
+
+    let filtered = [...sampleHits];
+    if (sources.length) {
+      filtered = filtered.filter((h) => sources.includes(h.source_type));
+    }
+
+    const page = filtered.slice(offset, offset + limit);
+    const facets = {
+      source_type: Array.from(
+        filtered.reduce<Map<string, number>>((acc, h) => {
+          acc.set(h.source_type, (acc.get(h.source_type) ?? 0) + 1);
+          return acc;
+        }, new Map()),
+      ).map(([value, count]) => ({ value, count })),
+      source_name: Array.from(
+        filtered.reduce<Map<string, number>>((acc, h) => {
+          acc.set(h.source_name, (acc.get(h.source_name) ?? 0) + 1);
+          return acc;
+        }, new Map()),
+      ).map(([value, count]) => ({ value, count })),
+    };
+
+    return HttpResponse.json(
+      wrapData<SearchResult>({
+        documents: page,
+        total_count: filtered.length,
+        query: q,
+        facets,
+      }),
+    );
+  }),
+
+  http.get("*/api/documents/:id/related", ({ params }) => {
+    return HttpResponse.json(
+      wrapData<RelatedResponse>({
+        outgoing: [],
+        incoming: params.id === "d-email-1" ? [
+          {
+            relation: { type: "attachment_of", target_source_id: "INBOX:42:attachment:0" },
+            document: {
+              id: "d-att-1",
+              source_type: "imap",
+              source_name: "personal-email",
+              source_id: "INBOX:42:attachment:0",
+              title: "invoice.pdf",
+              content: "",
+              visibility: "private",
+              created_at: "2026-04-10T10:00:00Z",
+              indexed_at: "2026-04-10T10:01:00Z",
+            },
+          },
+        ] : [],
+      }),
+    );
+  }),
+
+  http.get("*/api/documents/:id/content", () => {
+    return new HttpResponse(new Blob(["fake file content"], { type: "text/plain" }), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/plain",
+        "Content-Disposition": 'attachment; filename="test.txt"',
+      },
+    });
+  }),
+
+  http.get("*/api/connectors/", ({ request }) => {
+    const auth = request.headers.get("Authorization");
+    if (!auth) {
+      return HttpResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return HttpResponse.json(
+      wrapData<ConnectorConfig[]>([
+        {
+          id: "c1",
+          type: "imap",
+          name: "personal-email",
+          config: {},
+          enabled: true,
+          schedule: "",
+          shared: false,
+          status: "ok",
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          last_run: "2026-04-10T00:00:00Z",
+          user_id: "u1",
+        },
+      ]),
+    );
+  }),
 ];
 
-export { fakeAdmin, fakeUser, fakeToken, fakeUserToken };
+export { fakeAdmin, fakeUser, fakeToken, fakeUserToken, sampleHits };

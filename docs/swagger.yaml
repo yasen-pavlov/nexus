@@ -37,15 +37,61 @@ definitions:
       user_id:
         type: string
     type: object
+  github_com_muty_nexus_internal_model.Document:
+    properties:
+      content:
+        type: string
+      conversation_id:
+        type: string
+      created_at:
+        type: string
+      hidden:
+        type: boolean
+      id:
+        type: string
+      imap_message_id:
+        type: string
+      indexed_at:
+        type: string
+      metadata:
+        additionalProperties: {}
+        type: object
+      mime_type:
+        type: string
+      relations:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.Relation'
+        type: array
+      size:
+        type: integer
+      source_id:
+        type: string
+      source_name:
+        type: string
+      source_type:
+        type: string
+      title:
+        type: string
+      url:
+        type: string
+      visibility:
+        type: string
+    type: object
   github_com_muty_nexus_internal_model.DocumentHit:
     properties:
       content:
+        type: string
+      conversation_id:
         type: string
       created_at:
         type: string
       headline:
         type: string
+      hidden:
+        type: boolean
       id:
+        type: string
+      imap_message_id:
         type: string
       indexed_at:
         type: string
@@ -56,6 +102,17 @@ definitions:
         type: string
       rank:
         type: number
+      related_count:
+        description: |-
+          RelatedCount is the total number of relations — outgoing (on this doc's
+          `relations`) plus incoming (other docs referencing this one). The
+          frontend uses this to hide the "Related" toggle for docs with nothing
+          to expand, without triggering an extra /related call per hit.
+        type: integer
+      relations:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.Relation'
+        type: array
       score_details:
         $ref: '#/definitions/github_com_muty_nexus_internal_model.ScoreDetails'
       size:
@@ -78,6 +135,15 @@ definitions:
       count:
         type: integer
       value:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.Relation:
+    properties:
+      target_id:
+        type: string
+      target_source_id:
+        type: string
+      type:
         type: string
     type: object
   github_com_muty_nexus_internal_model.ScoreDetails:
@@ -126,6 +192,8 @@ definitions:
         type: string
       connector_type:
         type: string
+      docs_deleted:
+        type: integer
       docs_processed:
         type: integer
       docs_total:
@@ -180,6 +248,17 @@ definitions:
       updated_at:
         type: string
       user_id:
+        type: string
+    type: object
+  internal_api.conversationMessagesResponse:
+    properties:
+      messages:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.Document'
+        type: array
+      next_after:
+        type: string
+      next_before:
         type: string
     type: object
   internal_api.createConnectorRequest:
@@ -242,6 +321,24 @@ definitions:
         type: string
       username:
         type: string
+    type: object
+  internal_api.relatedEdge:
+    properties:
+      document:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.Document'
+      relation:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.Relation'
+    type: object
+  internal_api.relatedResponse:
+    properties:
+      incoming:
+        items:
+          $ref: '#/definitions/internal_api.relatedEdge'
+        type: array
+      outgoing:
+        items:
+          $ref: '#/definitions/internal_api.relatedEdge'
+        type: array
     type: object
   internal_api.rerankSettingsRequest:
     properties:
@@ -312,8 +409,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/internal_api.authResponse'
-        "401":
-          description: Unauthorized
+        "400":
+          description: invalid credentials
           schema:
             $ref: '#/definitions/internal_api.APIResponse'
       summary: Login
@@ -561,6 +658,60 @@ paths:
       summary: Start Telegram authentication
       tags:
       - connectors
+  /conversations/{source_type}/{conversation_id}/messages:
+    get:
+      description: Returns Hidden=true per-message documents for a (source_type, conversation_id)
+        pair sorted by created_at ASC. Supports cursor pagination via `before` and
+        `after` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp
+        / Signal / Matrix in the future) plug in by emitting their per-message canonical
+        docs with matching ConversationID.
+      parameters:
+      - description: Connector source type (e.g. telegram)
+        in: path
+        name: source_type
+        required: true
+        type: string
+      - description: Conversation identifier (e.g. Telegram chat ID)
+        in: path
+        name: conversation_id
+        required: true
+        type: string
+      - description: RFC3339 timestamp — return messages strictly before this time
+        in: query
+        name: before
+        type: string
+      - description: RFC3339 timestamp — return messages strictly after this time
+        in: query
+        name: after
+        type: string
+      - description: Page size (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.conversationMessagesResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Paginated chronological browse of a conversation
+      tags:
+      - conversations
   /documents/{id}/content:
     get:
       description: Streams the original bytes of a document. Dispatches to the source
@@ -601,6 +752,47 @@ paths:
       security:
       - BearerAuth: []
       summary: Download or preview a document's binary content
+      tags:
+      - documents
+  /documents/{id}/related:
+    get:
+      description: 'Returns the neighbors of a document across all relation types.
+        `outgoing` edges are the ones declared on the doc itself (attachment_of, reply_to,
+        member_of_thread, member_of_window); `incoming` edges are the reverse lookup
+        — other docs that point at this one. Dangling edges (target not in index)
+        are returned with `document: null`.'
+      parameters:
+      - description: Document UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.relatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Resolve typed relations (attachments, replies, threads) for a document
       tags:
       - documents
   /health:

@@ -32,6 +32,12 @@ type DocumentHit struct {
 	Rank         float64       `json:"rank"`
 	Headline     string        `json:"headline"`
 	ScoreDetails *ScoreDetails `json:"score_details,omitempty"`
+
+	// RelatedCount is the total number of relations — outgoing (on this doc's
+	// `relations`) plus incoming (other docs referencing this one). The
+	// frontend uses this to hide the "Related" toggle for docs with nothing
+	// to expand, without triggering an extra /related call per hit.
+	RelatedCount int `json:"related_count,omitempty"`
 }
 
 // ScoreDetails provides a breakdown of how the final rank was computed.

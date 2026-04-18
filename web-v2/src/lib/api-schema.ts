@@ -37,8 +37,8 @@ export interface paths {
                         "application/json": components["schemas"]["internal_api.authResponse"];
                     };
                 };
-                /** @description Unauthorized */
-                401: {
+                /** @description invalid credentials */
+                400: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -487,6 +487,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/conversations/{source_type}/{conversation_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Paginated chronological browse of a conversation
+         * @description Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via `before` and `after` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description RFC3339 timestamp — return messages strictly before this time */
+                    before?: string;
+                    /** @description RFC3339 timestamp — return messages strictly after this time */
+                    after?: string;
+                    /** @description Page size (default 50, max 200) */
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description Connector source type (e.g. telegram) */
+                    source_type: string;
+                    /** @description Conversation identifier (e.g. Telegram chat ID) */
+                    conversation_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.conversationMessagesResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/documents/{id}/content": {
         parameters: {
             query?: never;
@@ -554,6 +632,84 @@ export interface paths {
                     };
                     content: {
                         "application/octet-stream": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/documents/{id}/related": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve typed relations (attachments, replies, threads) for a document
+         * @description Returns the neighbors of a document across all relation types. `outgoing` edges are the ones declared on the doc itself (attachment_of, reply_to, member_of_thread, member_of_window); `incoming` edges are the reverse lookup — other docs that point at this one. Dangling edges (target not in index) are returned with `document: null`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Document UUID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.relatedResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
                     };
                 };
             };
@@ -1529,17 +1685,49 @@ export interface components {
             updated_at?: string;
             user_id?: string;
         };
+        "github_com_muty_nexus_internal_model.Document": {
+            content?: string;
+            conversation_id?: string;
+            created_at?: string;
+            hidden?: boolean;
+            id?: string;
+            imap_message_id?: string;
+            indexed_at?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
+            mime_type?: string;
+            relations?: components["schemas"]["github_com_muty_nexus_internal_model.Relation"][];
+            size?: number;
+            source_id?: string;
+            source_name?: string;
+            source_type?: string;
+            title?: string;
+            url?: string;
+            visibility?: string;
+        };
         "github_com_muty_nexus_internal_model.DocumentHit": {
             content?: string;
+            conversation_id?: string;
             created_at?: string;
             headline?: string;
+            hidden?: boolean;
             id?: string;
+            imap_message_id?: string;
             indexed_at?: string;
             metadata?: {
                 [key: string]: unknown;
             };
             mime_type?: string;
             rank?: number;
+            /**
+             * @description RelatedCount is the total number of relations — outgoing (on this doc's
+             *     `relations`) plus incoming (other docs referencing this one). The
+             *     frontend uses this to hide the "Related" toggle for docs with nothing
+             *     to expand, without triggering an extra /related call per hit.
+             */
+            related_count?: number;
+            relations?: components["schemas"]["github_com_muty_nexus_internal_model.Relation"][];
             score_details?: components["schemas"]["github_com_muty_nexus_internal_model.ScoreDetails"];
             size?: number;
             source_id?: string;
@@ -1552,6 +1740,11 @@ export interface components {
         "github_com_muty_nexus_internal_model.Facet": {
             count?: number;
             value?: string;
+        };
+        "github_com_muty_nexus_internal_model.Relation": {
+            target_id?: string;
+            target_source_id?: string;
+            type?: string;
         };
         "github_com_muty_nexus_internal_model.ScoreDetails": {
             final?: number;
@@ -1577,6 +1770,7 @@ export interface components {
             connector_id?: string;
             connector_name?: string;
             connector_type?: string;
+            docs_deleted?: number;
             docs_processed?: number;
             docs_total?: number;
             error?: string;
@@ -1608,6 +1802,11 @@ export interface components {
             type?: string;
             updated_at?: string;
             user_id?: string;
+        };
+        "internal_api.conversationMessagesResponse": {
+            messages?: components["schemas"]["github_com_muty_nexus_internal_model.Document"][];
+            next_after?: string;
+            next_before?: string;
         };
         "internal_api.createConnectorRequest": {
             config?: {
@@ -1643,6 +1842,14 @@ export interface components {
         "internal_api.registerRequest": {
             password?: string;
             username?: string;
+        };
+        "internal_api.relatedEdge": {
+            document?: components["schemas"]["github_com_muty_nexus_internal_model.Document"];
+            relation?: components["schemas"]["github_com_muty_nexus_internal_model.Relation"];
+        };
+        "internal_api.relatedResponse": {
+            incoming?: components["schemas"]["internal_api.relatedEdge"][];
+            outgoing?: components["schemas"]["internal_api.relatedEdge"][];
         };
         "internal_api.rerankSettingsRequest": {
             api_key?: string;

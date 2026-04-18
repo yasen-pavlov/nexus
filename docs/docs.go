@@ -46,8 +46,8 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_api.authResponse"
                         }
                     },
-                    "401": {
-                        "description": "Unauthorized",
+                    "400": {
+                        "description": "invalid credentials",
                         "schema": {
                             "$ref": "#/definitions/internal_api.APIResponse"
                         }
@@ -436,6 +436,83 @@ const docTemplate = `{
                 }
             }
         },
+        "/conversations/{source_type}/{conversation_id}/messages": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via ` + "`" + `before` + "`" + ` and ` + "`" + `after` + "`" + ` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "conversations"
+                ],
+                "summary": "Paginated chronological browse of a conversation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Connector source type (e.g. telegram)",
+                        "name": "source_type",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Conversation identifier (e.g. Telegram chat ID)",
+                        "name": "conversation_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 timestamp — return messages strictly before this time",
+                        "name": "before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 timestamp — return messages strictly after this time",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.conversationMessagesResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/documents/{id}/content": {
             "get": {
                 "security": [
@@ -469,6 +546,64 @@ const docTemplate = `{
                 "responses": {
                     "200": {
                         "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/documents/{id}/related": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the neighbors of a document across all relation types. ` + "`" + `outgoing` + "`" + ` edges are the ones declared on the doc itself (attachment_of, reply_to, member_of_thread, member_of_window); ` + "`" + `incoming` + "`" + ` edges are the reverse lookup — other docs that point at this one. Dangling edges (target not in index) are returned with ` + "`" + `document: null` + "`" + `.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "documents"
+                ],
+                "summary": "Resolve typed relations (attachments, replies, threads) for a document",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Document UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.relatedResponse"
+                        }
                     },
                     "400": {
                         "description": "Bad Request",
@@ -1332,10 +1467,73 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_muty_nexus_internal_model.Document": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "conversation_id": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "hidden": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "imap_message_id": {
+                    "type": "string"
+                },
+                "indexed_at": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "relations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.Relation"
+                    }
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "source_id": {
+                    "type": "string"
+                },
+                "source_name": {
+                    "type": "string"
+                },
+                "source_type": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "visibility": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_muty_nexus_internal_model.DocumentHit": {
             "type": "object",
             "properties": {
                 "content": {
+                    "type": "string"
+                },
+                "conversation_id": {
                     "type": "string"
                 },
                 "created_at": {
@@ -1344,7 +1542,13 @@ const docTemplate = `{
                 "headline": {
                     "type": "string"
                 },
+                "hidden": {
+                    "type": "boolean"
+                },
                 "id": {
+                    "type": "string"
+                },
+                "imap_message_id": {
                     "type": "string"
                 },
                 "indexed_at": {
@@ -1359,6 +1563,16 @@ const docTemplate = `{
                 },
                 "rank": {
                     "type": "number"
+                },
+                "related_count": {
+                    "description": "RelatedCount is the total number of relations — outgoing (on this doc's\n` + "`" + `relations` + "`" + `) plus incoming (other docs referencing this one). The\nfrontend uses this to hide the \"Related\" toggle for docs with nothing\nto expand, without triggering an extra /related call per hit.",
+                    "type": "integer"
+                },
+                "relations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.Relation"
+                    }
                 },
                 "score_details": {
                     "$ref": "#/definitions/github_com_muty_nexus_internal_model.ScoreDetails"
@@ -1393,6 +1607,20 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.Relation": {
+            "type": "object",
+            "properties": {
+                "target_id": {
+                    "type": "string"
+                },
+                "target_source_id": {
+                    "type": "string"
+                },
+                "type": {
                     "type": "string"
                 }
             }
@@ -1466,6 +1694,9 @@ const docTemplate = `{
                 },
                 "connector_type": {
                     "type": "string"
+                },
+                "docs_deleted": {
+                    "type": "integer"
                 },
                 "docs_processed": {
                     "type": "integer"
@@ -1548,6 +1779,23 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.conversationMessagesResponse": {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.Document"
+                    }
+                },
+                "next_after": {
+                    "type": "string"
+                },
+                "next_before": {
                     "type": "string"
                 }
             }
@@ -1643,6 +1891,34 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_api.relatedEdge": {
+            "type": "object",
+            "properties": {
+                "document": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.Document"
+                },
+                "relation": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.Relation"
+                }
+            }
+        },
+        "internal_api.relatedResponse": {
+            "type": "object",
+            "properties": {
+                "incoming": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_api.relatedEdge"
+                    }
+                },
+                "outgoing": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_api.relatedEdge"
+                    }
                 }
             }
         },

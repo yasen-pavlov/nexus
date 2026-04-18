@@ -360,7 +360,7 @@ func (c *Client) Search(ctx context.Context, req model.SearchRequest) (*model.Se
 		return nil, fmt.Errorf("search: query: %w", err)
 	}
 
-	return c.hitsToResult(resp, req)
+	return c.hitsToResult(ctx, resp, req)
 }
 
 // HybridSearch combines BM25 text search with k-NN vector search using
@@ -435,14 +435,14 @@ func (c *Client) HybridSearch(ctx context.Context, req model.SearchRequest, quer
 		return nil, fmt.Errorf("search: hybrid query: %w", err)
 	}
 
-	return c.hitsToResult(resp, req)
+	return c.hitsToResult(ctx, resp, req)
 }
 
 // hitsToResult converts OpenSearch hits into a SearchResult with deduplication
 // by parent document. Returns the FULL deduped result set without applying
 // offset/limit pagination — pagination lives in the handler, after the
 // rerank/decay/bonus stages, so the reranker sees the full candidate pool.
-func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRequest) (*model.SearchResult, error) {
+func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchResp, req model.SearchRequest) (*model.SearchResult, error) {
 	chunkData := make(map[string]*rankedChunk)
 
 	for _, hit := range resp.Hits.Hits {
@@ -503,12 +503,28 @@ func (c *Client) hitsToResult(resp *opensearchapi.SearchResp, req model.SearchRe
 	facets := computeFacets(results)
 
 	hits := make([]model.DocumentHit, 0, len(results))
+	sourceIDs := make([]string, 0, len(results))
 	for _, rc := range results {
 		hits = append(hits, model.DocumentHit{
-			Document: rc.doc,
-			Rank:     rc.score,
-			Headline: rc.headline,
+			Document:     rc.doc,
+			Rank:         rc.score,
+			Headline:     rc.headline,
+			RelatedCount: len(rc.doc.Relations), // outgoing, incoming added below
 		})
+		sourceIDs = append(sourceIDs, rc.doc.SourceID)
+	}
+
+	// Annotate each hit with incoming-edge counts so the frontend can hide
+	// the "Related" toggle for hits with no inbound refs without fanning
+	// out a /related request per result. On error we log and continue with
+	// outgoing-only counts — the footer just shows a toggle that reveals
+	// "nothing" instead of being correctly hidden; better than failing the
+	// whole search.
+	incoming, err := c.CountIncomingEdges(ctx, sourceIDs)
+	if err == nil {
+		for i := range hits {
+			hits[i].RelatedCount += incoming[hits[i].SourceID]
+		}
 	}
 
 	return &model.SearchResult{

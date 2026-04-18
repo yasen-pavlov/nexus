@@ -159,6 +159,105 @@ func (c *Client) FindChunksReferencing(ctx context.Context, targetIDs, targetSou
 	return c.runChunkQuery(ctx, query, "find-referencing")
 }
 
+// CountIncomingEdges returns a map of source_id → number of distinct parent
+// documents that have at least one relation pointing at it. Used by the
+// search path so each hit can carry a `related_count` upfront, letting the
+// frontend hide the "Related" toggle for docs with no inbound references
+// without fanning out a /related request per result.
+//
+// Incoming is counted per unique parent_id to avoid double-counting when
+// multiple chunks of the same doc point at the same target.
+func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []string) (map[string]int, error) {
+	if len(targetSourceIDs) == 0 {
+		return map[string]int{}, nil
+	}
+
+	// Aggregation tree:
+	//   nested(relations) → terms(target_source_id) → reverse_nested → cardinality(parent_id)
+	// The outer `nested` aggregation scopes bucket keys to the relation
+	// sub-documents. `reverse_nested` climbs back to the root doc so we can
+	// count distinct parents, avoiding double-counting when multiple chunks
+	// of the same doc point at the same target.
+	query := map[string]any{
+		"size": 0,
+		"query": map[string]any{
+			"nested": map[string]any{
+				"path": "relations",
+				"query": map[string]any{
+					"terms": map[string]any{
+						"relations.target_source_id": targetSourceIDs,
+					},
+				},
+			},
+		},
+		"aggs": map[string]any{
+			"relations": map[string]any{
+				"nested": map[string]any{"path": "relations"},
+				"aggs": map[string]any{
+					"by_target": map[string]any{
+						"terms": map[string]any{
+							"field":   "relations.target_source_id",
+							"include": targetSourceIDs,
+							"size":    len(targetSourceIDs),
+						},
+						"aggs": map[string]any{
+							"parents": map[string]any{
+								"reverse_nested": map[string]any{},
+								"aggs": map[string]any{
+									"distinct_parents": map[string]any{
+										"cardinality": map[string]any{"field": "parent_id"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		"_source": false,
+	}
+
+	body, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("search: marshal count-incoming: %w", err)
+	}
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search: count-incoming: %w", err)
+	}
+
+	// Walk the aggregation tree: relations → by_target → [buckets] → parents → distinct_parents.
+	counts := make(map[string]int, len(targetSourceIDs))
+	raw, err := json.Marshal(resp.Aggregations)
+	if err != nil {
+		return counts, nil
+	}
+	var parsed struct {
+		Relations struct {
+			ByTarget struct {
+				Buckets []struct {
+					Key     string `json:"key"`
+					Parents struct {
+						DistinctParents struct {
+							Value int `json:"value"`
+						} `json:"distinct_parents"`
+					} `json:"parents"`
+				} `json:"buckets"`
+			} `json:"by_target"`
+		} `json:"relations"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return counts, nil
+	}
+	for _, b := range parsed.Relations.ByTarget.Buckets {
+		counts[b.Key] = b.Parents.DistinctParents.Value
+	}
+	return counts, nil
+}
+
 // runChunkQuery marshals + runs a chunks query and unmarshals the hits
 // into model.Chunk. Centralized so the three `/related` helpers don't
 // duplicate boilerplate.

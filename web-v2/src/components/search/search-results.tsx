@@ -1,0 +1,161 @@
+import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import type { DocumentHit, Facet } from "@/lib/api-types";
+import { useSearch } from "@/hooks/use-search";
+import { useDocumentDownload } from "@/hooks/use-document-download";
+import { type SearchParams, paramsToFilters } from "@/lib/search-params";
+import { ResultCard } from "./result-card";
+import { NoResultsState, WelcomeState } from "./empty-states";
+import { SearchFilters } from "./search-filters";
+
+// Boundary cast: useNavigate without `from` types `search` as never. Our
+// typed payloads still flow through SearchParams.
+type AnyNavigate = (opts: {
+  to?: string;
+  params?: Record<string, string>;
+  search?: SearchParams | { anchor?: number };
+  replace?: boolean;
+}) => void;
+
+interface Props {
+  params: SearchParams;
+}
+
+export function SearchResults({ params }: Props) {
+  const navigate = useNavigate() as unknown as AnyNavigate;
+  const query = params.q?.trim() ?? "";
+  const filters = paramsToFilters(params);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useSearch(query, filters);
+
+  const download = useDocumentDownload();
+
+  const hits: DocumentHit[] =
+    data?.pages.flatMap((p) => p.documents ?? []) ?? [];
+  const total = data?.pages[0]?.total_count ?? 0;
+  const facets: Record<string, Facet[]> | undefined = data?.pages[0]?.facets;
+
+  const openChat = (hit: DocumentHit) => {
+    if (!hit.conversation_id) return;
+    const anchor =
+      typeof hit.metadata?.anchor_message_id === "number"
+        ? hit.metadata.anchor_message_id
+        : typeof hit.metadata?.message_id === "number"
+          ? hit.metadata.message_id
+          : undefined;
+    navigate({
+      to: "/conversations/$sourceType/$conversationId",
+      params: {
+        sourceType: hit.source_type,
+        conversationId: hit.conversation_id,
+      },
+      search: anchor !== undefined ? { anchor } : undefined,
+    });
+  };
+
+  const doDownload = (hit: DocumentHit) => {
+    download.mutate(
+      { id: hit.id, suggestedFilename: hit.title },
+      {
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "Download failed");
+        },
+      },
+    );
+  };
+
+  const openRelated = (doc: DocumentHit) => {
+    // Telegram docs with a conversation_id open the chat browser; others
+    // rerun search with the doc's title as a fallback (no doc viewer yet).
+    if (doc.source_type === "telegram" && doc.conversation_id) {
+      openChat(doc);
+      return;
+    }
+    const q = doc.title || doc.source_id;
+    navigate({
+      search: { ...params, q },
+      replace: false,
+    });
+  };
+
+  if (!query) {
+    return <WelcomeState />;
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+        Searching…
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="mx-auto max-w-xl py-8 text-sm text-destructive">
+        {error instanceof Error ? error.message : "Search failed"}
+      </div>
+    );
+  }
+
+  if (hits.length === 0) {
+    return <NoResultsState query={query} />;
+  }
+
+  return (
+    <div className="flex flex-col">
+      <SearchFilters params={params} facets={facets} />
+
+      <div className="border-b border-border/60 py-2 font-mono text-[11px] text-muted-foreground/80">
+        <span className="tabular-nums text-foreground">{total}</span>
+        <span className="ml-1">result{total !== 1 ? "s" : ""}</span>
+        <span className="mx-1.5 text-muted-foreground/40">·</span>
+        <span>matching</span>{" "}
+        <span className="text-foreground">&ldquo;{query}&rdquo;</span>
+      </div>
+
+      <div>
+        {hits.map((hit) => (
+          <ResultCard
+            key={hit.id}
+            hit={hit}
+            onOpenChat={openChat}
+            onDownload={doDownload}
+            onNavigateRelated={openRelated}
+          />
+        ))}
+      </div>
+
+      {hasNextPage && (
+        <div className="flex justify-center py-4">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void fetchNextPage()}
+            disabled={isFetchingNextPage}
+          >
+            {isFetchingNextPage ? (
+              <>
+                <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                Loading…
+              </>
+            ) : (
+              "Load more"
+            )}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}

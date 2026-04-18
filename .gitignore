@@ -12,6 +12,9 @@ coverage.out
 web/node_modules/
 web/dist/
 
+# Runtime: local binary cache for `make dev` / go run ./cmd/nexus
+data/
+
 # Environment
 .env
 .env.*

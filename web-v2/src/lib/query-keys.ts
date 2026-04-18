@@ -1,3 +1,5 @@
+import type { SearchFilters } from "./api-types";
+
 export const authKeys = {
   all: ["auth"] as const,
   me: () => [...authKeys.all, "me"] as const,
@@ -12,6 +14,11 @@ export const connectorKeys = {
 
 export const searchKeys = {
   all: ["search"] as const,
-  query: (q: string, filters?: Record<string, unknown>) =>
+  query: (q: string, filters: SearchFilters) =>
     [...searchKeys.all, q, filters] as const,
+};
+
+export const documentKeys = {
+  all: ["documents"] as const,
+  related: (id: string) => [...documentKeys.all, id, "related"] as const,
 };
