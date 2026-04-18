@@ -1,4 +1,4 @@
-import { Mail, Paperclip, Folder } from "lucide-react";
+import { Paperclip } from "lucide-react";
 import type { DocumentHit } from "@/lib/api-types";
 
 function str(v: unknown): string | undefined {
@@ -24,12 +24,11 @@ export function EmailCardBody({ hit }: { hit: DocumentHit }) {
   if (!from && !to && !showFolder && !showAttachments) return null;
 
   return (
-    <div className="mt-2 flex flex-col gap-1.5 text-sm">
+    <div className="mt-2 flex flex-col gap-1.5 text-[13px]">
       {(from || to) && (
-        <div className="flex items-baseline gap-2 text-muted-foreground">
-          <Mail className="size-3.5 shrink-0 translate-y-0.5" aria-hidden />
+        <div className="flex min-w-0 items-baseline gap-1.5 text-muted-foreground">
           {from && (
-            <span className="truncate font-medium text-foreground">{from}</span>
+            <span className="truncate text-foreground/90">{from}</span>
           )}
           {from && to && (
             <span className="shrink-0 text-muted-foreground/60">→</span>
@@ -39,25 +38,27 @@ export function EmailCardBody({ hit }: { hit: DocumentHit }) {
       )}
 
       {(showFolder || showAttachments) && (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-1.5">
           {showFolder && (
-            <span className="inline-flex items-center gap-1 rounded border border-border/80 px-1.5 py-0.5 font-medium text-muted-foreground">
-              <Folder className="size-3" aria-hidden />
+            <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full border border-border bg-muted/40 px-2 text-[11.5px] font-medium text-muted-foreground">
               {folder}
             </span>
           )}
           {attachments.map((name) => (
             <span
               key={name}
-              className="inline-flex max-w-[14rem] items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
               title={name}
+              className="inline-flex h-5 max-w-[14rem] shrink-0 items-center gap-1 rounded-full border border-border bg-muted/40 px-2 text-[11.5px] text-muted-foreground"
             >
-              <Paperclip className="size-3 shrink-0" aria-hidden />
+              <Paperclip
+                className="size-3 shrink-0 text-muted-foreground/80"
+                aria-hidden
+              />
               <span className="truncate">{name}</span>
             </span>
           ))}
           {attachments.length === 0 && hasAttachmentsFlag && (
-            <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full border border-border bg-muted/40 px-2 text-[11.5px] text-muted-foreground">
               <Paperclip className="size-3" aria-hidden />
               attachments
             </span>

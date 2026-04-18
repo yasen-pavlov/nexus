@@ -1,15 +1,18 @@
+import { useState } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useTheme } from "next-themes";
 import {
-  Search,
-  Cable,
-  Settings,
-  Users,
   BarChart3,
+  Cable,
+  ChevronUp,
+  Library,
   LogOut,
-  Sun,
-  Moon,
   Monitor,
+  Moon,
+  Search,
+  Settings,
+  Sun,
+  Users,
 } from "lucide-react";
 import type { User } from "@/lib/api-types";
 import { useLogout } from "@/hooks/use-auth";
@@ -18,7 +21,6 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarInset,
   SidebarMenu,
@@ -27,28 +29,19 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { cn } from "@/lib/utils";
 
-const mainNav = [
-  { to: "/" as const, label: "Search", icon: Search },
-  { to: "/connectors" as const, label: "Connectors", icon: Cable },
+type NavItem = { to: "/" | "/connectors" | "/admin/settings" | "/admin/users" | "/admin/stats"; label: string; icon: typeof Search };
+
+const MAIN_NAV: NavItem[] = [
+  { to: "/", label: "Search", icon: Search },
+  { to: "/connectors", label: "Connectors", icon: Cable },
 ];
 
-const adminNav = [
-  { to: "/admin/settings" as const, label: "Settings", icon: Settings },
-  { to: "/admin/users" as const, label: "Users", icon: Users },
-  { to: "/admin/stats" as const, label: "Stats", icon: BarChart3 },
+const ADMIN_NAV: NavItem[] = [
+  { to: "/admin/settings", label: "Settings", icon: Settings },
+  { to: "/admin/users", label: "Users", icon: Users },
+  { to: "/admin/stats", label: "Stats", icon: BarChart3 },
 ];
 
 interface AppShellProps {
@@ -57,8 +50,6 @@ interface AppShellProps {
 }
 
 export function AppShell({ user, children }: AppShellProps) {
-  const logout = useLogout();
-  const { theme, setTheme } = useTheme();
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const isAdmin = user.role === "admin";
@@ -66,144 +57,280 @@ export function AppShell({ user, children }: AppShellProps) {
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
-        <SidebarHeader>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton size="lg" render={<Link to="/" />}>
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                  <Search className="size-4" />
-                </div>
-                <div className="flex flex-col gap-0.5 leading-none">
-                  <span className="font-semibold">Nexus</span>
-                  <span className="text-xs text-muted-foreground">
-                    Personal Search
-                  </span>
-                </div>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
+        <SidebarHeader className="px-3 py-4">
+          <Link
+            to="/"
+            className="group/masthead flex items-center gap-2.5 rounded-md px-1.5 py-1 transition-colors hover:bg-sidebar-accent/60"
+          >
+            <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
+              <Library className="size-4" aria-hidden strokeWidth={2.25} />
+            </div>
+            <div className="min-w-0 leading-tight group-data-[collapsible=icon]:hidden">
+              <div className="text-[15px] font-semibold tracking-[-0.01em]">
+                Nexus
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                personal search
+              </div>
+            </div>
+          </Link>
         </SidebarHeader>
 
-        <SidebarContent>
-          <SidebarGroup>
+        <SidebarContent className="px-2">
+          <SidebarGroup className="py-1">
             <SidebarMenu>
-              {mainNav.map((item) => (
-                <SidebarMenuItem key={item.to}>
-                  <SidebarMenuButton
-                    render={<Link to={item.to} />}
-                    isActive={
-                      item.to === "/"
-                        ? currentPath === "/"
-                        : currentPath.startsWith(item.to)
-                    }
-                    tooltip={item.label}
-                  >
-                    <item.icon />
-                    <span>{item.label}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+              {MAIN_NAV.map((item) => (
+                <NavRow
+                  key={item.to}
+                  item={item}
+                  active={
+                    item.to === "/"
+                      ? currentPath === "/"
+                      : currentPath.startsWith(item.to)
+                  }
+                />
               ))}
             </SidebarMenu>
           </SidebarGroup>
 
           {isAdmin && (
-            <SidebarGroup>
-              <SidebarGroupLabel>Admin</SidebarGroupLabel>
+            <SidebarGroup className="py-1">
+              <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70 group-data-[collapsible=icon]:hidden">
+                Admin
+              </div>
               <SidebarMenu>
-                {adminNav.map((item) => (
-                  <SidebarMenuItem key={item.to}>
-                    <SidebarMenuButton
-                      render={<Link to={item.to} />}
-                      isActive={currentPath.startsWith(item.to)}
-                      tooltip={item.label}
-                    >
-                      <item.icon />
-                      <span>{item.label}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                {ADMIN_NAV.map((item) => (
+                  <NavRow
+                    key={item.to}
+                    item={item}
+                    active={currentPath.startsWith(item.to)}
+                  />
                 ))}
               </SidebarMenu>
             </SidebarGroup>
           )}
         </SidebarContent>
 
-        <SidebarFooter>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  render={
-                    <SidebarMenuButton
-                      size="lg"
-                      className="data-[state=open]:bg-sidebar-accent"
-                    />
-                  }
-                >
-                  <Avatar className="size-8">
-                    <AvatarFallback className="text-xs">
-                      {user.username.slice(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex flex-col gap-0.5 leading-none">
-                    <span className="font-medium">{user.username}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {user.role}
-                    </span>
-                  </div>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="top"
-                  align="start"
-                  className="w-56"
-                >
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      {theme === "dark" ? (
-                        <Moon className="mr-2 size-4" />
-                      ) : theme === "light" ? (
-                        <Sun className="mr-2 size-4" />
-                      ) : (
-                        <Monitor className="mr-2 size-4" />
-                      )}
-                      Theme
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent>
-                      <DropdownMenuItem onClick={() => setTheme("light")}>
-                        <Sun className="mr-2 size-4" />
-                        Light
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme("dark")}>
-                        <Moon className="mr-2 size-4" />
-                        Dark
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme("system")}>
-                        <Monitor className="mr-2 size-4" />
-                        System
-                      </DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout}>
-                    <LogOut className="mr-2 size-4" />
-                    Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </SidebarMenuItem>
-          </SidebarMenu>
+        <SidebarFooter className="p-2">
+          <UserCard user={user} />
         </SidebarFooter>
       </Sidebar>
 
       <SidebarInset>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
-          <span className="text-sm font-medium text-muted-foreground">
-            Nexus
-          </span>
-        </header>
+        <TopBar />
         <main className="flex flex-1 flex-col">{children}</main>
       </SidebarInset>
     </SidebarProvider>
+  );
+}
+
+function NavRow({ item, active }: { item: NavItem; active: boolean }) {
+  const Icon = item.icon;
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        render={<Link to={item.to} />}
+        isActive={active}
+        tooltip={item.label}
+        className={cn(
+          "relative h-9 gap-2.5 rounded-md px-2 text-sm transition-colors",
+          "data-[active=true]:bg-primary/10 data-[active=true]:text-foreground",
+          "data-[active=true]:before:absolute data-[active=true]:before:left-0 data-[active=true]:before:top-1.5 data-[active=true]:before:bottom-1.5 data-[active=true]:before:w-[2px] data-[active=true]:before:rounded-full data-[active=true]:before:bg-primary",
+        )}
+      >
+        <Icon
+          className={cn(
+            "size-4 shrink-0",
+            active ? "text-primary" : "text-muted-foreground",
+          )}
+          aria-hidden
+        />
+        <span className="group-data-[collapsible=icon]:hidden">
+          {item.label}
+        </span>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+function UserCard({ user }: { user: User }) {
+  const [open, setOpen] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const logout = useLogout();
+  const initials = user.username.slice(0, 2).toUpperCase();
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={cn(
+          "flex w-full items-center gap-2 rounded-md p-1.5 text-left transition-colors",
+          "hover:bg-sidebar-accent",
+          open && "bg-sidebar-accent",
+        )}
+      >
+        <span
+          aria-hidden
+          className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-[11px] font-semibold text-primary"
+        >
+          {initials}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col leading-tight group-data-[collapsible=icon]:hidden">
+          <span className="truncate text-[13px] font-medium">
+            {user.username}
+          </span>
+          <span className="text-[11px] text-muted-foreground">{user.role}</span>
+        </span>
+        <ChevronUp
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[collapsible=icon]:hidden",
+            open && "rotate-180",
+          )}
+          aria-hidden
+        />
+      </button>
+
+      {open && (
+        <>
+          <button
+            type="button"
+            aria-label="Close menu"
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-40 cursor-default"
+          />
+          <div
+            role="menu"
+            className="absolute bottom-full left-0 right-0 z-50 mb-1 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-sm"
+          >
+            <div className="border-b border-border/70 px-3 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
+              Theme
+            </div>
+            <ThemeRow
+              label="Light"
+              icon={Sun}
+              active={theme === "light"}
+              onClick={() => {
+                setTheme("light");
+                setOpen(false);
+              }}
+            />
+            <ThemeRow
+              label="Dark"
+              icon={Moon}
+              active={theme === "dark"}
+              onClick={() => {
+                setTheme("dark");
+                setOpen(false);
+              }}
+            />
+            <ThemeRow
+              label="System"
+              icon={Monitor}
+              active={theme === "system"}
+              onClick={() => {
+                setTheme("system");
+                setOpen(false);
+              }}
+            />
+            <div className="border-t border-border/70">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  logout();
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground/90 transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <LogOut className="size-3.5 text-muted-foreground" aria-hidden />
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ThemeRow({
+  label,
+  icon: Icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  icon: typeof Sun;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={active}
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 px-3 py-1.5 text-sm transition-colors",
+        active
+          ? "bg-primary/10 text-foreground"
+          : "text-foreground/90 hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <Icon
+        className={cn(
+          "size-3.5",
+          active ? "text-primary" : "text-muted-foreground",
+        )}
+        aria-hidden
+      />
+      <span className="flex-1 text-left">{label}</span>
+      {active && (
+        <span className="size-1.5 rounded-full bg-primary" aria-hidden />
+      )}
+    </button>
+  );
+}
+
+// Operational trust strip + mobile sidebar trigger. The stats are mocked;
+// real data will come from a stats query in a later pass.
+function TopBar() {
+  const indexedDocs = 12480;
+  const sourceCount = 4;
+  const lastSync = "3m ago";
+
+  return (
+    <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
+      <div className="flex items-center gap-2 md:gap-0">
+        <SidebarTrigger className="-ml-2 size-8 md:hidden" />
+      </div>
+      <div
+        className="flex items-center gap-1 text-[12px] text-muted-foreground"
+        title="Index overview"
+      >
+        <span className="tabular-nums text-foreground/80">
+          {indexedDocs.toLocaleString()}
+        </span>
+        <span>docs</span>
+        <Dot />
+        <span className="tabular-nums text-foreground/80">{sourceCount}</span>
+        <span>sources</span>
+        <Dot />
+        <span>last sync</span>
+        <span className="tabular-nums text-foreground/80">{lastSync}</span>
+      </div>
+    </header>
+  );
+}
+
+function Dot() {
+  return (
+    <span
+      aria-hidden
+      className="mx-1.5 size-1 shrink-0 rounded-full bg-border"
+    />
   );
 }

@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { formatDistanceToNow } from "date-fns";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, Link2 } from "lucide-react";
 import type { DocumentHit } from "@/lib/api-types";
+import { SourceChip, sourceMetaFor } from "@/components/source-chip";
 import { cn } from "@/lib/utils";
 import { EmailCardBody } from "./cards/email";
 import { TelegramCardBody } from "./cards/telegram";
@@ -16,31 +18,7 @@ interface Props {
   onNavigateRelated: (doc: DocumentHit) => void;
 }
 
-// Compact relative date: "3d", "12h", "2mo", "1y" — fits a 5ch mono gutter
-// without needing truncation. Full phrase goes in the title attribute.
-function compactRelative(iso: string): string {
-  try {
-    const t = new Date(iso).getTime();
-    if (Number.isNaN(t)) return iso;
-    const diffMs = Date.now() - t;
-    const sec = Math.max(1, Math.floor(diffMs / 1000));
-    const min = Math.floor(sec / 60);
-    const hr = Math.floor(min / 60);
-    const day = Math.floor(hr / 24);
-    const mo = Math.floor(day / 30);
-    const yr = Math.floor(day / 365);
-    if (sec < 60) return `${sec}s`;
-    if (min < 60) return `${min}m`;
-    if (hr < 24) return `${hr}h`;
-    if (day < 30) return `${day}d`;
-    if (mo < 12) return `${mo}mo`;
-    return `${yr}y`;
-  } catch {
-    return iso;
-  }
-}
-
-function fullDate(iso: string): string {
+function relative(iso: string): string {
   try {
     return formatDistanceToNow(new Date(iso), { addSuffix: true });
   } catch {
@@ -54,65 +32,80 @@ export function ResultCard({
   onDownload,
   onNavigateRelated,
 }: Props) {
+  const [relatedOpen, setRelatedOpen] = useState(false);
   const titleText = hit.title || hit.source_id;
   const hasExternal = hit.url && !hit.url.startsWith("file://");
-  const relative = compactRelative(hit.created_at);
-  const absolute = fullDate(hit.created_at);
+  const relatedCount = hit.related_count ?? 0;
+  const sourceLabel = sourceMetaFor(hit.source_type).label;
 
   return (
     <article
       className={cn(
-        // No card border — just a rule separating rows. Density goes up.
-        "group relative grid grid-cols-[4.5rem_1fr] gap-x-4 border-b border-border/60 py-4 transition-colors",
-        "hover:bg-accent/30",
+        "group rounded-lg border border-border bg-card text-card-foreground",
+        "transition-[background-color,border-color] hover:border-accent-foreground/20 hover:bg-card-hover",
       )}
     >
-      {/* Leading mono timestamp gutter — the log-tail signature. */}
-      <div
-        className="pt-0.5 font-mono text-xs tabular-nums text-muted-foreground"
-        title={absolute}
-      >
-        {relative}
-      </div>
+      <div className="flex flex-col gap-2 p-4">
+        <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+          <SourceChip
+            type={hit.source_type}
+            label={`${sourceLabel} · ${hit.source_name}`}
+          />
+          <time
+            className="tabular-nums"
+            dateTime={hit.created_at}
+            title={hit.created_at}
+          >
+            {relative(hit.created_at)}
+          </time>
 
-      <div className="min-w-0">
-        {/* Source handle — dim mono above the title, @type·connector */}
-        <div className="mb-0.5 flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
-          <span className="text-muted-foreground/50">@</span>
-          <span>{hit.source_type}</span>
-          <span className="text-muted-foreground/40">·</span>
-          <span className="normal-case tracking-normal">{hit.source_name}</span>
-        </div>
-
-        {/* Title: the type itself is the structure, no outer box. */}
-        <h3 className="text-[17px] font-medium leading-snug tracking-[-0.005em]">
-          {hasExternal ? (
+          {hasExternal && (
             <a
               href={hit.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-baseline gap-1 hover:underline"
+              className="inline-flex items-center text-muted-foreground/80 transition-colors hover:text-foreground"
+              title="Open original"
             >
-              <span className="line-clamp-2">{titleText}</span>
-              <ArrowUpRight
-                className="inline size-3.5 shrink-0 translate-y-0.5 text-muted-foreground/70 transition-transform group-hover:-translate-y-[1px] group-hover:translate-x-[1px]"
-                aria-hidden
-              />
+              <ArrowUpRight className="size-3.5" aria-hidden />
             </a>
-          ) : (
-            <span className="line-clamp-2">{titleText}</span>
           )}
+
+          {relatedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setRelatedOpen((v) => !v)}
+              aria-expanded={relatedOpen}
+              className={cn(
+                "ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors",
+                relatedOpen
+                  ? "bg-primary/15 text-primary"
+                  : "text-primary/90 hover:bg-primary/10",
+              )}
+            >
+              <Link2 className="size-3" aria-hidden strokeWidth={2.5} />
+              <span>
+                <span className="tabular-nums">{relatedCount}</span> related
+              </span>
+            </button>
+          )}
+        </div>
+
+        <h3 className="text-[15px] font-medium leading-[1.35] tracking-[-0.005em] text-foreground">
+          <span className="line-clamp-2">{titleText}</span>
         </h3>
 
-        {/* Snippet — sans, muted, tight. Highlight tag is <mark> from
-         * OpenSearch; style it like a terminal selection. */}
         {hit.headline ? (
           <p
-            className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground [&_em]:rounded-sm [&_em]:bg-foreground/10 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground [&_mark]:rounded-sm [&_mark]:bg-foreground/10 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground"
+            className={cn(
+              "line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground",
+              "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
+              "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
+            )}
             dangerouslySetInnerHTML={{ __html: hit.headline }}
           />
         ) : hit.content ? (
-          <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+          <p className="line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground">
             {hit.content}
           </p>
         ) : null}
@@ -122,15 +115,17 @@ export function ResultCard({
           onOpenChat={onOpenChat}
           onDownload={onDownload}
         />
+      </div>
 
-        {(hit.related_count ?? 0) > 0 && (
+      {relatedOpen && relatedCount > 0 && (
+        <div className="border-t border-border/70 bg-muted/30 px-4 py-3">
           <RelatedFooter
             docID={hit.id}
-            count={hit.related_count ?? 0}
+            count={relatedCount}
             onNavigate={onNavigateRelated}
           />
-        )}
-      </div>
+        </div>
+      )}
     </article>
   );
 }

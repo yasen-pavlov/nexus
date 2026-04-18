@@ -74,7 +74,7 @@ describe("EmailCardBody", () => {
 });
 
 describe("TelegramCardBody", () => {
-  it("shows chat name with channel prefix and message count", () => {
+  it("shows chat name and message count", () => {
     render(
       <TelegramCardBody
         hit={baseHit({
@@ -84,7 +84,6 @@ describe("TelegramCardBody", () => {
         })}
       />,
     );
-    expect(screen.getByText("#")).toBeInTheDocument();
     expect(screen.getByText("Family")).toBeInTheDocument();
     expect(screen.getByText(/21 messages/)).toBeInTheDocument();
   });

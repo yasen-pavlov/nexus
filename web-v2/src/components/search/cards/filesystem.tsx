@@ -28,31 +28,34 @@ export function FilesystemCardBody({ hit }: { hit: DocumentHit }) {
   const size = formatBytes(num(m.size) ?? hit.size);
 
   const segments = path.split("/").filter(Boolean);
-  const file = segments.pop();
+  const file = segments.pop() ?? path;
   const dirs = segments;
 
   return (
     <div className="mt-2 flex items-center justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-muted-foreground">
-        <Folder className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <Folder
+          className="size-3.5 shrink-0 text-muted-foreground/70"
+          aria-hidden
+        />
+        <span className="truncate font-mono text-[12.5px] leading-tight">
           {dirs.map((d, i) => (
             <span key={`${d}-${i}`}>
-              {d}
+              <span className="text-muted-foreground">{d}</span>
               <span className="text-muted-foreground/40">/</span>
             </span>
           ))}
-          {file && <span className="text-foreground">{file}</span>}
+          <span className="text-foreground">{file}</span>
         </span>
       </div>
 
-      <div className="flex shrink-0 items-center gap-2 text-xs tabular-nums text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-2 text-[12px] text-muted-foreground">
         {extension && (
-          <span className="rounded border border-border/80 px-1.5 py-0.5 font-mono uppercase">
+          <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10.5px] font-medium uppercase tracking-wide">
             {extension.replace(/^\./, "")}
           </span>
         )}
-        {size && <span>{size}</span>}
+        {size && <span className="tabular-nums">{size}</span>}
       </div>
     </div>
   );

@@ -11,7 +11,9 @@ describe("SearchResults", () => {
     setToken(fakeToken);
     renderWithRouter(<SearchResults params={{}} />);
     await waitFor(() => {
-      expect(screen.getByText("ready.")).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "Search across everything" }),
+      ).toBeInTheDocument();
     });
   });
 

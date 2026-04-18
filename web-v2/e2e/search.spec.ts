@@ -66,9 +66,8 @@ async function mockAuthed(page: Page) {
 test("welcome state is shown with no query", async ({ page }) => {
   await mockAuthed(page);
   await page.goto("/");
-  await expect(page.getByText("ready.")).toBeVisible();
   await expect(
-    page.getByText("Search across everything"),
+    page.getByRole("heading", { name: "Search across everything" }),
   ).toBeVisible();
 });
 
@@ -190,9 +189,9 @@ test("clicking a source facet updates the URL", async ({ page }) => {
   await page.goto("/?q=test");
   await expect(page.getByText("Mail 1")).toBeVisible();
 
-  // Filter bar: no filters yet → click "add" to open the popover, pick imap.
-  await page.getByRole("button", { name: "add" }).click();
-  await page.getByRole("dialog").getByText("imap", { exact: true }).click();
+  // Filter bar shows source chips inline. "imap" renders as "Email" via
+  // the SourceChip label mapping; click the pill directly.
+  await page.getByRole("button", { pressed: false, name: /Email/ }).click();
 
   // TanStack Router JSON-encodes arrays: sources=["imap"] → sources=%5B%22imap%22%5D
   await expect(page).toHaveURL(/sources=/);

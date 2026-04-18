@@ -1,10 +1,9 @@
-import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import type { Document, DocumentHit, RelatedEdge } from "@/lib/api-types";
 import { useRelated } from "@/hooks/use-related";
+import { SourceChip } from "@/components/source-chip";
 
-// Human-readable labels per relation type + direction. Unknown types
-// fall back to the raw string so new relation types degrade gracefully.
+// Direction-aware labels per relation type. Unknown types fall back to the
+// raw string so new relation types degrade gracefully.
 const RELATION_LABELS: Record<
   string,
   { outgoing: string; incoming: string }
@@ -43,84 +42,74 @@ interface Props {
 }
 
 /**
- * Collapsed: a dim mono line `▸ related (n)` — no border, no block,
- * reads as another metadata line alongside the source handle. Expanded:
- * the richer grouped tree (sections for "Points to" / "Referenced by",
- * incoming grouped by relation type) for scannability.
+ * Expanded related content. Mounted inside a bordered region at the bottom
+ * of the ResultCard when the user clicks "N related"; the parent controls
+ * open/close, so this component renders its body immediately without an
+ * internal toggle.
  */
-export function RelatedFooter({ docID, count, onNavigate }: Props) {
-  const [expanded, setExpanded] = useState(false);
-  const { data, isLoading, error } = useRelated(docID, expanded);
+export function RelatedFooter({ docID, onNavigate }: Props) {
+  const { data, isLoading, error } = useRelated(docID, true);
+
+  if (isLoading) {
+    return (
+      <div className="text-[12.5px] text-muted-foreground">
+        Loading related…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-[12.5px] text-destructive">
+        {error instanceof Error ? error.message : "Failed to load related"}
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const hasOutgoing = data.outgoing.length > 0;
+  const hasIncoming = data.incoming.length > 0;
+
+  if (!hasOutgoing && !hasIncoming) {
+    return (
+      <div className="text-[12.5px] text-muted-foreground">
+        No related documents.
+      </div>
+    );
+  }
+
+  const groupedIncoming = groupBy(data.incoming, (e) => e.relation.type);
 
   return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        className="inline-flex items-baseline gap-1 font-mono text-[11px] text-muted-foreground/80 transition-colors hover:text-foreground"
-      >
-        {expanded ? (
-          <ChevronDown className="size-3 shrink-0 self-center" aria-hidden />
-        ) : (
-          <ChevronRight className="size-3 shrink-0 self-center" aria-hidden />
-        )}
-        <span>related</span>
-        <span className="tabular-nums text-muted-foreground/60">({count})</span>
-      </button>
+    <div className="flex flex-col gap-3 text-[13px]">
+      {hasOutgoing && (
+        <Section title="Points to">
+          <ul className="flex flex-col gap-1">
+            {data.outgoing.map((edge, i) => (
+              <OutgoingRow
+                key={`o-${i}`}
+                edge={edge}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </ul>
+        </Section>
+      )}
 
-      {expanded && (
-        <div className="mt-2 space-y-3 pl-4 text-xs">
-          {isLoading && (
-            <div className="font-mono text-[11px] text-muted-foreground/60">
-              loading…
-            </div>
-          )}
-          {error && (
-            <div className="font-mono text-[11px] text-destructive">
-              {error instanceof Error ? error.message : "failed to load"}
-            </div>
-          )}
-
-          {data && data.outgoing.length > 0 && (
-            <Section title="Points to">
-              {data.outgoing.map((edge, i) => (
-                <EdgeRow
-                  key={`o-${i}`}
-                  edge={edge}
-                  prefix={`${labelFor(edge.relation.type, "outgoing")}:`}
-                  onNavigate={onNavigate}
-                />
-              ))}
-            </Section>
-          )}
-
-          {data && data.incoming.length > 0 && (
-            <Section title="Referenced by">
-              {[...groupBy(data.incoming, (e) => e.relation.type).entries()].map(
-                ([type, bucket]) => (
-                  <div key={type}>
-                    <div className="font-medium text-muted-foreground">
-                      {labelFor(type, "incoming")}
-                      <span className="ml-1 tabular-nums text-muted-foreground/60">
-                        ({bucket.length})
-                      </span>
-                    </div>
-                    <ul className="mt-0.5 space-y-0.5 pl-3">
-                      {bucket.map((edge, i) => (
-                        <EdgeRow
-                          key={`i-${type}-${i}`}
-                          edge={edge}
-                          onNavigate={onNavigate}
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                ),
-              )}
-            </Section>
-          )}
-        </div>
+      {hasIncoming && (
+        <Section title="Referenced by">
+          <div className="flex flex-col gap-2.5">
+            {[...groupedIncoming.entries()].map(([type, bucket]) => (
+              <IncomingGroup
+                key={type}
+                type={type}
+                edges={bucket}
+                onNavigate={onNavigate}
+              />
+            ))}
+          </div>
+        </Section>
       )}
     </div>
   );
@@ -135,46 +124,114 @@ function Section({
 }) {
   return (
     <div>
-      <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
         {title}
       </div>
-      <div className="mt-1 space-y-1">{children}</div>
+      {children}
     </div>
   );
 }
 
-function EdgeRow({
+function OutgoingRow({
   edge,
-  prefix,
   onNavigate,
 }: {
   edge: RelatedEdge;
-  prefix?: string;
-  onNavigate: (doc: DocumentHit) => void;
+  onNavigate: (d: DocumentHit) => void;
 }) {
+  const label = labelFor(edge.relation.type, "outgoing");
   const fallbackID =
     edge.relation.target_source_id ?? edge.relation.target_id ?? "?";
-
   return (
-    <li className="flex min-w-0 items-baseline gap-1">
-      {prefix && (
-        <span className="shrink-0 text-muted-foreground">{prefix}</span>
-      )}
+    <li className="flex min-w-0 items-center gap-2">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
       {edge.document ? (
-        <button
-          type="button"
-          onClick={() => onNavigate(toHit(edge.document!))}
-          className="truncate text-left text-foreground/90 transition-colors hover:text-foreground hover:underline"
-        >
-          {edge.document.title || edge.document.source_id}
-        </button>
+        <>
+          <SourceChip type={edge.document.source_type} variant="compact" />
+          <button
+            type="button"
+            onClick={() => onNavigate(toHit(edge.document!))}
+            className="truncate text-left text-foreground/90 transition-colors hover:text-foreground hover:underline"
+          >
+            {edge.document.title || edge.document.source_id}
+          </button>
+        </>
       ) : (
         <span
-          className="truncate font-mono text-muted-foreground/60"
+          className="truncate text-muted-foreground/70"
           title={fallbackID}
         >
           {fallbackID}
         </span>
+      )}
+    </li>
+  );
+}
+
+function IncomingGroup({
+  type,
+  edges,
+  onNavigate,
+}: {
+  type: string;
+  edges: RelatedEdge[];
+  onNavigate: (d: DocumentHit) => void;
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline gap-1.5 text-[12.5px]">
+        <span className="font-medium text-foreground">
+          {labelFor(type, "incoming")}
+        </span>
+        <span className="tabular-nums text-muted-foreground/70">
+          ({edges.length})
+        </span>
+      </div>
+      <ul className="mt-1 flex flex-col gap-1 border-l border-border pl-2.5">
+        {edges.map((edge, i) => (
+          <IncomingRow
+            key={`${type}-${i}`}
+            edge={edge}
+            onNavigate={onNavigate}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function IncomingRow({
+  edge,
+  onNavigate,
+}: {
+  edge: RelatedEdge;
+  onNavigate: (d: DocumentHit) => void;
+}) {
+  const fallbackID =
+    edge.relation.target_source_id ?? edge.relation.target_id ?? "?";
+  return (
+    <li className="flex min-w-0 items-center gap-2">
+      {edge.document ? (
+        <>
+          <SourceChip type={edge.document.source_type} variant="compact" />
+          <button
+            type="button"
+            onClick={() => onNavigate(toHit(edge.document!))}
+            className="truncate text-left text-foreground/90 transition-colors hover:text-foreground hover:underline"
+          >
+            {edge.document.title || edge.document.source_id}
+          </button>
+        </>
+      ) : (
+        <>
+          <span aria-hidden className="size-5 shrink-0" />
+          <span
+            className="truncate text-muted-foreground/70"
+            title={fallbackID}
+          >
+            {fallbackID}
+          </span>
+        </>
       )}
     </li>
   );

@@ -89,7 +89,13 @@ export function SearchResults({ params }: Props) {
   };
 
   if (!query) {
-    return <WelcomeState />;
+    return (
+      <WelcomeState
+        onPickExample={(q) =>
+          navigate({ search: { ...params, q }, replace: false })
+        }
+      />
+    );
   }
 
   if (isLoading) {
@@ -114,18 +120,16 @@ export function SearchResults({ params }: Props) {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-4">
       <SearchFilters params={params} facets={facets} />
 
-      <div className="border-b border-border/60 py-2 font-mono text-[11px] text-muted-foreground/80">
+      <div className="text-[12px] text-muted-foreground">
         <span className="tabular-nums text-foreground">{total}</span>
-        <span className="ml-1">result{total !== 1 ? "s" : ""}</span>
-        <span className="mx-1.5 text-muted-foreground/40">·</span>
-        <span>matching</span>{" "}
+        <span className="ml-1">result{total !== 1 ? "s" : ""} for</span>{" "}
         <span className="text-foreground">&ldquo;{query}&rdquo;</span>
       </div>
 
-      <div>
+      <div className="flex flex-col gap-3">
         {hits.map((hit) => (
           <ResultCard
             key={hit.id}

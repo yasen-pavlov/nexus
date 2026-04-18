@@ -5,52 +5,20 @@ import { server } from "@/test/mocks/server";
 import { RelatedFooter } from "../related-footer";
 
 describe("RelatedFooter", () => {
-  it("is collapsed by default, shows the count, and fetches only on expand", async () => {
-    let requests = 0;
-    server.use(
-      http.get("*/api/documents/:id/related", () => {
-        requests++;
-        return HttpResponse.json({
-          data: { outgoing: [], incoming: [] },
-        });
-      }),
-    );
-    renderWithRouter(
-      <RelatedFooter docID="d-email-1" count={3} onNavigate={() => {}} />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("related")).toBeInTheDocument();
-    });
-    expect(screen.getByText("(3)")).toBeInTheDocument();
-    expect(requests).toBe(0);
-
-    await userEvent.setup().click(screen.getByText("related"));
-    await waitFor(() => {
-      expect(requests).toBe(1);
-    });
-  });
-
-  it("renders incoming edges grouped by relation type with human labels", async () => {
+  it("fetches on mount and renders grouped incoming edges", async () => {
     const onNavigate = vi.fn();
     renderWithRouter(
       <RelatedFooter docID="d-email-1" count={1} onNavigate={onNavigate} />,
     );
 
-    await waitFor(() => {
-      expect(screen.getByText("related")).toBeInTheDocument();
-    });
-    await userEvent.setup().click(screen.getByText("related"));
-
-    // Default MSW handler returns one attachment_of edge pointing at
-    // invoice.pdf for doc id d-email-1. Should render as "Referenced by"
-    // section with "Attachments (1)" group.
+    // Default MSW handler returns one attachment_of incoming edge pointing
+    // at invoice.pdf for d-email-1. Should render as "Referenced by" →
+    // "Attachments (1)" → [chip + invoice.pdf button].
     await waitFor(() => {
       expect(screen.getByText("Referenced by")).toBeInTheDocument();
     });
     expect(screen.getByText("Attachments")).toBeInTheDocument();
-    // "(1)" appears twice: once in the toggle count, once in the group label.
-    expect(screen.getAllByText("(1)").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("(1)")).toBeInTheDocument();
 
     await userEvent.setup().click(
       screen.getByRole("button", { name: "invoice.pdf" }),
@@ -91,14 +59,9 @@ describe("RelatedFooter", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("related")).toBeInTheDocument();
-    });
-    await userEvent.setup().click(screen.getByText("related"));
-
-    await waitFor(() => {
       expect(screen.getByText("Points to")).toBeInTheDocument();
     });
-    expect(screen.getByText("Reply to:")).toBeInTheDocument();
+    expect(screen.getByText("Reply to")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Parent email" }),
     ).toBeInTheDocument();
@@ -127,11 +90,8 @@ describe("RelatedFooter", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("related")).toBeInTheDocument();
-    });
-    await userEvent.setup().click(screen.getByText("related"));
-    await waitFor(() => {
       expect(screen.getByText("INBOX:missing-parent")).toBeInTheDocument();
     });
   });
+
 });

@@ -1,4 +1,4 @@
-import { MessageCircle } from "lucide-react";
+import { ArrowRight, MessageCircle } from "lucide-react";
 import type { DocumentHit } from "@/lib/api-types";
 import { Button } from "@/components/ui/button";
 
@@ -21,38 +21,41 @@ export function TelegramCardBody({ hit, onOpenChat }: Props) {
   const messageCount = num(m.message_count);
   const canOpen = !!hit.conversation_id && !!onOpenChat;
 
+  if (!chatName && messageCount === undefined && !canOpen) return null;
+
   return (
-    <div className="mt-2 flex items-center justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-2 text-sm">
+    <div className="mt-2 flex items-center justify-between gap-3 text-[13px]">
+      <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+        <MessageCircle
+          className="size-3.5 shrink-0 text-muted-foreground/70"
+          aria-hidden
+        />
         {chatName ? (
-          <>
-            <span
-              className="shrink-0 font-mono text-base leading-none text-muted-foreground/70"
-              aria-hidden
-            >
-              #
-            </span>
-            <span className="truncate font-medium">{chatName}</span>
-          </>
+          <span className="truncate font-medium text-foreground/90">
+            {chatName}
+          </span>
         ) : (
-          <span className="truncate text-muted-foreground">Telegram chat</span>
+          <span className="truncate">Telegram chat</span>
         )}
         {messageCount !== undefined && messageCount > 1 && (
-          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-            · {messageCount} messages
-          </span>
+          <>
+            <span className="shrink-0 text-muted-foreground/50">·</span>
+            <span className="shrink-0 tabular-nums">
+              {messageCount} messages
+            </span>
+          </>
         )}
       </div>
 
       {canOpen && (
         <Button
-          variant="secondary"
+          variant="outline"
           size="sm"
-          className="h-7 shrink-0"
           onClick={() => onOpenChat?.(hit)}
+          className="h-7 shrink-0 gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium"
         >
-          <MessageCircle className="mr-1 size-3.5" aria-hidden />
           Open in chat
+          <ArrowRight className="size-3.5" aria-hidden />
         </Button>
       )}
     </div>

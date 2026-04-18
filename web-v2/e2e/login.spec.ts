@@ -4,8 +4,7 @@ test("redirects to login when not authenticated", async ({ page }) => {
   await page.goto("/");
   // Should redirect to /login
   await expect(page).toHaveURL(/\/login/);
-  await expect(page.getByText("Nexus")).toBeVisible();
-  await expect(page.getByText("Sign in to continue")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
 });
 
 test("shows login form fields", async ({ page }) => {
