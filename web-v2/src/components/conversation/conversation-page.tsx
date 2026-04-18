@@ -78,7 +78,19 @@ export function ConversationPage({
     const ownerExternalID = selfIdentity?.external_id ?? null;
     const connectorID = selfIdentity?.connector_id ?? null;
 
-    return messages.map((m) =>
+    // Drop messages with neither body text nor attachments — these are
+    // usually stickers or other unsupported Telegram media (polls,
+    // geo, venues) where the media got rejected upstream but the
+    // per-message doc was still emitted. Rendering them as "(no text)"
+    // bubbles adds noise without context; quietly skipping reads as
+    // the natural chat flow.
+    const visible = messages.filter((m) => {
+      if (m.content && m.content.trim() !== "") return true;
+      const atts = m.metadata?.attachments;
+      return Array.isArray(atts) && atts.length > 0;
+    });
+
+    return visible.map((m) =>
       messageToRowModel(m, {
         sourceType,
         anchorSourceId,
