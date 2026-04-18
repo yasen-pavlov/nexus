@@ -234,18 +234,22 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if a sync is already running for this connector
-	if existing := h.syncJobs.GetByConnector(cfg.ID); existing != nil {
-		writeError(w, http.StatusConflict, "sync already running for "+cfg.Name)
+	job, runCtx, err := h.syncJobs.Start(cfg.ID, cfg.Name, conn.Type())
+	if err != nil {
+		if errors.Is(err, ErrAlreadyRunning) {
+			writeError(w, http.StatusConflict, "sync already running for "+cfg.Name)
+			return
+		}
+		h.log.Error("sync job start failed", zap.String("connector", cfg.Name), zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to start sync")
 		return
 	}
-
-	job := h.syncJobs.Start(cfg.ID, cfg.Name, conn.Type())
 	snapshot := *job // copy before goroutine can mutate it
 
-	// Run pipeline in background with a detached context
+	// Run pipeline in background. runCtx is cancellable via
+	// syncJobs.Cancel(job.ID) and propagates through conn.Fetch +
+	// pipeline's per-doc loop.
 	go func() {
-		ctx := context.Background()
 		progress := func(total, processed, errors int) {
 			h.syncJobs.Update(job.ID, total, processed, errors)
 		}
@@ -254,13 +258,13 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 		if cfg.UserID != nil {
 			ownerID = cfg.UserID.String()
 		}
-		report, err := h.pipeline.RunWithProgress(ctx, cfg.ID, conn, ownerID, cfg.Shared, progress)
+		report, err := h.pipeline.RunWithProgress(runCtx, cfg.ID, conn, ownerID, cfg.Shared, progress)
 		if report != nil {
 			h.syncJobs.SetDeleted(job.ID, report.DocsDeleted)
 		}
 		h.syncJobs.Complete(job.ID, err)
 
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			h.log.Error("async sync failed", zap.String("connector", cfg.Name), zap.Error(err))
 		}
 	}()
@@ -430,20 +434,23 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 		if !canModifyConnector(claims, &cfg) {
 			continue // user cannot trigger sync on this connector
 		}
-		if existing := h.syncJobs.GetByConnector(connID); existing != nil {
-			continue // already running
-		}
 		connName := entry.Conn.Name()
 		ownerID := ""
 		if entry.Config.UserID != nil {
 			ownerID = entry.Config.UserID.String()
 		}
-		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		if err != nil {
+			if errors.Is(err, ErrAlreadyRunning) {
+				continue // silently skip connectors already syncing
+			}
+			h.log.Error("sync all: start failed", zap.String("connector", connName), zap.Error(err))
+			continue
+		}
 		snapshot := *job
 		jobs = append(jobs, &snapshot)
 
-		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			ctx := context.Background()
+		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
@@ -452,10 +459,10 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
 			}
 			h.syncJobs.Complete(jobID, err)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				h.log.Error("sync all: connector failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
+		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 	}
 	writeJSON(w, http.StatusAccepted, jobs)
 }
@@ -494,9 +501,15 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 		if entry.Config.UserID != nil {
 			ownerID = entry.Config.UserID.String()
 		}
-		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
-		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			ctx := context.Background()
+		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		if err != nil {
+			if errors.Is(err, ErrAlreadyRunning) {
+				continue
+			}
+			h.log.Error("reindex: start failed", zap.String("connector", connName), zap.Error(err))
+			continue
+		}
+		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
@@ -505,10 +518,10 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
 			}
 			h.syncJobs.Complete(jobID, err)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				h.log.Error("reindex: connector failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
+		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 		count++
 	}
 

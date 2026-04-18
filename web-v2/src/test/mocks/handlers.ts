@@ -291,10 +291,15 @@ export const handlers = [
           updated_at: "2026-01-01T00:00:00Z",
           last_run: "2026-04-10T00:00:00Z",
           user_id: "u1",
+          external_id: "",
+          external_name: "",
         },
       ]),
     );
   }),
+
+  // Sync jobs list — empty by default; tests that care can override.
+  http.get("*/api/sync", () => HttpResponse.json(wrapData([]))),
 ];
 
 // sampleConversationMessages covers the Telegram-style chunks the

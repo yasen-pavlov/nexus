@@ -12,15 +12,6 @@ func TestComputeSyncSince_Empty(t *testing.T) {
 	}
 }
 
-func TestComputeSyncSince_Days(t *testing.T) {
-	result := ComputeSyncSince(Config{"sync_since_days": "30"})
-	expected := time.Now().AddDate(0, 0, -30)
-	diff := result.Sub(expected)
-	if diff < -time.Second || diff > time.Second {
-		t.Errorf("expected ~30 days ago, got %v (diff %v)", result, diff)
-	}
-}
-
 func TestComputeSyncSince_Date(t *testing.T) {
 	result := ComputeSyncSince(Config{"sync_since": "2025-06-01"})
 	expected := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -29,23 +20,20 @@ func TestComputeSyncSince_Date(t *testing.T) {
 	}
 }
 
-func TestComputeSyncSince_DaysTakesPrecedence(t *testing.T) {
-	result := ComputeSyncSince(Config{
-		"sync_since_days": "7",
-		"sync_since":      "2020-01-01",
-	})
-	// Should use days, not the date
-	expected := time.Now().AddDate(0, 0, -7)
-	diff := result.Sub(expected)
-	if diff < -time.Second || diff > time.Second {
-		t.Errorf("expected ~7 days ago, got %v", result)
-	}
-}
-
 func TestComputeSyncSince_InvalidDate(t *testing.T) {
 	result := ComputeSyncSince(Config{"sync_since": "not-a-date"})
 	if !result.IsZero() {
 		t.Errorf("expected zero for invalid date, got %v", result)
+	}
+}
+
+// The legacy `sync_since_days` key is no longer honored. If a row
+// somehow still has it (pre-migration), we ignore it rather than
+// silently take precedence over a proper `sync_since`.
+func TestComputeSyncSince_LegacyDaysIgnored(t *testing.T) {
+	result := ComputeSyncSince(Config{"sync_since_days": "7"})
+	if !result.IsZero() {
+		t.Errorf("expected zero (legacy key ignored), got %v", result)
 	}
 }
 

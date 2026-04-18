@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -130,21 +131,27 @@ func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
 		if entry.Config.UserID != nil {
 			ownerID = entry.Config.UserID.String()
 		}
-		job := h.syncJobs.Start(connID, connName, entry.Conn.Type())
-		go func(cid uuid.UUID, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			bgCtx := context.Background()
+		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+		if err != nil {
+			if errors.Is(err, ErrAlreadyRunning) {
+				continue
+			}
+			h.log.Error("auto-reindex: start failed", zap.String("connector", connName), zap.Error(err))
+			continue
+		}
+		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
 			progress := func(total, processed, errors int) {
 				h.syncJobs.Update(jobID, total, processed, errors)
 			}
-			report, err := h.pipeline.RunWithProgress(bgCtx, cid, c, oid, shared, progress)
+			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
 			if report != nil {
 				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
 			}
 			h.syncJobs.Complete(jobID, err)
-			if err != nil {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				h.log.Error("auto-reindex: sync failed", zap.String("connector", n), zap.Error(err))
 			}
-		}(connID, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
+		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 	}
 
 	h.log.Info("auto-reindex: triggered sync for all connectors")

@@ -61,6 +61,23 @@ async function mockAuthed(page: Page) {
       body: JSON.stringify({ data: { outgoing: [], incoming: [] } }),
     }),
   );
+
+  // AppShell's useSyncJobs polls /api/sync and opens an SSE stream; without
+  // stubs the real backend at :8080 returns 401 and drops the session.
+  await page.route("**/api/sync", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
+  await page.route("**/api/sync/progress*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: "",
+    }),
+  );
 }
 
 test("welcome state is shown with no query", async ({ page }) => {

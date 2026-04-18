@@ -185,3 +185,22 @@
     12%  { opacity: 1; }
     100% { opacity: 0; }
 }
+
+/* Connectors surface primitives. `specimen-pulse` drives the running-state
+   shimmer on the per-card tonal spine; `lamp-breathe` halos the status
+   lamp when a sync is live; `ticker-bead` slides the indeterminate-
+   progress glyph across its track when docs_total is unknown. */
+@keyframes specimen-pulse {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 1; }
+}
+@keyframes lamp-breathe {
+    0%, 100% { box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 18%, transparent); }
+    50%      { box-shadow: 0 0 0 5px color-mix(in oklch, currentColor 28%, transparent); }
+}
+@keyframes ticker-bead {
+    0%   { transform: translateX(0); }
+    100% { transform: translateX(300%); }
+}
+.lamp-breathe    { animation: lamp-breathe 1.6s ease-in-out infinite; }
+.specimen-pulse  { animation: specimen-pulse 1.8s ease-in-out infinite; }

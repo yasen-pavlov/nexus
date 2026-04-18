@@ -12,17 +12,16 @@ export const Route = createFileRoute("/_authenticated/")({
 
 function SearchPage() {
   const params = Route.useSearch();
-  const { data: connectors, isLoading: loadingConnectors } = useConnectors();
+  const { connectors, isLoading: loadingConnectors } = useConnectors();
   const { user } = Route.useRouteContext();
 
   // Show "add a connector" only when we're sure the user has zero
   // connectors they can modify. Admins see shared connectors too, so a
   // freshly installed admin starts with the seeded filesystem connector
   // and skips this state.
-  const ownedOrShared =
-    connectors?.filter(
-      (c) => c.shared || (c.user_id && c.user_id === user.id),
-    ) ?? [];
+  const ownedOrShared = connectors.filter(
+    (c) => c.shared || (c.user_id && c.user_id === user.id),
+  );
   const showNoConnectors =
     !loadingConnectors && ownedOrShared.length === 0 && !params.q;
 

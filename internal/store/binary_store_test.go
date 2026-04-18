@@ -360,3 +360,64 @@ func TestBinaryStoreStats_AggregatesBySource(t *testing.T) {
 		t.Errorf("telegram/personal: got %+v, want count=1 size=1000", got)
 	}
 }
+
+// Closed-pool error paths. pgxpool.Query / Exec return distinctive errors
+// when the pool is closed; the store methods wrap them via fmt.Errorf.
+// These tests only assert that an error bubbles — the underlying message
+// shape is pgx's concern.
+func TestBinaryStore_ClosedPoolErrors(t *testing.T) {
+	s := newClosedStore(t)
+	ctx := context.Background()
+	e := entry("imap", "icloud", "msg-1", "/p", 100)
+
+	t.Run("UpsertBinaryStoreEntry", func(t *testing.T) {
+		if err := s.UpsertBinaryStoreEntry(ctx, e); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("TouchBinaryStoreEntry", func(t *testing.T) {
+		if _, err := s.TouchBinaryStoreEntry(ctx, "imap", "icloud", "msg-1"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("GetBinaryStoreEntry", func(t *testing.T) {
+		if _, err := s.GetBinaryStoreEntry(ctx, "imap", "icloud", "msg-1"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("DeleteBinaryStoreEntry", func(t *testing.T) {
+		if _, err := s.DeleteBinaryStoreEntry(ctx, "imap", "icloud", "msg-1"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("DeleteAllBinaryStoreEntries", func(t *testing.T) {
+		if _, err := s.DeleteAllBinaryStoreEntries(ctx); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("DeleteBinaryStoreBySource", func(t *testing.T) {
+		if _, err := s.DeleteBinaryStoreBySource(ctx, "imap", "icloud"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("ListExpiredBinaryStoreEntries", func(t *testing.T) {
+		if _, err := s.ListExpiredBinaryStoreEntries(ctx, "imap", time.Hour); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("ListLRUBinaryStoreEntries", func(t *testing.T) {
+		if _, err := s.ListLRUBinaryStoreEntries(ctx, "imap"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("BinaryStoreTotalSize", func(t *testing.T) {
+		if _, err := s.BinaryStoreTotalSize(ctx, "imap"); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+	t.Run("BinaryStoreStats", func(t *testing.T) {
+		if _, err := s.BinaryStoreStats(ctx); err == nil {
+			t.Error("expected error on closed pool")
+		}
+	})
+}

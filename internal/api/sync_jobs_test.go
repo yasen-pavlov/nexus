@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,11 +12,30 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
+// newTestSyncJobManager returns a SyncJobManager with no persister — the
+// in-memory path only. Use for unit tests that don't care about sync_runs.
+func newTestSyncJobManager() *SyncJobManager {
+	return NewSyncJobManager(nil, zap.NewNop())
+}
+
+// mustStart calls Start and fails the test if it returns an error. Returns
+// only the job and runCtx for brevity in cases that don't exercise
+// ErrAlreadyRunning.
+func mustStart(t *testing.T, m *SyncJobManager, connID uuid.UUID, name, typ string) (*SyncJob, context.Context) {
+	t.Helper()
+	job, ctx, err := m.Start(connID, name, typ)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return job, ctx
+}
+
 func TestSyncJobManager_StartAndGet(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test-conn", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test-conn", "filesystem")
 
 	if job.ID == "" {
 		t.Error("expected non-empty job ID")
@@ -22,7 +43,7 @@ func TestSyncJobManager_StartAndGet(t *testing.T) {
 	if job.ConnectorName != "test-conn" {
 		t.Errorf("ConnectorName = %q, want %q", job.ConnectorName, "test-conn")
 	}
-	if job.Status != "running" {
+	if job.Status != SyncStatusRunning {
 		t.Errorf("Status = %q, want running", job.Status)
 	}
 
@@ -35,10 +56,65 @@ func TestSyncJobManager_StartAndGet(t *testing.T) {
 	}
 }
 
-func TestSyncJobManager_GetByConnector(t *testing.T) {
-	m := NewSyncJobManager()
+func TestSyncJobManager_Start_AlreadyRunning(t *testing.T) {
+	m := newTestSyncJobManager()
 	connID := uuid.New()
-	m.Start(connID, "conn-a", "filesystem")
+	_, _ = mustStart(t, m, connID, "conn-a", "filesystem")
+
+	_, _, err := m.Start(connID, "conn-a", "filesystem")
+	if !errors.Is(err, ErrAlreadyRunning) {
+		t.Errorf("want ErrAlreadyRunning, got %v", err)
+	}
+}
+
+func TestSyncJobManager_Start_AfterComplete_Succeeds(t *testing.T) {
+	m := newTestSyncJobManager()
+	connID := uuid.New()
+	job1, _ := mustStart(t, m, connID, "conn-a", "filesystem")
+	m.Complete(job1.ID, nil)
+
+	// After completion, a new run should be allowed for the same connector.
+	job2, _, err := m.Start(connID, "conn-a", "filesystem")
+	if err != nil {
+		t.Fatalf("Start after complete: %v", err)
+	}
+	if job2.ID == job1.ID {
+		t.Error("new run should get a fresh job id")
+	}
+}
+
+func TestSyncJobManager_Start_ConcurrentOnSameConnector(t *testing.T) {
+	m := newTestSyncJobManager()
+	connID := uuid.New()
+
+	var wg sync.WaitGroup
+	successes := 0
+	var mu sync.Mutex
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := m.Start(connID, "race", "filesystem")
+			if err == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			} else if !errors.Is(err, ErrAlreadyRunning) {
+				t.Errorf("unexpected err: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if successes != 1 {
+		t.Errorf("expected exactly 1 Start to succeed, got %d", successes)
+	}
+}
+
+func TestSyncJobManager_GetByConnector(t *testing.T) {
+	m := newTestSyncJobManager()
+	connID := uuid.New()
+	_, _ = mustStart(t, m, connID, "conn-a", "filesystem")
 
 	got := m.GetByConnector(connID)
 	if got == nil {
@@ -55,9 +131,9 @@ func TestSyncJobManager_GetByConnector(t *testing.T) {
 }
 
 func TestSyncJobManager_GetByConnector_NotRunning(t *testing.T) {
-	m := NewSyncJobManager()
+	m := newTestSyncJobManager()
 	connID := uuid.New()
-	job := m.Start(connID, "conn-a", "filesystem")
+	job, _ := mustStart(t, m, connID, "conn-a", "filesystem")
 	m.Complete(job.ID, nil)
 
 	got := m.GetByConnector(connID)
@@ -67,8 +143,8 @@ func TestSyncJobManager_GetByConnector_NotRunning(t *testing.T) {
 }
 
 func TestSyncJobManager_Update(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
 	m.Update(job.ID, 100, 50, 2)
 
@@ -85,13 +161,13 @@ func TestSyncJobManager_Update(t *testing.T) {
 }
 
 func TestSyncJobManager_Complete_Success(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 	m.Update(job.ID, 10, 10, 0)
 	m.Complete(job.ID, nil)
 
 	got := m.Get(job.ID)
-	if got.Status != "completed" {
+	if got.Status != SyncStatusCompleted {
 		t.Errorf("Status = %q, want completed", got.Status)
 	}
 	if got.CompletedAt.IsZero() {
@@ -100,12 +176,12 @@ func TestSyncJobManager_Complete_Success(t *testing.T) {
 }
 
 func TestSyncJobManager_Complete_Failure(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 	m.Complete(job.ID, fmt.Errorf("connection lost"))
 
 	got := m.Get(job.ID)
-	if got.Status != "failed" {
+	if got.Status != SyncStatusFailed {
 		t.Errorf("Status = %q, want failed", got.Status)
 	}
 	if got.Error != "connection lost" {
@@ -113,10 +189,88 @@ func TestSyncJobManager_Complete_Failure(t *testing.T) {
 	}
 }
 
+func TestSyncJobManager_Complete_CanceledContext(t *testing.T) {
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
+
+	// Wrap so errors.Is still detects it — matches how the pipeline will
+	// return a wrapped context.Canceled through the sync loop.
+	wrapped := fmt.Errorf("pipeline: fetch: %w", context.Canceled)
+	m.Complete(job.ID, wrapped)
+
+	got := m.Get(job.ID)
+	if got.Status != SyncStatusCanceled {
+		t.Errorf("Status = %q, want canceled", got.Status)
+	}
+	if got.Error != "" {
+		t.Errorf("Error should be empty for canceled jobs, got %q", got.Error)
+	}
+}
+
+func TestSyncJobManager_Cancel_Idempotent(t *testing.T) {
+	m := newTestSyncJobManager()
+	job, runCtx := mustStart(t, m, uuid.New(), "test", "filesystem")
+
+	if !m.Cancel(job.ID) {
+		t.Error("first Cancel should report success")
+	}
+	// Second Cancel on the same running job is still a no-op but must
+	// return true (cancel func is still registered until Complete).
+	if !m.Cancel(job.ID) {
+		t.Error("second Cancel should also report success before Complete")
+	}
+
+	// The context passed back from Start must be canceled.
+	select {
+	case <-runCtx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Error("runCtx should be canceled after Cancel")
+	}
+}
+
+func TestSyncJobManager_Cancel_AfterComplete_NoOp(t *testing.T) {
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
+	m.Complete(job.ID, nil)
+
+	if m.Cancel(job.ID) {
+		t.Error("Cancel after Complete should report false (no running job)")
+	}
+}
+
+func TestSyncJobManager_Cancel_UnknownID(t *testing.T) {
+	m := newTestSyncJobManager()
+	if m.Cancel("nonexistent") {
+		t.Error("Cancel on unknown id should return false")
+	}
+}
+
+func TestSyncJobManager_StartForSchedule_ReturnsJobIDAndCtx(t *testing.T) {
+	m := newTestSyncJobManager()
+	connID := uuid.New()
+	id, ctx, err := m.StartForSchedule(connID, "scheduled", "filesystem")
+	if err != nil {
+		t.Fatalf("StartForSchedule: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty job id")
+	}
+	if ctx == nil {
+		t.Fatal("expected non-nil runCtx")
+	}
+	if m.Get(id) == nil {
+		t.Errorf("job %q should be registered", id)
+	}
+	// Subsequent Start on the same connector must refuse to double-schedule.
+	if _, _, err := m.StartForSchedule(connID, "scheduled", "filesystem"); !errors.Is(err, ErrAlreadyRunning) {
+		t.Errorf("expected ErrAlreadyRunning, got %v", err)
+	}
+}
+
 func TestSyncJobManager_Active(t *testing.T) {
-	m := NewSyncJobManager()
-	m.Start(uuid.New(), "a", "filesystem")
-	m.Start(uuid.New(), "b", "imap")
+	m := newTestSyncJobManager()
+	_, _ = mustStart(t, m, uuid.New(), "a", "filesystem")
+	_, _ = mustStart(t, m, uuid.New(), "b", "imap")
 
 	jobs := m.Active()
 	if len(jobs) != 2 {
@@ -125,15 +279,15 @@ func TestSyncJobManager_Active(t *testing.T) {
 }
 
 func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
 	ch := m.Subscribe(job.ID)
 
 	// Should receive initial state
 	select {
 	case update := <-ch:
-		if update.Status != "running" {
+		if update.Status != SyncStatusRunning {
 			t.Errorf("initial update status = %q, want running", update.Status)
 		}
 	case <-time.After(time.Second):
@@ -156,15 +310,15 @@ func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
 
 	// Drain the completion notification
 	for update := range ch {
-		if update.Status == "completed" {
+		if update.Status == SyncStatusCompleted {
 			break
 		}
 	}
 }
 
 func TestSyncJobManager_Subscribe_CompletedJob(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 	m.Complete(job.ID, nil)
 
 	ch := m.Subscribe(job.ID)
@@ -174,7 +328,7 @@ func TestSyncJobManager_Subscribe_CompletedJob(t *testing.T) {
 	if !ok {
 		t.Fatal("channel closed before receiving final state")
 	}
-	if update.Status != "completed" {
+	if update.Status != SyncStatusCompleted {
 		t.Errorf("status = %q, want completed", update.Status)
 	}
 
@@ -186,8 +340,8 @@ func TestSyncJobManager_Subscribe_CompletedJob(t *testing.T) {
 }
 
 func TestSyncJobManager_Get_ReturnsSnapshot(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
 	got1 := m.Get(job.ID)
 	m.Update(job.ID, 100, 50, 0)
@@ -203,7 +357,7 @@ func TestSyncJobManager_Get_ReturnsSnapshot(t *testing.T) {
 }
 
 func TestSyncJobManager_Get_NotFound(t *testing.T) {
-	m := NewSyncJobManager()
+	m := newTestSyncJobManager()
 	if m.Get("nonexistent") != nil {
 		t.Error("expected nil for nonexistent job")
 	}
@@ -212,7 +366,7 @@ func TestSyncJobManager_Get_NotFound(t *testing.T) {
 func TestStreamSyncProgress_Handler(t *testing.T) {
 	h := newTestHandler()
 	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	job := h.syncJobs.Start(testID, "test-fs", "filesystem")
+	job, _ := mustStart(t, h.syncJobs, testID, "test-fs", "filesystem")
 
 	r := chi.NewRouter()
 	// Inject admin auth context so canReadConnector passes
@@ -269,14 +423,14 @@ func TestStreamSyncProgress_NotFound(t *testing.T) {
 }
 
 func TestSyncJobManager_Notify_NonexistentJob(t *testing.T) {
-	m := NewSyncJobManager()
+	m := newTestSyncJobManager()
 	// Should not panic
 	m.notify("nonexistent")
 }
 
 func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
-	m := NewSyncJobManager()
-	job := m.Start(uuid.New(), "test", "filesystem")
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
 	var wg sync.WaitGroup
 	for i := range 100 {
@@ -293,7 +447,7 @@ func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 
 	m.Complete(job.ID, nil)
 	got := m.Get(job.ID)
-	if got.Status != "completed" {
+	if got.Status != SyncStatusCompleted {
 		t.Errorf("Status = %q, want completed", got.Status)
 	}
 }

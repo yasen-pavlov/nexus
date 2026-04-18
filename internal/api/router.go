@@ -61,10 +61,13 @@ func NewRouter(
 		log:         log,
 	}
 
-	// SSE endpoint — outside the timeout middleware (long-lived connection)
-	// Protected by auth
+	// SSE endpoints — outside the timeout middleware (long-lived connections)
+	// Protected by auth (Bearer header or ?token= query param for EventSource).
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(jwtSecret))
+		// Multiplexed stream: one connection, all visible jobs.
+		r.Get("/api/sync/progress", h.StreamAllSyncProgress)
+		// Per-job legacy stream, kept for backward compat.
 		r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
 	})
 
@@ -90,6 +93,7 @@ func NewRouter(
 			r.Get("/sync", h.ListSyncJobs)
 			r.Post("/sync", h.SyncAll)
 			r.Post("/sync/{id}", h.TriggerSync)
+			r.Post("/sync/jobs/{id}/cancel", h.CancelSyncJob)
 			r.Delete("/sync/cursors/{id}", h.DeleteCursor)
 
 			r.Route("/connectors", func(r chi.Router) {
@@ -99,6 +103,7 @@ func NewRouter(
 				r.Put("/{id}", h.UpdateConnector)
 				r.Delete("/{id}", h.DeleteConnector)
 				r.Get("/{id}/avatars/{external_id}", h.GetConnectorAvatar)
+				r.Get("/{id}/runs", h.ListSyncRunsForConnector)
 			})
 
 			r.Route("/connectors/{id}/auth", func(r chi.Router) {

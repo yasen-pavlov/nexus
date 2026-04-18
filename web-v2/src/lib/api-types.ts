@@ -150,3 +150,33 @@ export interface IdentitiesResponse {
 export type ConnectorConfig = Req<Schemas["internal_api.connectorResponse"]> & {
   config: Record<string, unknown>;
 };
+
+// Sync jobs + history.
+//
+// The backend emits four terminal statuses plus "running". Swagger treats
+// `status` as a generic string; we narrow it here so components can use
+// exhaustive switches and code-drive styling (e.g. status-lamp color).
+
+// "interrupted" is set by the startup sweep (store.MarkInterruptedStuckRuns)
+// when the process crashed or restarted mid-sync. Distinct from "failed"
+// so the Activity timeline can style it muted rather than loud.
+export type SyncStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "interrupted";
+
+export type SyncJob = Omit<Req<Schemas["internal_api.SyncJob"]>, "status"> & {
+  status: SyncStatus;
+};
+
+export type SyncRun = Omit<
+  Req<Schemas["github_com_muty_nexus_internal_model.SyncRun"]>,
+  "status" | "completed_at"
+> & {
+  status: SyncStatus;
+  // completed_at is null while the run is still in progress. Swag drops
+  // the `omitempty`/nullable info — restore it as optional.
+  completed_at?: string;
+};

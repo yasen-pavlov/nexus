@@ -10,6 +10,12 @@ export const connectorKeys = {
   all: ["connectors"] as const,
   list: () => [...connectorKeys.all, "list"] as const,
   detail: (id: string) => [...connectorKeys.all, "detail", id] as const,
+  runs: (id: string) => [...connectorKeys.all, "runs", id] as const,
+};
+
+export const syncKeys = {
+  all: ["sync"] as const,
+  jobs: () => [...syncKeys.all, "jobs"] as const,
 };
 
 export const searchKeys = {

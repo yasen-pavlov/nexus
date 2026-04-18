@@ -42,6 +42,37 @@ export async function fetchAPI<T>(
   return body.data as T;
 }
 
+// openSyncProgressSSE opens the multiplexed sync-progress EventSource and
+// wires handlers for JSON-parsed frames + errors. EventSource cannot set
+// custom headers, so we piggyback the JWT as a query param (`?token=...`) —
+// the backend's auth middleware accepts this as a fallback for exactly
+// this use case. Returns the EventSource so the caller can close() it on
+// unmount.
+export function openSyncProgressSSE<T = unknown>(
+  onMessage: (frame: T) => void,
+  onError?: (e: Event) => void,
+): EventSource | null {
+  const token = getToken();
+  if (!token) return null;
+  // happy-dom (used in Vitest) doesn't ship an EventSource implementation;
+  // guard so hooks that mount in tests don't blow up. The production
+  // browser bundle always has one.
+  if (typeof EventSource === "undefined") return null;
+  const url = `/api/sync/progress?token=${encodeURIComponent(token)}`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    if (!e.data) return;
+    try {
+      const parsed = JSON.parse(e.data) as T;
+      onMessage(parsed);
+    } catch {
+      // Ignore unparseable frames (e.g. future non-JSON comments).
+    }
+  };
+  if (onError) es.onerror = onError;
+  return es;
+}
+
 // fetchAuthedBlob fetches an authenticated binary resource (e.g. a
 // cached avatar) and returns an object URL the caller can assign to an
 // <img src>. Caller is responsible for revoking via URL.revokeObjectURL

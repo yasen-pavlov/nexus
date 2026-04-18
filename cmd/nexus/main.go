@@ -35,6 +35,7 @@ import (
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
+	"github.com/muty/nexus/internal/syncruns"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
 )
@@ -71,6 +72,17 @@ func run() error {
 
 	if err := st.RunMigrations(cfg.DatabaseURL, migrations.FS); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
+	}
+
+	// Post-migration, pre-scheduler: mark any sync_runs still sitting at
+	// status='running' as interrupted. These are leftovers from a crash
+	// or a force-kill during a previous process — leaving them running
+	// would confuse the Activity timeline (and, once the FE starts
+	// polling, produce zombie "live" jobs that never terminate).
+	if n, err := st.MarkInterruptedStuckRuns(ctx); err != nil {
+		log.Warn("mark interrupted stuck sync runs", zap.Error(err))
+	} else if n > 0 {
+		log.Info("swept interrupted sync runs on startup", zap.Int64("count", n))
 	}
 
 	// Set up encryption for connector secrets
@@ -159,15 +171,28 @@ func run() error {
 		return fmt.Errorf("seed connectors from env: %w", err)
 	}
 
-	// Set up scheduler
+	// Set up pipeline + sync-job manager. Both get wired into the
+	// scheduler before Start() so cron-triggered runs flow through the
+	// same lifecycle as manual triggers (sync_runs persistence + SSE).
 	p := pipeline.New(st, searchClient, em, log)
 	p.SetBinaryStore(binaryStore)
+	syncJobs := api.NewSyncJobManager(st, log)
+
 	sched := scheduler.New(cm, p, st, log)
+	sched.SetJobManager(syncJobs)
 	cm.SetScheduleObserver(sched)
 
 	if err := sched.Start(ctx); err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
+
+	// Retention sweeper: periodic cleanup of sync_runs history per the
+	// admin settings (defaults: 90-day cutoff, 200 rows/connector, 60min
+	// interval). Reads settings on every tick, so the admin UI can
+	// retune retention without a restart.
+	sweeper := syncruns.NewSweeper(st, st, log)
+	sweeper.Start(ctx)
+	defer sweeper.Stop()
 
 	// Set up reranking
 	rm := api.NewRerankManager(st, log)
@@ -184,8 +209,6 @@ func run() error {
 		}
 		log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
 	}
-
-	syncJobs := api.NewSyncJobManager()
 	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, jwtSecret, cfg.CORSOrigins, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)

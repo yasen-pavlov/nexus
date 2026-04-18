@@ -149,13 +149,13 @@ func TestConfigure_InvalidPort(t *testing.T) {
 	}
 }
 
-func TestConfigure_SyncSinceDays(t *testing.T) {
+func TestConfigure_SyncSinceDate(t *testing.T) {
 	c := &Connector{port: 993, folders: []string{"INBOX"}}
 	err := c.Configure(connector.Config{
-		"server":          "imap.example.com",
-		"username":        "user@example.com",
-		"password":        "pass",
-		"sync_since_days": "30",
+		"server":     "imap.example.com",
+		"username":   "user@example.com",
+		"password":   "pass",
+		"sync_since": "2025-06-01",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -163,9 +163,9 @@ func TestConfigure_SyncSinceDays(t *testing.T) {
 	if c.syncSince.IsZero() {
 		t.Error("syncSince should not be zero")
 	}
-	expected := time.Now().AddDate(0, 0, -30)
-	if c.syncSince.Sub(expected).Abs() > time.Minute {
-		t.Errorf("syncSince = %v, want ~%v", c.syncSince, expected)
+	expected := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !c.syncSince.Equal(expected) {
+		t.Errorf("syncSince = %v, want %v", c.syncSince, expected)
 	}
 }
 

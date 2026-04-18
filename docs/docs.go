@@ -492,6 +492,61 @@ const docTemplate = `{
                 }
             }
         },
+        "/connectors/{id}/runs": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the most recent sync runs (newest first) for a connector. Used by the Activity timeline tab. Limit is clamped to 1..200 with default 50.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "List sync run history for a connector",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Connector UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max rows to return (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_muty_nexus_internal_model.SyncRun"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/conversations/{source_type}/{conversation_id}/messages": {
             "get": {
                 "security": [
@@ -499,7 +554,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via ` + "`" + `before` + "`" + ` and ` + "`" + `after` + "`" + ` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.",
+                "description": "Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via ` + "`" + `before` + "`" + ` / ` + "`" + `after` + "`" + ` RFC3339 timestamps, plus ` + "`" + `around=RFC3339` + "`" + ` for anchor-seeded opens (returns half the limit older + half newer, centered on the anchor). Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.",
                 "produces": [
                     "application/json"
                 ],
@@ -532,6 +587,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "RFC3339 timestamp — return messages strictly after this time",
                         "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 timestamp — return limit/2 messages before and limit/2 after, centered on this time. Cannot be combined with before/after.",
+                        "name": "around",
                         "in": "query"
                     },
                     {
@@ -1316,6 +1377,83 @@ const docTemplate = `{
                 }
             }
         },
+        "/sync/jobs/{id}/cancel": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Signals the job's context to cancel. Fire-and-forget: returns 202 immediately. The client learns the terminal state via the SSE progress stream. Idempotent — canceling an already-canceled or completed job returns 202.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Cancel a running sync job",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Job UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/sync/progress": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Multiplexed Server-Sent Events stream: one connection pushes SyncJob updates for every job the caller can read. Replaces per-job /sync/{id}/progress. Auth accepts either the standard Authorization header or a sse_token query param (required for browser EventSource, which cannot set headers). Sends a heartbeat comment every 15s to keep reverse proxies from closing the connection.",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Stream live sync progress across all visible connectors via SSE",
+                "responses": {
+                    "200": {
+                        "description": "SSE stream",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/sync/{id}": {
             "post": {
                 "security": [
@@ -1855,6 +1993,41 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_muty_nexus_internal_model.SyncRun": {
+            "type": "object",
+            "properties": {
+                "completed_at": {
+                    "type": "string"
+                },
+                "connector_id": {
+                    "type": "string"
+                },
+                "docs_deleted": {
+                    "type": "integer"
+                },
+                "docs_processed": {
+                    "type": "integer"
+                },
+                "docs_total": {
+                    "type": "integer"
+                },
+                "error_message": {
+                    "type": "string"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "started_at": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_api.APIResponse": {
             "type": "object",
             "properties": {
@@ -1901,7 +2074,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "description": "\"running\", \"completed\", \"failed\"",
+                    "description": "running | completed | failed | canceled",
                     "type": "string"
                 }
             }

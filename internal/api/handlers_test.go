@@ -51,7 +51,7 @@ func newTestHandler() *handler {
 	return &handler{
 		cm:        cm,
 		rm:        NewRerankManager(nil, zap.NewNop()),
-		syncJobs:  NewSyncJobManager(),
+		syncJobs:  NewSyncJobManager(nil, zap.NewNop()),
 		pipeline:  pipeline.New(nil, nil, nil, zap.NewNop()),
 		jwtSecret: []byte("test-secret"),
 		log:       zap.NewNop(),
@@ -178,7 +178,9 @@ func TestTriggerSyncHandler_Accepted(t *testing.T) {
 func TestTriggerSyncHandler_Conflict(t *testing.T) {
 	h := newTestHandler()
 	testID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	h.syncJobs.Start(testID, "test-fs", "filesystem")
+	if _, _, err := h.syncJobs.Start(testID, "test-fs", "filesystem"); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
 
 	r := chi.NewRouter()
 	r.Post("/api/sync/{id}", h.TriggerSync)
@@ -206,8 +208,12 @@ func TestListSyncJobsHandler(t *testing.T) {
 		conn:   &mockConnector{name: "b", typ: "imap"},
 		config: model.ConnectorConfig{ID: id2, Name: "b", Type: "imap", Shared: true},
 	}
-	h.syncJobs.Start(id1, "a", "filesystem")
-	h.syncJobs.Start(id2, "b", "imap")
+	if _, _, err := h.syncJobs.Start(id1, "a", "filesystem"); err != nil {
+		t.Fatalf("seed job a: %v", err)
+	}
+	if _, _, err := h.syncJobs.Start(id2, "b", "imap"); err != nil {
+		t.Fatalf("seed job b: %v", err)
+	}
 
 	req := withAdminContext(httptest.NewRequest(http.MethodGet, "/api/sync", nil))
 	w := httptest.NewRecorder()

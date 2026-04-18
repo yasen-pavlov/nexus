@@ -4,6 +4,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -650,5 +651,107 @@ func TestPipelineRun_LowInfoChunkSkipsEmbedding(t *testing.T) {
 	}
 	if result.TotalCount != 1 {
 		t.Errorf("expected substantive doc to be findable via BM25, got %d results", result.TotalCount)
+	}
+}
+
+// mockManyDocsConnector returns a fixed number of tiny documents on Fetch.
+// Used to test cancellation mid-loop: cancel via a progress callback at
+// doc N and verify the loop exits with ctx.Err() + a partial SyncReport.
+type mockManyDocsConnector struct {
+	name  string
+	count int
+}
+
+func (m *mockManyDocsConnector) Type() string                       { return "filesystem" }
+func (m *mockManyDocsConnector) Name() string                       { return m.name }
+func (m *mockManyDocsConnector) Configure(_ connector.Config) error { return nil }
+func (m *mockManyDocsConnector) Validate() error                    { return nil }
+func (m *mockManyDocsConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+	docs := make([]model.Document, m.count)
+	for i := range docs {
+		docs[i] = model.Document{
+			SourceType: "filesystem",
+			SourceName: m.name,
+			SourceID:   fmt.Sprintf("doc-%03d", i),
+			Title:      fmt.Sprintf("Doc %d", i),
+			Content:    "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt",
+			CreatedAt:  time.Now(),
+		}
+	}
+	return &model.FetchResult{Documents: docs}, nil
+}
+
+func TestPipelineRun_CancelMidLoop_ReturnsPartialReport(t *testing.T) {
+	st, sc := newTestDeps(t)
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(context.Background(), &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "cancel-test",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel after progress reports 5 docs processed. The next loop
+	// iteration observes ctx.Done() before indexing doc 6.
+	cancelAfter := 5
+	progress := func(_, processed, _ int) {
+		if processed >= cancelAfter {
+			cancel()
+		}
+	}
+
+	conn := &mockManyDocsConnector{name: "cancel-test", count: 20}
+
+	report, err := p.RunWithProgress(ctx, connID, conn, "", false, progress)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected ctx.Canceled, got %v", err)
+	}
+	if report == nil {
+		t.Fatal("expected partial report, got nil")
+	}
+	// processed should be exactly cancelAfter because the check fires
+	// at the top of iteration i=cancelAfter (0-indexed) before indexing
+	// the (cancelAfter+1)-th doc.
+	if report.DocsProcessed != cancelAfter {
+		t.Errorf("DocsProcessed = %d, want %d", report.DocsProcessed, cancelAfter)
+	}
+	if report.Errors != 0 {
+		t.Errorf("Errors = %d, want 0", report.Errors)
+	}
+	if report.ConnectorName != "cancel-test" {
+		t.Errorf("ConnectorName = %q, want cancel-test", report.ConnectorName)
+	}
+}
+
+func TestPipelineRun_CancelBeforeStart_ReturnsImmediately(t *testing.T) {
+	st, sc := newTestDeps(t)
+	p := New(st, sc, nil, zap.NewNop())
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(context.Background(), &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "precancel-test",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled before RunWithProgress even sees a document
+
+	conn := &mockManyDocsConnector{name: "precancel-test", count: 3}
+	report, err := p.RunWithProgress(ctx, connID, conn, "", false, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected ctx.Canceled, got %v", err)
+	}
+	// report can be nil when cancellation fires before the per-doc loop
+	// (cursor fetch, conn.Fetch): the handler's SetDeleted call already
+	// guards against nil. If the loop was reached, DocsProcessed == 0.
+	if report != nil && report.DocsProcessed != 0 {
+		t.Errorf("DocsProcessed = %d, want 0", report.DocsProcessed)
 	}
 }

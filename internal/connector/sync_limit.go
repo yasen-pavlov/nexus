@@ -1,20 +1,18 @@
 package connector
 
 import (
-	"strconv"
 	"time"
 )
 
 // ComputeSyncSince returns the earliest time to sync from based on config.
-// sync_since_days takes precedence over sync_since if both are set.
-// Returns zero time if no limit is configured.
+// Reads the `sync_since` key as YYYY-MM-DD. Returns zero time if absent or
+// unparseable — connectors treat that as "sync full history".
+//
+// The legacy `sync_since_days` key was removed in Phase 3 (migration 013
+// converts any existing rows in the database). Don't re-introduce it.
 func ComputeSyncSince(cfg Config) time.Time {
-	if days, _ := strconv.Atoi(cfg.StringVal("sync_since_days")); days > 0 {
-		return time.Now().AddDate(0, 0, -days)
-	}
 	if since := cfg.StringVal("sync_since"); since != "" {
-		t, err := time.Parse("2006-01-02", since)
-		if err == nil {
+		if t, err := time.Parse("2006-01-02", since); err == nil {
 			return t
 		}
 	}

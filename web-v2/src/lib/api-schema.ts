@@ -556,6 +556,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connectors/{id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List sync run history for a connector
+         * @description Returns the most recent sync runs (newest first) for a connector. Used by the Activity timeline tab. Limit is clamped to 1..200 with default 50.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Max rows to return (default 50, max 200) */
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    /** @description Connector UUID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_model.SyncRun"][];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{source_type}/{conversation_id}/messages": {
         parameters: {
             query?: never;
@@ -565,7 +628,7 @@ export interface paths {
         };
         /**
          * Paginated chronological browse of a conversation
-         * @description Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via `before` and `after` RFC3339 timestamps. Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.
+         * @description Returns Hidden=true per-message documents for a (source_type, conversation_id) pair sorted by created_at ASC. Supports cursor pagination via `before` / `after` RFC3339 timestamps, plus `around=RFC3339` for anchor-seeded opens (returns half the limit older + half newer, centered on the anchor). Chat-like connectors (Telegram today, WhatsApp / Signal / Matrix in the future) plug in by emitting their per-message canonical docs with matching ConversationID.
          */
         get: {
             parameters: {
@@ -574,6 +637,8 @@ export interface paths {
                     before?: string;
                     /** @description RFC3339 timestamp — return messages strictly after this time */
                     after?: string;
+                    /** @description RFC3339 timestamp — return limit/2 messages before and limit/2 after, centered on this time. Cannot be combined with before/after. */
+                    around?: string;
                     /** @description Page size (default 50, max 200) */
                     limit?: number;
                 };
@@ -1561,6 +1626,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sync/jobs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a running sync job
+         * @description Signals the job's context to cancel. Fire-and-forget: returns 202 immediately. The client learns the terminal state via the SSE progress stream. Idempotent — canceling an already-canceled or completed job returns 202.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Job UUID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Accepted */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream live sync progress across all visible connectors via SSE
+         * @description Multiplexed Server-Sent Events stream: one connection pushes SyncJob updates for every job the caller can read. Replaces per-job /sync/{id}/progress. Auth accepts either the standard Authorization header or a sse_token query param (required for browser EventSource, which cannot set headers). Sends a heartbeat comment every 15s to keep reverse proxies from closing the connection.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description SSE stream */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sync/{id}": {
         parameters: {
             query?: never;
@@ -1991,6 +2164,18 @@ export interface components {
             query?: string;
             total_count?: number;
         };
+        "github_com_muty_nexus_internal_model.SyncRun": {
+            completed_at?: string;
+            connector_id?: string;
+            docs_deleted?: number;
+            docs_processed?: number;
+            docs_total?: number;
+            error_message?: string;
+            errors?: number;
+            id?: string;
+            started_at?: string;
+            status?: string;
+        };
         "internal_api.APIResponse": {
             data?: unknown;
             error?: string;
@@ -2007,7 +2192,7 @@ export interface components {
             errors?: number;
             id?: string;
             started_at?: string;
-            /** @description "running", "completed", "failed" */
+            /** @description running | completed | failed | canceled */
             status?: string;
         };
         "internal_api.authResponse": {

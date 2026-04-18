@@ -16,6 +16,12 @@ import {
 } from "lucide-react";
 import type { User } from "@/lib/api-types";
 import { useLogout } from "@/hooks/use-auth";
+import { useSyncJobs } from "@/hooks/use-sync-jobs";
+import { useSyncStats } from "@/hooks/use-sync-stats";
+import {
+  SyncStrip,
+  type SyncStripRunningJob,
+} from "@/components/sync/sync-strip";
 import {
   Sidebar,
   SidebarContent,
@@ -297,12 +303,24 @@ function ThemeRow({
   );
 }
 
-// Operational trust strip + mobile sidebar trigger. The stats are mocked;
-// real data will come from a stats query in a later pass.
+// Live sync telegraph + mobile sidebar trigger. Stats come from the
+// connectors list (source count + latest last_run); running-job state
+// from the global useSyncJobs SSE subscription. Clicking the strip from
+// any page lands the user on /connectors.
 function TopBar() {
-  const indexedDocs = 12480;
-  const sourceCount = 4;
-  const lastSync = "3m ago";
+  const stats = useSyncStats();
+  const { jobsByConnector } = useSyncJobs();
+
+  const running: SyncStripRunningJob[] = [];
+  for (const j of jobsByConnector.values()) {
+    if (j.status === "running") {
+      running.push({
+        connectorName: j.connector_name || "connector",
+        processed: j.docs_processed,
+        total: j.docs_total,
+      });
+    }
+  }
 
   return (
     <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-3">
@@ -310,30 +328,7 @@ function TopBar() {
         className="-ml-1 size-8 text-muted-foreground hover:text-foreground"
         aria-label="Toggle sidebar"
       />
-      <div
-        className="flex items-center gap-1 text-[12px] text-muted-foreground"
-        title="Index overview"
-      >
-        <span className="tabular-nums text-foreground/80">
-          {indexedDocs.toLocaleString()}
-        </span>
-        <span>docs</span>
-        <Dot />
-        <span className="tabular-nums text-foreground/80">{sourceCount}</span>
-        <span>sources</span>
-        <Dot />
-        <span>last sync</span>
-        <span className="tabular-nums text-foreground/80">{lastSync}</span>
-      </div>
+      <SyncStrip stats={stats} running={running} totalActive={running.length} />
     </header>
-  );
-}
-
-function Dot() {
-  return (
-    <span
-      aria-hidden
-      className="mx-1.5 size-1 shrink-0 rounded-full bg-border"
-    />
   );
 }

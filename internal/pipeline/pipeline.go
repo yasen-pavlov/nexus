@@ -114,7 +114,25 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 	}
 
 	var errCount int
+	var processed int
 	for i := range result.Documents {
+		// Respect cancellation between documents. This loop is the
+		// long-running phase of a sync; without this check the run
+		// would only abort on the next network round-trip inside the
+		// connector / search client. Returning a partial report lets
+		// the caller persist what completed before the cancel.
+		select {
+		case <-ctx.Done():
+			return &SyncReport{
+				ConnectorName: connName,
+				ConnectorType: conn.Type(),
+				DocsProcessed: processed,
+				Errors:        errCount,
+				Duration:      time.Since(start),
+			}, ctx.Err()
+		default:
+		}
+
 		doc := &result.Documents[i]
 		parentID := doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
 		docID := model.DocumentID(doc.SourceType, doc.SourceName, doc.SourceID).String()
@@ -201,8 +219,9 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 			errCount++
 		}
 
+		processed = i + 1
 		if progress != nil {
-			progress(total, i+1, errCount)
+			progress(total, processed, errCount)
 		}
 	}
 
@@ -220,7 +239,7 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 	report := &SyncReport{
 		ConnectorName: connName,
 		ConnectorType: conn.Type(),
-		DocsProcessed: len(result.Documents),
+		DocsProcessed: processed,
 		DocsDeleted:   deletedCount,
 		Errors:        errCount,
 		Duration:      time.Since(start),

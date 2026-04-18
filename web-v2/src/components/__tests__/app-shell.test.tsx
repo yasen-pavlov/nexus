@@ -44,9 +44,11 @@ describe("AppShell", () => {
     });
     expect(screen.getByText("personal search")).toBeInTheDocument();
     expect(screen.getByText("content")).toBeInTheDocument();
-    // Top bar stats
-    expect(screen.getByText("12,480")).toBeInTheDocument();
-    expect(screen.getByText("docs")).toBeInTheDocument();
+    // Top bar stats — derived from the mocked connector list: one imap
+    // connector ⇒ "1 source".
+    await waitFor(() => {
+      expect(screen.getByText(/source/i)).toBeInTheDocument();
+    });
   });
 
   it("exposes a sidebar toggle button", async () => {

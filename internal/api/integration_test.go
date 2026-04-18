@@ -115,12 +115,22 @@ func authWrap(router http.Handler, token string) http.Handler {
 
 func newTestRouter(t *testing.T) (*store.Store, *search.Client, *ConnectorManager, http.Handler) {
 	t.Helper()
+	st, sc, cm, _, r := newTestRouterWithJobs(t)
+	return st, sc, cm, r
+}
+
+// newTestRouterWithJobs is the superset of newTestRouter that also returns
+// the SyncJobManager so tests can poke Start/Update/Complete directly
+// without going through an HTTP request.
+func newTestRouterWithJobs(t *testing.T) (*store.Store, *search.Client, *ConnectorManager, *SyncJobManager, http.Handler) {
+	t.Helper()
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	sjm := NewSyncJobManager(st, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
-	return st, sc, cm, authWrap(router, token)
+	return st, sc, cm, sjm, authWrap(router, token)
 }
 
 // --- Search tests ---
@@ -441,7 +451,7 @@ func TestSearchOwnershipScoping(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
 
 	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
 		t.Helper()
@@ -605,7 +615,7 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	sjm := NewSyncJobManager()
+	sjm := NewSyncJobManager(st, zap.NewNop())
 	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
@@ -620,18 +630,16 @@ func TestTriggerSyncHandler_StoreError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// Async sync returns 202 immediately; error happens in background
-	if w.Code != http.StatusAccepted {
-		t.Errorf("expected 202, got %d", w.Code)
+	// With DB-at-Start, sync_runs insert fails synchronously when the
+	// store pool is closed — Start returns an error and the handler
+	// responds 500 without spinning up a goroutine.
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d (body=%s)", w.Code, w.Body.String())
 	}
 
-	// Wait for background goroutine to fail
-	time.Sleep(500 * time.Millisecond)
-
-	job := sjm.GetByConnector(cfg.ID)
-	// Job should have completed (with failure), so GetByConnector returns nil for running
-	if job != nil {
-		t.Errorf("expected no running job, got %v", job.Status)
+	// No job should have been registered since Start rolled back on DB failure.
+	if job := sjm.GetByConnector(cfg.ID); job != nil {
+		t.Errorf("expected no job after failed Start, got %+v", job)
 	}
 }
 
@@ -1091,7 +1099,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1108,7 +1116,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1256,7 +1264,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -1770,7 +1778,7 @@ func TestDeleteAllCursors_StoreError(t *testing.T) {
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
-	sjm := NewSyncJobManager()
+	sjm := NewSyncJobManager(st, zap.NewNop())
 	h := &handler{store: st, search: sc, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
@@ -1800,7 +1808,7 @@ func TestDeleteCursor_StoreError(t *testing.T) {
 	st.Close()
 
 	em := NewEmbeddingManager(st, zap.NewNop())
-	sjm := NewSyncJobManager()
+	sjm := NewSyncJobManager(st, zap.NewNop())
 	h := &handler{store: st, search: sc, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	r := chi.NewRouter()
@@ -1870,7 +1878,7 @@ func TestTriggerReindex_StoreError(t *testing.T) {
 	// But we need RecreateIndex to succeed first — so we keep search client alive
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	sjm := NewSyncJobManager()
+	sjm := NewSyncJobManager(st, zap.NewNop())
 	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
 
 	st.Close()
@@ -2309,7 +2317,7 @@ func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
 
 	// Index a shared chunk so the doc exists
 	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
@@ -2326,7 +2334,7 @@ func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
 
 	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
 	if err != nil {
@@ -2380,7 +2388,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	_ = sc.Refresh(context.Background())
 
 	// Build an unwrapped router so we can use a non-admin token
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
 
 	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
 	if err != nil {
@@ -2458,7 +2466,7 @@ func TestDeletionSync_Integration(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	jobs := NewSyncJobManager()
+	jobs := NewSyncJobManager(st, zap.NewNop())
 	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), jobs, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 
@@ -2629,7 +2637,7 @@ func newTestRouterWithBinaryStore(t *testing.T) (*store.Store, *search.Client, *
 	}
 	cm.SetBinaryStore(bs)
 
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, bs, authWrap(router, token)
 }
@@ -2665,7 +2673,7 @@ func TestStorageHandlers_NilBinaryStore(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	wrapped := authWrap(router, token)
 
@@ -2798,7 +2806,7 @@ func TestStorageStats_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
 
 	// Non-admin user.
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
@@ -2948,7 +2956,7 @@ func TestDeleteStorageCache_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
 
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	user, err := st.CreateUser(context.Background(), username, "hash", "user")

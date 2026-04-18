@@ -31,12 +31,29 @@ type ConfigLister interface {
 	UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) error
 }
 
+// JobManager is the subset of api.SyncJobManager the scheduler uses.
+// Routing scheduled runs through the same manager as manual triggers means
+// they persist to sync_runs (visible in the Activity tab), emit SSE
+// progress frames (visible in the top-bar strip), and are cancellable
+// through the same endpoint — the frontend has one uniform story.
+//
+// Can be nil: a nil JobManager falls back to the legacy path where
+// scheduler calls pipeline.RunWithProgress directly. Used in tests that
+// predate the unification.
+type JobManager interface {
+	StartForSchedule(connectorID uuid.UUID, name, connectorType string) (jobID string, runCtx context.Context, err error)
+	Update(jobID string, total, processed, errors int)
+	SetDeleted(jobID string, deleted int)
+	Complete(jobID string, err error)
+}
+
 // Scheduler manages cron jobs for automatic connector syncs.
 type Scheduler struct {
 	cron    *cron.Cron
 	cm      ConnectorGetter
 	pipe    PipelineRunner
 	store   ConfigLister
+	jobs    JobManager // may be nil
 	log     *zap.Logger
 	ctx     context.Context
 	mu      sync.Mutex
@@ -53,6 +70,14 @@ func New(cm ConnectorGetter, pipe PipelineRunner, store ConfigLister, log *zap.L
 		log:     log,
 		entries: make(map[uuid.UUID]cron.EntryID),
 	}
+}
+
+// SetJobManager wires the SyncJobManager so scheduled runs pass through
+// the same Start/Complete lifecycle as manual triggers — persisting to
+// sync_runs + emitting SSE progress to any connected client. Call before
+// Start(); safe to omit in tests.
+func (s *Scheduler) SetJobManager(jm JobManager) {
+	s.jobs = jm
 }
 
 // Start loads scheduled connectors from the database and starts the cron runner.
@@ -150,14 +175,58 @@ func (s *Scheduler) runSync(id uuid.UUID) {
 	}
 
 	s.log.Info("scheduled sync starting", zap.String("connector", name))
+
+	// Prefer routing through the SyncJobManager when wired, so the run
+	// is tracked in sync_runs and streams SSE progress just like manual
+	// triggers. The legacy direct-pipeline path remains for tests /
+	// deployments that wire the scheduler without a JobManager.
+	if s.jobs != nil {
+		jobID, runCtx, err := s.jobs.StartForSchedule(id, name, conn.Type())
+		if err != nil {
+			// ErrAlreadyRunning is a silent skip — a manual trigger is
+			// already syncing this connector. Other errors are logged.
+			s.log.Info("scheduled sync skipped",
+				zap.String("connector", name),
+				zap.Error(err))
+			return
+		}
+		progress := func(total, processed, errors int) {
+			s.jobs.Update(jobID, total, processed, errors)
+		}
+		report, runErr := s.pipe.RunWithProgress(runCtx, id, conn, ownerID, cfg.Shared, progress)
+		if report != nil {
+			s.jobs.SetDeleted(jobID, report.DocsDeleted)
+		}
+		s.jobs.Complete(jobID, runErr)
+
+		if runErr != nil {
+			s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(runErr))
+		} else if report != nil {
+			s.log.Info("scheduled sync completed",
+				zap.String("connector", name),
+				zap.Int("docs", report.DocsProcessed),
+				zap.Duration("duration", report.Duration),
+			)
+		}
+		// connector_configs.last_run stays for now — see Phase 4 in the
+		// plan for retiring it once the Activity timeline is the single
+		// source of truth for recency.
+		if runErr == nil {
+			if err := s.store.UpdateLastRun(s.ctx, id, time.Now()); err != nil {
+				s.log.Error("failed to update last_run", zap.String("connector", name), zap.Error(err))
+			}
+		}
+		return
+	}
+
+	// Legacy path — scheduler not wired to a JobManager.
 	report, err := s.pipe.RunWithProgress(s.ctx, id, conn, ownerID, cfg.Shared, nil)
 	if err != nil {
 		s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(err))
 		return
 	}
 
-	now := time.Now()
-	if err := s.store.UpdateLastRun(s.ctx, id, now); err != nil {
+	if err := s.store.UpdateLastRun(s.ctx, id, time.Now()); err != nil {
 		s.log.Error("failed to update last_run", zap.String("connector", name), zap.Error(err))
 	}
 

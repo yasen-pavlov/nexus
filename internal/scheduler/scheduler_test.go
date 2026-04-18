@@ -364,3 +364,177 @@ func TestRunSync_PropagatesShared(t *testing.T) {
 		t.Error("expected shared=true")
 	}
 }
+
+// --- JobManager unification ---
+
+type fakeJobManager struct {
+	mu           sync.Mutex
+	startCalls   []string // jobIDs returned
+	updates      int
+	deletedCalls []int
+	completions  []error
+	startErr     error
+}
+
+func (f *fakeJobManager) StartForSchedule(_ uuid.UUID, _, _ string) (string, context.Context, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return "", nil, f.startErr
+	}
+	id := fmt.Sprintf("job-%d", len(f.startCalls)+1)
+	f.startCalls = append(f.startCalls, id)
+	return id, context.Background(), nil
+}
+
+func (f *fakeJobManager) Update(_ string, _, _, _ int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updates++
+}
+
+func (f *fakeJobManager) SetDeleted(_ string, deleted int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedCalls = append(f.deletedCalls, deleted)
+}
+
+func (f *fakeJobManager) Complete(_ string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completions = append(f.completions, err)
+}
+
+func (f *fakeJobManager) snapshot() (starts, completions int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.startCalls), len(f.completions)
+}
+
+func TestRunSync_RoutesThroughJobManager(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "scheduled"}},
+		configs: map[uuid.UUID]*model.ConnectorConfig{
+			id: {ID: id, Name: "scheduled"},
+		},
+	}
+	pipe := &mockPipelineRunner{report: &pipeline.SyncReport{ConnectorName: "scheduled", DocsProcessed: 5, DocsDeleted: 2}}
+	cl := &mockConfigLister{lastRun: make(map[uuid.UUID]time.Time)}
+	jm := &fakeJobManager{}
+
+	s := New(cm, pipe, cl, zap.NewNop())
+	s.SetJobManager(jm)
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	starts, completions := jm.snapshot()
+	if starts != 1 {
+		t.Errorf("expected 1 StartForSchedule call, got %d", starts)
+	}
+	if completions != 1 {
+		t.Errorf("expected 1 Complete call, got %d", completions)
+	}
+	if len(jm.deletedCalls) != 1 || jm.deletedCalls[0] != 2 {
+		t.Errorf("expected SetDeleted(2), got %v", jm.deletedCalls)
+	}
+	if len(jm.completions) != 1 || jm.completions[0] != nil {
+		t.Errorf("expected successful completion, got %v", jm.completions)
+	}
+}
+
+func TestRunSync_SkipsWhenJobManagerReportsAlreadyRunning(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "busy"}},
+		configs: map[uuid.UUID]*model.ConnectorConfig{
+			id: {ID: id, Name: "busy"},
+		},
+	}
+	pipe := &mockPipelineRunner{}
+	cl := &mockConfigLister{lastRun: make(map[uuid.UUID]time.Time)}
+	jm := &fakeJobManager{startErr: fmt.Errorf("sync already running for connector")}
+
+	s := New(cm, pipe, cl, zap.NewNop())
+	s.SetJobManager(jm)
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	// Pipeline should not be called if Start refused.
+	if calls := pipe.getCalls(); len(calls) != 0 {
+		t.Errorf("expected no pipeline calls when Start refused, got %d", len(calls))
+	}
+}
+
+func TestOnConnectorChanged_ReaddReplacesEntry(t *testing.T) {
+	s := New(&mockConnectorGetter{}, &mockPipelineRunner{}, &mockConfigLister{}, zap.NewNop())
+	s.cron.Start()
+	defer s.Stop()
+
+	id := uuid.New()
+	s.OnConnectorChanged(&model.ConnectorConfig{
+		ID: id, Name: "conn", Enabled: true, Schedule: "*/5 * * * *",
+	})
+	first, ok := s.entries[id]
+	if !ok {
+		t.Fatal("expected initial entry")
+	}
+	// Re-add with a different schedule; old entry should be replaced.
+	s.OnConnectorChanged(&model.ConnectorConfig{
+		ID: id, Name: "conn", Enabled: true, Schedule: "0 */2 * * *",
+	})
+	second, ok := s.entries[id]
+	if !ok {
+		t.Fatal("expected entry after re-add")
+	}
+	if first == second {
+		t.Error("expected a fresh cron.EntryID after re-add")
+	}
+}
+
+func TestRunSync_JobManagerStartError_Logs(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "err"}},
+		configs:    map[uuid.UUID]*model.ConnectorConfig{id: {ID: id, Name: "err"}},
+	}
+	pipe := &mockPipelineRunner{}
+	cl := &mockConfigLister{lastRun: make(map[uuid.UUID]time.Time)}
+	jm := &fakeJobManager{startErr: fmt.Errorf("db connection lost")}
+
+	s := New(cm, pipe, cl, zap.NewNop())
+	s.SetJobManager(jm)
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	// Non-ErrAlreadyRunning Start error falls through the log + return path;
+	// pipeline is never called.
+	if calls := pipe.getCalls(); len(calls) != 0 {
+		t.Errorf("expected no pipeline call on Start error, got %d", len(calls))
+	}
+}
+
+func TestRunSync_FallsBackToLegacyPathWithoutJobManager(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "legacy"}},
+		configs: map[uuid.UUID]*model.ConnectorConfig{
+			id: {ID: id, Name: "legacy"},
+		},
+	}
+	pipe := &mockPipelineRunner{}
+	cl := &mockConfigLister{lastRun: make(map[uuid.UUID]time.Time)}
+
+	s := New(cm, pipe, cl, zap.NewNop())
+	// no SetJobManager call — legacy path
+	s.ctx = context.Background()
+
+	s.runSync(id)
+
+	if calls := pipe.getCalls(); len(calls) != 1 {
+		t.Errorf("expected pipeline call in legacy path, got %d", len(calls))
+	}
+}

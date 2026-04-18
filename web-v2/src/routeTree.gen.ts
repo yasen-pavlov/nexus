@@ -12,8 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
-import { Route as AuthenticatedConnectorsRouteImport } from './routes/_authenticated/connectors'
 import { Route as AuthenticatedAdminRouteRouteImport } from './routes/_authenticated/admin/route'
+import { Route as AuthenticatedConnectorsIndexRouteImport } from './routes/_authenticated/connectors.index'
+import { Route as AuthenticatedConnectorsIdRouteImport } from './routes/_authenticated/connectors.$id'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin/users'
 import { Route as AuthenticatedAdminStatsRouteImport } from './routes/_authenticated/admin/stats'
 import { Route as AuthenticatedAdminSettingsRouteImport } from './routes/_authenticated/admin/settings'
@@ -33,16 +34,23 @@ const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedConnectorsRoute = AuthenticatedConnectorsRouteImport.update({
-  id: '/connectors',
-  path: '/connectors',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
 const AuthenticatedAdminRouteRoute = AuthenticatedAdminRouteRouteImport.update({
   id: '/admin',
   path: '/admin',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
+const AuthenticatedConnectorsIndexRoute =
+  AuthenticatedConnectorsIndexRouteImport.update({
+    id: '/connectors/',
+    path: '/connectors/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedConnectorsIdRoute =
+  AuthenticatedConnectorsIdRouteImport.update({
+    id: '/connectors/$id',
+    path: '/connectors/$id',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
 const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -70,20 +78,22 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
   '/login': typeof LoginRoute
   '/admin': typeof AuthenticatedAdminRouteRouteWithChildren
-  '/connectors': typeof AuthenticatedConnectorsRoute
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/connectors/': typeof AuthenticatedConnectorsIndexRoute
   '/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/admin': typeof AuthenticatedAdminRouteRouteWithChildren
-  '/connectors': typeof AuthenticatedConnectorsRoute
   '/': typeof AuthenticatedIndexRoute
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/connectors': typeof AuthenticatedConnectorsIndexRoute
   '/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
 export interface FileRoutesById {
@@ -91,11 +101,12 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/login': typeof LoginRoute
   '/_authenticated/admin': typeof AuthenticatedAdminRouteRouteWithChildren
-  '/_authenticated/connectors': typeof AuthenticatedConnectorsRoute
   '/_authenticated/': typeof AuthenticatedIndexRoute
   '/_authenticated/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/_authenticated/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/_authenticated/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/_authenticated/connectors/': typeof AuthenticatedConnectorsIndexRoute
   '/_authenticated/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
 export interface FileRouteTypes {
@@ -104,31 +115,34 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/admin'
-    | '/connectors'
     | '/admin/settings'
     | '/admin/stats'
     | '/admin/users'
+    | '/connectors/$id'
+    | '/connectors/'
     | '/conversations/$sourceType/$conversationId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/admin'
-    | '/connectors'
     | '/'
     | '/admin/settings'
     | '/admin/stats'
     | '/admin/users'
+    | '/connectors/$id'
+    | '/connectors'
     | '/conversations/$sourceType/$conversationId'
   id:
     | '__root__'
     | '/_authenticated'
     | '/login'
     | '/_authenticated/admin'
-    | '/_authenticated/connectors'
     | '/_authenticated/'
     | '/_authenticated/admin/settings'
     | '/_authenticated/admin/stats'
     | '/_authenticated/admin/users'
+    | '/_authenticated/connectors/$id'
+    | '/_authenticated/connectors/'
     | '/_authenticated/conversations/$sourceType/$conversationId'
   fileRoutesById: FileRoutesById
 }
@@ -160,18 +174,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/connectors': {
-      id: '/_authenticated/connectors'
-      path: '/connectors'
-      fullPath: '/connectors'
-      preLoaderRoute: typeof AuthenticatedConnectorsRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
     '/_authenticated/admin': {
       id: '/_authenticated/admin'
       path: '/admin'
       fullPath: '/admin'
       preLoaderRoute: typeof AuthenticatedAdminRouteRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/connectors/': {
+      id: '/_authenticated/connectors/'
+      path: '/connectors'
+      fullPath: '/connectors/'
+      preLoaderRoute: typeof AuthenticatedConnectorsIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/connectors/$id': {
+      id: '/_authenticated/connectors/$id'
+      path: '/connectors/$id'
+      fullPath: '/connectors/$id'
+      preLoaderRoute: typeof AuthenticatedConnectorsIdRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/admin/users': {
@@ -225,15 +246,17 @@ const AuthenticatedAdminRouteRouteWithChildren =
 
 interface AuthenticatedRouteChildren {
   AuthenticatedAdminRouteRoute: typeof AuthenticatedAdminRouteRouteWithChildren
-  AuthenticatedConnectorsRoute: typeof AuthenticatedConnectorsRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedConnectorsIdRoute: typeof AuthenticatedConnectorsIdRoute
+  AuthenticatedConnectorsIndexRoute: typeof AuthenticatedConnectorsIndexRoute
   AuthenticatedConversationsSourceTypeConversationIdRoute: typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAdminRouteRoute: AuthenticatedAdminRouteRouteWithChildren,
-  AuthenticatedConnectorsRoute: AuthenticatedConnectorsRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedConnectorsIdRoute: AuthenticatedConnectorsIdRoute,
+  AuthenticatedConnectorsIndexRoute: AuthenticatedConnectorsIndexRoute,
   AuthenticatedConversationsSourceTypeConversationIdRoute:
     AuthenticatedConversationsSourceTypeConversationIdRoute,
 }

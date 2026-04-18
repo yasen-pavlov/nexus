@@ -153,6 +153,55 @@ func TestGet_TouchError(t *testing.T) {
 	}
 }
 
+// TestPut_RollsBackBlobOnUpsertError: if writing the DB metadata row
+// fails after the blob is on disk, Put rolls back by deleting the
+// blob so we don't leak orphaned files.
+func TestPut_RollsBackBlobOnUpsertError(t *testing.T) {
+	db := &fakeDB{upsertErr: errors.New("db down")}
+	bs := newFakeBS(t, db)
+	err := bs.Put(context.Background(), "imap", "icloud", "msg-1", bytesReaderOf("hi"), 2)
+	if err == nil {
+		t.Fatal("expected error when upsert fails")
+	}
+	// Blob file should have been removed by the rollback.
+	probe := filepath.Join(bs.basePath, "imap", "icloud")
+	entries, _ := os.ReadDir(probe)
+	for _, e := range entries {
+		if e.Name() != "." && e.Name() != ".." {
+			t.Errorf("expected empty dir after rollback, found %q", e.Name())
+		}
+	}
+}
+
+// TestPut_SizeFallsBackToWrittenBytes covers the `finalSize <= 0` branch
+// of Put — when size is 0 (unknown), the method records the actual
+// bytes written as the row's size.
+func TestPut_SizeFallsBackToWrittenBytes(t *testing.T) {
+	db := &fakeDB{}
+	bs := newFakeBS(t, db)
+	if err := bs.Put(context.Background(), "imap", "icloud", "msg-2",
+		bytesReaderOf("twelve-bytes"), 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEvictOverBudget_DeletePathExercised drives the over-budget branch:
+// total size exceeds the policy budget, ListLRU returns real rows, and
+// the store proceeds to delete the oldest until under budget. This
+// covers the bulk of evictOverBudget.
+func TestEvictOverBudget_DeletePathExercised(t *testing.T) {
+	// Two entries. Budget is 1 byte; both get evicted.
+	lru := []model.BinaryStoreEntry{
+		{SourceType: "imap", SourceName: "icloud", SourceID: "a", FilePath: "/tmp/a", Size: 100},
+		{SourceType: "imap", SourceName: "icloud", SourceID: "b", FilePath: "/tmp/b", Size: 100},
+	}
+	db := &fakeDB{totalSize: 200, lruEntries: lru}
+	bs := newFakeBS(t, db)
+	bs.evictOnce(context.Background(), map[string]CacheConfig{
+		"imap": {Mode: CacheModeLazy, MaxAge: 0, MaxSize: 1},
+	})
+}
+
 // TestPut_UnwritableBasePath verifies Put surfaces an error when the
 // base directory can't be created or written. We point the store at a
 // base path that already exists as a regular file, so MkdirAll fails.
