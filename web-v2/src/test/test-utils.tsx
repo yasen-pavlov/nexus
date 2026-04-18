@@ -38,11 +38,14 @@ function renderWithProviders(
 
 /**
  * Render within a minimal TanStack Router so hooks like useNavigate work.
- * The component under test is rendered at the "/" route.
+ * The component under test is rendered at the "/" route. Pass `extraRoutes`
+ * for components that use `<Link to="/...">` beyond the index — without
+ * registration Links render without hrefs and assertions that rely on
+ * nav fail silently.
  */
 function renderWithRouter(
   ui: React.ReactElement,
-  options?: { initialPath?: string },
+  options?: { initialPath?: string; extraRoutes?: string[] },
 ) {
   const queryClient = createTestQueryClient();
 
@@ -56,8 +59,19 @@ function renderWithRouter(
     component: () => null,
   });
 
+  const childRoutes = [
+    indexRoute,
+    ...(options?.extraRoutes ?? []).map((path) =>
+      createRoute({
+        getParentRoute: () => rootRoute,
+        path,
+        component: () => null,
+      }),
+    ),
+  ];
+
   const router = createRouter({
-    routeTree: rootRoute.addChildren([indexRoute]),
+    routeTree: rootRoute.addChildren(childRoutes),
     history: createMemoryHistory({
       initialEntries: [options?.initialPath ?? "/"],
     }),

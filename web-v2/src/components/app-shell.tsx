@@ -303,10 +303,11 @@ function TopBar() {
   const lastSync = "3m ago";
 
   return (
-    <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-4">
-      <div className="flex items-center gap-2 md:gap-0">
-        <SidebarTrigger className="-ml-2 size-8 md:hidden" />
-      </div>
+    <header className="flex h-11 shrink-0 items-center justify-between gap-3 border-b border-border px-3">
+      <SidebarTrigger
+        className="-ml-1 size-8 text-muted-foreground hover:text-foreground"
+        aria-label="Toggle sidebar"
+      />
       <div
         className="flex items-center gap-1 text-[12px] text-muted-foreground"
         title="Index overview"
