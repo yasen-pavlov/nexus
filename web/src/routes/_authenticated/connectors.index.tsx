@@ -16,7 +16,10 @@ import {
 } from "@/components/connectors/connector-list-states";
 import { ConnectorForm } from "@/components/connectors/connector-form";
 import { DeleteConnectorDialog } from "@/components/connectors/delete-dialog";
-import { statusFromSync, type ConnectorStatus } from "@/components/connectors/status-lamp";
+import {
+  statusFromSync,
+  type ConnectorStatus,
+} from "@/components/connectors/status";
 
 import { useConnectors } from "@/hooks/use-connectors";
 import { useSyncJobs } from "@/hooks/use-sync-jobs";

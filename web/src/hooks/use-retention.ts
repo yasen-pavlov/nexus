@@ -5,6 +5,8 @@ import { fetchAPI } from "@/lib/api-client";
 import type { RetentionSettings, RetentionSettingsUpdate } from "@/lib/api-types";
 import { settingsKeys } from "@/lib/query-keys";
 
+export type UseRetentionSettings = ReturnType<typeof useRetentionSettings>;
+
 export function useRetentionSettings() {
   const qc = useQueryClient();
   const query = useQuery<RetentionSettings>({

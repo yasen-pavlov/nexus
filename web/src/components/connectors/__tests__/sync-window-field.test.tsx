@@ -1,26 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { useState } from "react";
-import { FormProvider, useForm } from "react-hook-form";
+import {
+  FormProvider,
+  useForm,
+  useWatch,
+  type Control,
+} from "react-hook-form";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { SyncWindowField } from "../sync-window-field";
 import { render } from "@/test/test-utils";
 
+type HarnessValues = { config: { sync_since: string } };
+
 function Harness({ initial = "" }: { initial?: string }) {
-  const methods = useForm<{ config: { sync_since: string } }>({
+  const methods = useForm<HarnessValues>({
     defaultValues: { config: { sync_since: initial } },
   });
-  const [shown, setShown] = useState(methods.watch("config.sync_since"));
-  // Subscribe to form changes so the test can assert on the outward
-  // view without reaching into RHF internals.
-  methods.watch((v) => setShown(v.config?.sync_since ?? ""));
   return (
     <FormProvider {...methods}>
       <SyncWindowField />
-      <div data-testid="probe">{shown}</div>
+      <Probe control={methods.control} />
     </FormProvider>
   );
+}
+
+// Subscribe via useWatch (memoizable) so assertions can observe the outward
+// view without reaching into RHF's non-memoizable watch() API.
+function Probe({ control }: { control: Control<HarnessValues> }) {
+  const value = useWatch({ control, name: "config.sync_since" });
+  return <div data-testid="probe">{value ?? ""}</div>;
 }
 
 describe("SyncWindowField", () => {

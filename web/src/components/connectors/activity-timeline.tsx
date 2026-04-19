@@ -2,7 +2,8 @@ import { format, formatDistanceStrict } from "date-fns";
 
 import { cn } from "@/lib/utils";
 import type { SyncRun } from "@/lib/api-types";
-import { StatusLamp, statusFromSync, type ConnectorStatus } from "./status-lamp";
+import { StatusLamp } from "./status-lamp";
+import { statusFromSync, type ConnectorStatus } from "./status";
 
 export function ActivityTimeline({ runs }: { runs: SyncRun[] }) {
   if (runs.length === 0) {

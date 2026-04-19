@@ -46,7 +46,10 @@ import { RankingForm } from "@/components/admin/ranking-form";
 import { RerankForm } from "@/components/admin/rerank-form";
 import { RetentionForm } from "@/components/admin/retention-form";
 
-import { useEmbeddingSettings } from "@/hooks/use-embedding-settings";
+import {
+  useEmbeddingSettings,
+  type UseEmbeddingSettings,
+} from "@/hooks/use-embedding-settings";
 import { useSystemStats } from "@/hooks/use-system-stats";
 
 import type { EmbeddingSettings } from "@/lib/api-types";
@@ -337,30 +340,51 @@ function SettingsPage() {
 // ---------------------------------------------------------------------------
 
 export function EmbeddingsForm() {
-  const { data, isPending, update } = useEmbeddingSettings();
-  const stats = useSystemStats();
-  const savedRef = useRef<EmbeddingSettings | null>(null);
+  const ctx = useEmbeddingSettings();
 
-  const [form, setForm] = useState<EmbeddingSettings>({
+  if (ctx.isPending) {
+    return (
+      <div className="flex flex-col gap-4">
+        <Skeleton className="h-9 w-full max-w-xl" />
+        <Skeleton className="h-9 w-full max-w-xl" />
+        <Skeleton className="h-9 w-2/3 max-w-xl" />
+      </div>
+    );
+  }
+
+  // Remount on every new saved snapshot so useState re-seeds from data
+  // instead of the useEffect(setForm(data)) + savedRef pattern that trips
+  // the React Compiler rules.
+  return (
+    <EmbeddingsFormInner
+      key={embeddingFingerprint(ctx.data ?? null)}
+      ctx={ctx}
+    />
+  );
+}
+
+function embeddingFingerprint(s: EmbeddingSettings | null): string {
+  if (!s) return "empty";
+  return `${s.provider}|${s.model}|${s.api_key}|${s.ollama_url}`;
+}
+
+function EmbeddingsFormInner({ ctx }: { ctx: UseEmbeddingSettings }) {
+  const { data, update } = ctx;
+  const saved: EmbeddingSettings = data ?? {
     provider: "",
     model: "",
     api_key: "",
     ollama_url: "http://localhost:11434",
-  });
+  };
+
+  const stats = useSystemStats();
+  const [form, setForm] = useState<EmbeddingSettings>(saved);
   const [replacingKey, setReplacingKey] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  useEffect(() => {
-    if (!data) return;
-    savedRef.current = data;
-    setForm(data);
-    setReplacingKey(false);
-  }, [data]);
-
-  const saved = savedRef.current;
-  const dirtyProvider = !!saved && form.provider !== saved.provider;
-  const dirtyModel = !!saved && form.model !== saved.model;
-  const dirtyOllama = !!saved && form.ollama_url !== saved.ollama_url;
+  const dirtyProvider = form.provider !== saved.provider;
+  const dirtyModel = form.model !== saved.model;
+  const dirtyOllama = form.ollama_url !== saved.ollama_url;
   const dirtyKey =
     replacingKey && form.api_key !== "" && !form.api_key.startsWith("****");
   const dirty = dirtyProvider || dirtyModel || dirtyOllama || dirtyKey;
@@ -377,7 +401,7 @@ export function EmbeddingsForm() {
     // Returning to the saved provider is a cycle-back from "just peeking"
     // at another provider's options — restore the saved draft so the
     // masked key display reappears and nothing looks destroyed.
-    const returningToSaved = !!saved && saved.provider === next;
+    const returningToSaved = saved.provider === next;
     setForm((f) => ({
       ...f,
       provider: next,
@@ -395,7 +419,7 @@ export function EmbeddingsForm() {
   };
 
   const revert = () => {
-    if (saved) setForm(saved);
+    setForm(saved);
     setReplacingKey(false);
   };
 
@@ -407,16 +431,6 @@ export function EmbeddingsForm() {
     if (requiresReindex) setConfirmOpen(true);
     else submit();
   };
-
-  if (isPending) {
-    return (
-      <div className="flex flex-col gap-4">
-        <Skeleton className="h-9 w-full max-w-xl" />
-        <Skeleton className="h-9 w-full max-w-xl" />
-        <Skeleton className="h-9 w-2/3 max-w-xl" />
-      </div>
-    );
-  }
 
   return (
     <form
@@ -465,6 +479,7 @@ export function EmbeddingsForm() {
             hint="Pick one of the curated options, or type your own — any provider-valid name works."
           >
             <ModelCombobox
+              key={form.provider}
               value={form.model}
               onChange={(v) => setForm((f) => ({ ...f, model: v }))}
               options={EMBEDDING_MODELS[form.provider] ?? []}
@@ -533,7 +548,7 @@ export function EmbeddingsForm() {
                   className="h-10 flex-1 font-mono text-[13px]"
                   autoFocus={replacingKey}
                 />
-                {replacingKey && saved?.api_key && (
+                {replacingKey && saved.api_key && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -691,16 +706,15 @@ interface ModelComboboxProps {
   options: ModelOption[];
 }
 
+// Parents should `key={provider}` this component so external value resets
+// (e.g. provider change in the outer form) remount the combobox instead of
+// needing a useEffect(setQuery(value)) sync.
 function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const [highlighted, setHighlighted] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setQuery(value);
-  }, [value]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -730,14 +744,11 @@ function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  useEffect(() => {
-    setHighlighted(0);
-  }, [query, open]);
-
   const commit = (v: string) => {
     onChange(v);
     setQuery(v);
     setOpen(false);
+    setHighlighted(0);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -770,6 +781,7 @@ function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
             setQuery(v);
             onChange(v);
             setOpen(true);
+            setHighlighted(0);
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}

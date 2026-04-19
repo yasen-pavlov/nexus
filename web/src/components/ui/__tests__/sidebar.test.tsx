@@ -25,8 +25,8 @@ import {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
-  useSidebar,
 } from "../sidebar";
+import { useSidebar } from "../sidebar-context";
 
 const originalMatchMedia = window.matchMedia;
 

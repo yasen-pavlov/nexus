@@ -15,8 +15,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAvatarBlob } from "@/hooks/use-avatar-blob";
 
-import { ConnectorLogo, connectorTypeLabel } from "./connector-logo";
-import { StatusLamp, type ConnectorStatus } from "./status-lamp";
+import { ConnectorLogo } from "./connector-logo";
+import { connectorTypeLabel } from "./connector-labels";
+import { StatusLamp } from "./status-lamp";
+import { type ConnectorStatus } from "./status";
 import { SyncProgress } from "./sync-progress-bar";
 
 export interface ConnectorRow {

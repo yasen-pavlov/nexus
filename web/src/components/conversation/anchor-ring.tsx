@@ -12,16 +12,21 @@ export function AnchorRing({ active, children, className }: Props) {
   const [phase, setPhase] = useState<"intro" | "settled">(
     active ? "intro" : "settled",
   );
-  const [scrolled, setScrolled] = useState(false);
+  const [scrolled, setScrolled] = useState(!active);
+
+  // Reset phase/scrolled synchronously when `active` flips — the React docs'
+  // "adjust state during rendering" pattern. Keeps the flip observable in
+  // the same render that the prop changed, without the setState-in-effect
+  // cascade that trips the compiler rule.
+  const [prevActive, setPrevActive] = useState(active);
+  if (prevActive !== active) {
+    setPrevActive(active);
+    setPhase(active ? "intro" : "settled");
+    setScrolled(!active);
+  }
 
   useEffect(() => {
-    if (!active) {
-      setPhase("settled");
-      setScrolled(true);
-      return;
-    }
-    setPhase("intro");
-    setScrolled(false);
+    if (!active) return;
     const t = window.setTimeout(() => setPhase("settled"), 1800);
     return () => window.clearTimeout(t);
   }, [active]);

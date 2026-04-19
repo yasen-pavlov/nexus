@@ -37,8 +37,13 @@ function isEditable(el: EventTarget | null): boolean {
  */
 export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
   // Stash handlers in a ref so the listener doesn't rebind every render.
+  // The ref write happens in a layout effect instead of during render so the
+  // React Compiler's refs-during-render rule stays happy; keydown fires after
+  // paint anyway, so "the ref is one frame stale" is never observable.
   const handlersRef = useRef(handlers);
-  handlersRef.current = handlers;
+  useEffect(() => {
+    handlersRef.current = handlers;
+  });
 
   useEffect(() => {
     let chordPending = false;

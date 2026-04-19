@@ -31,7 +31,6 @@ export class ErrorBoundary extends Component<Props, State> {
     // Surface to the console — the technical-details disclosure on the
     // fallback page exposes error.message but the stack lives here for
     // anyone with devtools open.
-    // eslint-disable-next-line no-console
     console.error("App error boundary caught:", error, info);
   }
 

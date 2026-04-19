@@ -4,9 +4,6 @@ A self-hosted personal search engine. Point it at your files, email, chats and
 scanned documents, and get one search box that finds anything across all of
 them — with highlighted snippets, hybrid ranking, and optional semantic search.
 
-
-
-
 ![Search across everything you've indexed](docs/screenshots/06b-search-backup.png)
 
 <p align="center">

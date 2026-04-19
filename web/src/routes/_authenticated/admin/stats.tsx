@@ -322,6 +322,11 @@ function PerSourceTable({ rows }: { rows: AdminPerSourceStats[] }) {
     [],
   );
 
+  // TanStack Table's useReactTable returns methods that intentionally
+  // aren't memoized — React Compiler can't auto-memoize components that
+  // consume it. That's a library-level constraint, not a local smell, so
+  // we explicitly opt out of the warning here.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: rows,
     columns,

@@ -7,13 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { ConnectorLogo, connectorTypeLabel } from "@/components/connectors/connector-logo";
+import { ConnectorLogo } from "@/components/connectors/connector-logo";
+import { connectorTypeLabel } from "@/components/connectors/connector-labels";
+import { StatusChip, StatusLamp } from "@/components/connectors/status-lamp";
 import {
-  StatusChip,
-  StatusLamp,
   statusFromSync,
   type ConnectorStatus,
-} from "@/components/connectors/status-lamp";
+} from "@/components/connectors/status";
 import { SyncProgress } from "@/components/connectors/sync-progress-bar";
 import {
   ConnectorForm,

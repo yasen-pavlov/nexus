@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { PlayCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -6,52 +6,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { useRetentionSettings } from "@/hooks/use-retention";
+import {
+  useRetentionSettings,
+  type UseRetentionSettings,
+} from "@/hooks/use-retention";
 import type { RetentionSettings } from "@/lib/api-types";
 
 export function RetentionForm() {
-  const { data, isPending, update, runSweep } = useRetentionSettings();
-  const savedRef = useRef<RetentionSettings | null>(null);
+  const ctx = useRetentionSettings();
 
-  const [form, setForm] = useState({
-    retention_days: 90,
-    retention_per_connector: 200,
-    sweep_interval_minutes: 60,
-  });
-  const min = data?.min_sweep_interval_minutes ?? 5;
-
-  useEffect(() => {
-    if (!data) return;
-    savedRef.current = data;
-    setForm({
-      retention_days: data.retention_days,
-      retention_per_connector: data.retention_per_connector,
-      sweep_interval_minutes: data.sweep_interval_minutes,
-    });
-  }, [data]);
-
-  const saved = savedRef.current;
-  const dirty =
-    !!saved &&
-    (form.retention_days !== saved.retention_days ||
-      form.retention_per_connector !== saved.retention_per_connector ||
-      form.sweep_interval_minutes !== saved.sweep_interval_minutes);
-
-  const invalidDays = form.retention_days < 0;
-  const invalidPerConn = form.retention_per_connector < 0;
-  const invalidSweep = form.sweep_interval_minutes < min;
-  const invalid = invalidDays || invalidPerConn || invalidSweep;
-
-  const revert = () => {
-    if (!saved) return;
-    setForm({
-      retention_days: saved.retention_days,
-      retention_per_connector: saved.retention_per_connector,
-      sweep_interval_minutes: saved.sweep_interval_minutes,
-    });
-  };
-
-  if (isPending) {
+  if (ctx.isPending || !ctx.data) {
     return (
       <div className="flex flex-col gap-4">
         <Skeleton className="h-9 w-full max-w-xl" />
@@ -60,6 +24,46 @@ export function RetentionForm() {
       </div>
     );
   }
+
+  // Remount whenever the server-side settings object changes so the inner
+  // form's useState seeds fresh from the new data without needing
+  // useEffect-driven sync (which would trip the React Compiler rules
+  // about setState inside useEffect + ref reads during render).
+  return <RetentionFormInner key={fingerprint(ctx.data)} ctx={ctx} />;
+}
+
+function fingerprint(s: RetentionSettings): string {
+  return `${s.retention_days}|${s.retention_per_connector}|${s.sweep_interval_minutes}`;
+}
+
+function RetentionFormInner({ ctx }: { ctx: UseRetentionSettings }) {
+  const { data, update, runSweep } = ctx;
+  const saved = data!;
+  const min = saved.min_sweep_interval_minutes ?? 5;
+
+  const [form, setForm] = useState({
+    retention_days: saved.retention_days,
+    retention_per_connector: saved.retention_per_connector,
+    sweep_interval_minutes: saved.sweep_interval_minutes,
+  });
+
+  const dirty =
+    form.retention_days !== saved.retention_days ||
+    form.retention_per_connector !== saved.retention_per_connector ||
+    form.sweep_interval_minutes !== saved.sweep_interval_minutes;
+
+  const invalidDays = form.retention_days < 0;
+  const invalidPerConn = form.retention_per_connector < 0;
+  const invalidSweep = form.sweep_interval_minutes < min;
+  const invalid = invalidDays || invalidPerConn || invalidSweep;
+
+  const revert = () => {
+    setForm({
+      retention_days: saved.retention_days,
+      retention_per_connector: saved.retention_per_connector,
+      sweep_interval_minutes: saved.sweep_interval_minutes,
+    });
+  };
 
   return (
     <form
