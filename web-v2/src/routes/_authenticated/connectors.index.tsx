@@ -85,8 +85,8 @@ function ConnectorsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-8">
-      <header className="flex items-baseline justify-between gap-4">
-        <div>
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+        <div className="min-w-0">
           <h1 className="text-[20px] font-medium tracking-[-0.005em] text-foreground">
             Connectors
           </h1>

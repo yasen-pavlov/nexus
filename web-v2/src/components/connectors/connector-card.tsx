@@ -96,7 +96,7 @@ export function ConnectorCard({
         )}
       />
 
-      <div className="flex items-start gap-4 p-4 pl-5">
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3 p-4 pl-5">
         <Link
           to="/connectors/$id"
           params={{ id: row.id }}
@@ -105,8 +105,8 @@ export function ConnectorCard({
           <ConnectorLogo type={row.type} size="lg" />
         </Link>
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2.5">
+        <div className="min-w-0 flex-1 basis-[180px]">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
             <Link
               to="/connectors/$id"
               params={{ id: row.id }}
@@ -157,7 +157,7 @@ export function ConnectorCard({
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {running ? (
             <Button
               variant="outline"
