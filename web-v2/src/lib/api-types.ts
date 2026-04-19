@@ -13,8 +13,16 @@ type Req<T> = { [K in keyof T]-?: NonNullable<T[K]> };
 
 // Auth
 
-export type User = Omit<Req<Schemas["internal_api.userResponse"]>, "role"> & {
+// The User type intentionally keeps created_at optional — Me() builds it
+// from JWT claims which don't carry a timestamp, so the /auth/me route
+// returns a zero-time value. Concrete uses that render the date (Users
+// page, "Your account" card) read from /api/users list instead.
+export type User = Omit<
+  Req<Schemas["internal_api.userResponse"]>,
+  "role" | "created_at"
+> & {
   role: "admin" | "user";
+  created_at?: string;
 };
 
 export type AuthResponse = Omit<Req<Schemas["internal_api.authResponse"]>, "user"> & {
@@ -180,3 +188,96 @@ export type SyncRun = Omit<
   // the `omitempty`/nullable info — restore it as optional.
   completed_at?: string;
 };
+
+// Admin (Phase 4) types
+//
+// Swag still emits `?` on every field even though the handlers always
+// populate them, and it dumps the per-source array as the per-item shape.
+// The curated views tighten both.
+
+export interface AdminEngineStats {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  dimension?: number;
+}
+
+export interface AdminPerSourceStats {
+  source_type: string;
+  source_name: string;
+  document_count: number;
+  chunk_count: number;
+  latest_indexed_at?: string;
+  first_indexed_at?: string;
+  cache_count: number;
+  cache_bytes: number;
+}
+
+export interface AdminStats {
+  total_documents: number;
+  total_chunks: number;
+  users_count: number;
+  per_source: AdminPerSourceStats[];
+  embedding: AdminEngineStats;
+  rerank: AdminEngineStats;
+}
+
+// Settings: embedding / rerank (already on the BE but typed here for the
+// rewrite). API keys arrive masked ("****abcd"); blank + "Replace" on the
+// frontend asks for a new plaintext key to send back.
+export interface EmbeddingSettings {
+  provider: "" | "ollama" | "openai" | "voyage" | "cohere";
+  model: string;
+  api_key: string;
+  ollama_url: string;
+}
+
+export interface RerankSettings {
+  provider: "" | "voyage" | "cohere";
+  model: string;
+  api_key: string;
+  // Post-rerank score floor. Docs below this are dropped. In [0,1].
+  min_score: number;
+}
+
+// Retention: the sweeper reads these three keys every tick. The BE reports
+// `min_sweep_interval_minutes` as a hard floor the admin can't submit below.
+export interface RetentionSettings {
+  retention_days: number;
+  retention_per_connector: number;
+  sweep_interval_minutes: number;
+  min_sweep_interval_minutes: number;
+}
+
+export interface RetentionSettingsUpdate {
+  retention_days: number;
+  retention_per_connector: number;
+  sweep_interval_minutes: number;
+}
+
+// Ranking knobs. The RankingManager loads these at boot and hot-swaps on
+// every PUT — changes apply to the next query. The rerank-min-score
+// scalar lives on RerankSettings (below) since it's only meaningful when a
+// reranker is configured.
+export interface RankingSettings {
+  source_half_life_days: Record<string, number>;
+  source_recency_floor: Record<string, number>;
+  source_trust_weight: Record<string, number>;
+  metadata_bonus_enabled: boolean;
+  source_trust_enabled: boolean;
+  known_source_types?: string[];
+}
+
+// Storage stats already exposed — curated here so hooks in Phase 4 can
+// type-lift from api-client without re-deriving the shape.
+export interface BinaryStoreStats {
+  source_type: string;
+  source_name: string;
+  count: number;
+  total_size: number;
+}
+
+export interface StorageWipeResult {
+  deleted_count: number;
+  bytes_freed: number;
+}

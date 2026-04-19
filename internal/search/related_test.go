@@ -152,8 +152,8 @@ func TestGetConversationMessages_DirectionAndFilters(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		indexRelChunk(t, c, model.Chunk{
 			SourceType: "telegram", SourceName: "t",
-			SourceID:       "9:" + intStr(1000+i) + ":msg",
-			Title:          "m", Content: "message " + intStr(i),
+			SourceID: "9:" + intStr(1000+i) + ":msg",
+			Title:    "m", Content: "message " + intStr(i),
 			ConversationID: "9", Hidden: true,
 			CreatedAt: base.Add(time.Duration(i) * time.Minute),
 		})

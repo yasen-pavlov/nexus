@@ -97,8 +97,8 @@ func TestPipelineRun_WithEmbedder(t *testing.T) {
 	ctx := context.Background()
 
 	// Recreate index with k-NN enabled
-	sc.DeleteIndex(ctx)                  //nolint:errcheck // test
-	sc.EnsureIndex(ctx, 3)               //nolint:errcheck // test using dim=3 for simplicity
+	sc.DeleteIndex(ctx)    //nolint:errcheck // test
+	sc.EnsureIndex(ctx, 3) //nolint:errcheck // test using dim=3 for simplicity
 
 	provider := &mockEmbedderProvider{embedder: &mockEmbedder{dim: 3}}
 	p := New(st, sc, provider, zap.NewNop())
@@ -143,7 +143,7 @@ func TestPipelineRun(t *testing.T) {
 	p := New(st, sc, nil, zap.NewNop())
 
 	dir := t.TempDir()
-	os.WriteFile(dir+"/hello.txt", []byte("Unique xylophone document for verification"), 0o644)     //nolint:errcheck // test file
+	os.WriteFile(dir+"/hello.txt", []byte("Unique xylophone document for verification"), 0o644)      //nolint:errcheck // test file
 	os.WriteFile(dir+"/world.md", []byte("Another document about different topics entirely"), 0o644) //nolint:errcheck // test file
 
 	fsConn := configureFSWithExtractor(t, "pipeline-test", dir, "*.txt,*.md")
@@ -207,10 +207,10 @@ type fakeDeletionConnector struct {
 	idx     int
 }
 
-func (f *fakeDeletionConnector) Type() string                                { return "filesystem" }
-func (f *fakeDeletionConnector) Name() string                                { return "fake-del" }
-func (f *fakeDeletionConnector) Configure(_ connector.Config) error          { return nil }
-func (f *fakeDeletionConnector) Validate() error                             { return nil }
+func (f *fakeDeletionConnector) Type() string                       { return "filesystem" }
+func (f *fakeDeletionConnector) Name() string                       { return "fake-del" }
+func (f *fakeDeletionConnector) Configure(_ connector.Config) error { return nil }
+func (f *fakeDeletionConnector) Validate() error                    { return nil }
 func (f *fakeDeletionConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
 	if f.idx >= len(f.results) {
 		return &model.FetchResult{Cursor: &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"}}, nil
@@ -576,12 +576,12 @@ func TestIsChildOfKept(t *testing.T) {
 		{"INBOX:42:attachment:0", true},
 		{"INBOX:42:attachment:5", true},
 		{"Sent:7:attachment:0", true},
-		{"INBOX:420:attachment:0", false},     // prefix collision, must NOT match
-		{"INBOX:42", false},                   // exact match is handled by caller, not this helper
-		{"INBOX:41:attachment:0", false},      // different UID
-		{"Trash:42:attachment:0", false},      // different folder
-		{":junk", false},                      // pathological, no crash
-		{"INBOX:42:attachment:0:sub", true},   // deeper nested still valid
+		{"INBOX:420:attachment:0", false},   // prefix collision, must NOT match
+		{"INBOX:42", false},                 // exact match is handled by caller, not this helper
+		{"INBOX:41:attachment:0", false},    // different UID
+		{"Trash:42:attachment:0", false},    // different folder
+		{":junk", false},                    // pathological, no crash
+		{"INBOX:42:attachment:0:sub", true}, // deeper nested still valid
 	}
 	for _, tc := range cases {
 		if got := isChildOfKept(tc.sid, keep); got != tc.want {
@@ -598,12 +598,12 @@ func TestCountAlphabeticTokens(t *testing.T) {
 		{"", 0},
 		{"a b c", 0}, // single-letter tokens don't count
 		{"the quick brown fox", 4},
-		{"hello, world!", 2},                       // punctuation doesn't break count
-		{"http://example.com/path?query=foo", 0},   // URL is one token of mostly non-alpha
-		{"abc def ghi 123 456", 3},                 // numbers don't count
-		{"Привет как дела", 3},                     // Cyrillic counts
-		{"a1 b2 c3 dd ee", 2},                      // tokens with <2 alphas don't count
-		{"docker compose up -d", 3},                // "-d" doesn't count, others do
+		{"hello, world!", 2},                     // punctuation doesn't break count
+		{"http://example.com/path?query=foo", 0}, // URL is one token of mostly non-alpha
+		{"abc def ghi 123 456", 3},               // numbers don't count
+		{"Привет как дела", 3},                   // Cyrillic counts
+		{"a1 b2 c3 dd ee", 2},                    // tokens with <2 alphas don't count
+		{"docker compose up -d", 3},              // "-d" doesn't count, others do
 	}
 	for _, tt := range tests {
 		if got := countAlphabeticTokens(tt.text); got != tt.want {
@@ -627,7 +627,7 @@ func TestPipelineRun_LowInfoChunkSkipsEmbedding(t *testing.T) {
 	// (just URLs and short tokens). The low-info one should NOT get an embedding.
 	dir := t.TempDir()
 	os.WriteFile(dir+"/sub.txt", []byte("This is a substantive document with many real words that should be embedded normally."), 0o644) //nolint:errcheck // test
-	os.WriteFile(dir+"/junk.txt", []byte("ok ty https://x.com/a/b a 1 b 2"), 0o644)                                                          //nolint:errcheck // test
+	os.WriteFile(dir+"/junk.txt", []byte("ok ty https://x.com/a/b a 1 b 2"), 0o644)                                                      //nolint:errcheck // test
 
 	connID := uuid.New()
 	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{

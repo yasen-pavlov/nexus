@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { screen } from "@testing-library/react";
 import { siTelegram, siPaperlessngx } from "simple-icons";
 
 import { ConnectorLogo, connectorTypeLabel } from "../connector-logo";

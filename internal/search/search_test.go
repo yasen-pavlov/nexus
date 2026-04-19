@@ -294,6 +294,87 @@ func TestListIndexedSourceIDs_EmptySource(t *testing.T) {
 	}
 }
 
+func TestAggregateByTypeAndName(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// Mix types and names so the composite aggregation produces multiple
+	// buckets. Three distinct (source_type, source_name) pairs with 2, 1,
+	// 1 docs respectively — the total count must match, and each bucket's
+	// doc_count must reflect the chunks (content is short enough that one
+	// document yields one chunk).
+	docs := []*model.Document{
+		testDoc("a.txt", "A", "file alpha"),
+		testDoc("b.txt", "B", "file beta"),
+		{
+			ID: uuid.New(), SourceType: "imap", SourceName: "inbox",
+			SourceID: "msg-1", Title: "Email", Content: "hello",
+			Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
+		},
+		{
+			ID: uuid.New(), SourceType: "paperless", SourceName: "scan",
+			SourceID: "doc-1", Title: "Receipt", Content: "paper",
+			Metadata: map[string]any{}, Visibility: "private", CreatedAt: time.Now(),
+		},
+	}
+	for _, d := range docs {
+		if err := c.IndexDocument(ctx, d); err != nil {
+			t.Fatalf("index: %v", err)
+		}
+	}
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	aggs, total, err := c.AggregateByTypeAndName(ctx)
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	if total != 4 {
+		t.Errorf("total = %d, want 4", total)
+	}
+	if len(aggs) != 3 {
+		t.Fatalf("expected 3 buckets, got %d", len(aggs))
+	}
+	byKey := map[string]SourceAggregate{}
+	for _, a := range aggs {
+		byKey[a.SourceType+"/"+a.SourceName] = a
+	}
+	fs, ok := byKey["filesystem/test"]
+	if !ok {
+		t.Fatalf("missing filesystem/test bucket; got %v", byKey)
+	}
+	if fs.DocCount != 2 {
+		t.Errorf("filesystem/test doc_count = %d, want 2", fs.DocCount)
+	}
+	if fs.DistinctCount != 2 {
+		t.Errorf("filesystem/test distinct = %d, want 2", fs.DistinctCount)
+	}
+	if fs.MaxIndexedAt.IsZero() {
+		t.Error("filesystem/test MaxIndexedAt unset")
+	}
+	if imap := byKey["imap/inbox"]; imap.DocCount != 1 {
+		t.Errorf("imap/inbox doc_count = %d, want 1", imap.DocCount)
+	}
+	if pl := byKey["paperless/scan"]; pl.DocCount != 1 {
+		t.Errorf("paperless/scan doc_count = %d, want 1", pl.DocCount)
+	}
+}
+
+func TestAggregateByTypeAndName_EmptyIndex(t *testing.T) {
+	c := newTestClient(t)
+	aggs, total, err := c.AggregateByTypeAndName(context.Background())
+	if err != nil {
+		t.Fatalf("aggregate on empty index: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("total = %d, want 0 on empty index", total)
+	}
+	if len(aggs) != 0 {
+		t.Errorf("aggs = %v, want empty on empty index", aggs)
+	}
+}
+
 func TestIndexDocument_NilID(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
@@ -355,7 +436,7 @@ func TestIndexChunks(t *testing.T) {
 			ID: "fs:test:doc1:0", ParentID: "fs:test:doc1", ChunkIndex: 0,
 			Title: "Test Doc", Content: "First chunk of the test document",
 			FullContent: "First chunk of the test document. Second chunk continues here.",
-			SourceType: "filesystem", SourceName: "test", SourceID: "doc1",
+			SourceType:  "filesystem", SourceName: "test", SourceID: "doc1",
 			Metadata: map[string]any{}, Visibility: "private", CreatedAt: now,
 		},
 		{

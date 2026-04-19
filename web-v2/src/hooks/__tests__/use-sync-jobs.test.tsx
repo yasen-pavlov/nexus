@@ -136,11 +136,11 @@ describe("useSyncJobs — mutations", () => {
     const { result } = renderHook(() => useSyncJobs(), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    let started: SyncJob | null = null;
+    const started: { value: SyncJob | null } = { value: null };
     await act(async () => {
-      started = await result.current.triggerSync("c-1");
+      started.value = await result.current.triggerSync("c-1");
     });
-    expect(started?.id).toBe("job-fresh");
+    expect(started.value?.id).toBe("job-fresh");
   });
 
   it("triggerSync surfaces a toast on API failure", async () => {

@@ -101,8 +101,8 @@ func TestPipelineRun_EmbedderFailureStillIndexes(t *testing.T) {
 		docs: []model.Document{
 			{
 				SourceType: "stub", SourceName: "embed-fail", SourceID: "doc1",
-				Title:   "Doc 1",
-				Content: "this is content long enough to be embedded by the pipeline embedder check",
+				Title:    "Doc 1",
+				Content:  "this is content long enough to be embedded by the pipeline embedder check",
 				Metadata: map[string]any{}, CreatedAt: time.Now(),
 			},
 		},

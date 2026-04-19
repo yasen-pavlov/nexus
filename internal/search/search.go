@@ -768,6 +768,116 @@ func (c *Client) ListIndexedSourceIDs(ctx context.Context, sourceType, sourceNam
 	}
 }
 
+// SourceAggregate summarises the indexed content for one
+// (source_type, source_name) pair. Used by the admin stats endpoint.
+type SourceAggregate struct {
+	SourceType    string
+	SourceName    string
+	DocCount      int64
+	MaxIndexedAt  time.Time
+	MinIndexedAt  time.Time
+	DistinctCount int64 // unique source_id count (chunks share source_ids, so docs != chunks)
+}
+
+// AggregateByTypeAndName returns one SourceAggregate per
+// (source_type, source_name) pair indexed in OpenSearch plus the grand total
+// chunk/document count. Paginates via composite aggregation so the result
+// set is unbounded. The admin stats handler joins this with
+// `*storage.BinaryStore.Stats` so the UI can show per-source doc count and
+// cache footprint in one row.
+func (c *Client) AggregateByTypeAndName(ctx context.Context) ([]SourceAggregate, int64, error) {
+	const pageSize = 1000
+	var out []SourceAggregate
+	var afterKey map[string]any
+	var total int64
+	for {
+		composite := map[string]any{
+			"size": pageSize,
+			"sources": []map[string]any{
+				{"st": map[string]any{"terms": map[string]any{"field": "source_type"}}},
+				{"sn": map[string]any{"terms": map[string]any{"field": "source_name"}}},
+			},
+		}
+		if afterKey != nil {
+			composite["after"] = afterKey
+		}
+		query := map[string]any{
+			"size":             0,
+			"track_total_hits": true,
+			"query":            map[string]any{"match_all": map[string]any{}},
+			"aggs": map[string]any{
+				"by_source": map[string]any{
+					"composite": composite,
+					"aggregations": map[string]any{
+						"max_indexed_at": map[string]any{"max": map[string]any{"field": "indexed_at"}},
+						"min_indexed_at": map[string]any{"min": map[string]any{"field": "indexed_at"}},
+						"distinct_docs":  map[string]any{"cardinality": map[string]any{"field": "source_id"}},
+					},
+				},
+			},
+		}
+		body, err := json.Marshal(query)
+		if err != nil {
+			return nil, 0, fmt.Errorf("search: marshal aggregate-by-source query: %w", err)
+		}
+		resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+			Indices: []string{c.index},
+			Body:    bytes.NewReader(body),
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("search: aggregate by source: %w", err)
+		}
+		// track_total_hits forces an exact hit count. Captured once (buckets
+		// are paginated but hit count is stable across pages).
+		if afterKey == nil {
+			total = int64(resp.Hits.Total.Value)
+		}
+		if len(resp.Aggregations) == 0 {
+			return out, total, nil
+		}
+		var aggs struct {
+			BySource struct {
+				AfterKey map[string]any `json:"after_key"`
+				Buckets  []struct {
+					Key          map[string]string `json:"key"`
+					DocCount     int64             `json:"doc_count"`
+					MaxIndexedAt struct {
+						Value float64 `json:"value"`
+					} `json:"max_indexed_at"`
+					MinIndexedAt struct {
+						Value float64 `json:"value"`
+					} `json:"min_indexed_at"`
+					DistinctDocs struct {
+						Value int64 `json:"value"`
+					} `json:"distinct_docs"`
+				} `json:"buckets"`
+			} `json:"by_source"`
+		}
+		if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
+			return nil, 0, fmt.Errorf("search: parse by_source agg: %w", err)
+		}
+		for _, b := range aggs.BySource.Buckets {
+			agg := SourceAggregate{
+				SourceType:    b.Key["st"],
+				SourceName:    b.Key["sn"],
+				DocCount:      b.DocCount,
+				DistinctCount: b.DistinctDocs.Value,
+			}
+			if b.MaxIndexedAt.Value > 0 {
+				agg.MaxIndexedAt = time.UnixMilli(int64(b.MaxIndexedAt.Value)).UTC()
+			}
+			if b.MinIndexedAt.Value > 0 {
+				agg.MinIndexedAt = time.UnixMilli(int64(b.MinIndexedAt.Value)).UTC()
+			}
+			out = append(out, agg)
+		}
+		if aggs.BySource.AfterKey == nil || len(aggs.BySource.Buckets) == 0 {
+			return out, total, nil
+		}
+		afterKey = aggs.BySource.AfterKey
+	}
+}
+
 // DeleteBySource deletes all documents from a specific source.
 func (c *Client) DeleteBySource(ctx context.Context, sourceType, sourceName string) error {
 	query := map[string]any{

@@ -42,4 +42,3 @@ func TestRunMigrations_InvalidURL(t *testing.T) {
 		t.Fatal("expected error for invalid migration URL")
 	}
 }
-

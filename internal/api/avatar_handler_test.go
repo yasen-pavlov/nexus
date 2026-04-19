@@ -28,7 +28,7 @@ func newRouterWithBinaryStore(t *testing.T) (*store.Store, *storage.BinaryStore,
 	if err != nil {
 		t.Fatalf("create binary store: %v", err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, zap.NewNop())
 	return st, bs, router
 }
 
@@ -168,6 +168,8 @@ func TestGetConnectorAvatar_404WhenBinaryStoreUnwired(t *testing.T) {
 	router := NewRouter(st, sc, p, cm, em,
 		NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()),
 		nil, // ← no binary store
+		nil, // ← no sweeper
+		nil, // ← no ranking manager
 		testJWTSecret, nil, zap.NewNop())
 
 	userID, token := createTestUser(t, st)

@@ -14,6 +14,8 @@ import (
 type RerankManager struct {
 	mu       sync.RWMutex
 	reranker rerank.Reranker
+	provider string
+	model    string
 	store    *store.Store
 	log      *zap.Logger
 }
@@ -37,6 +39,36 @@ func (m *RerankManager) Set(r rerank.Reranker) {
 	m.reranker = r
 }
 
+// setActive replaces the reranker together with the provider + model labels
+// the admin UI surfaces.
+func (m *RerankManager) setActive(r rerank.Reranker, provider, model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reranker = r
+	m.provider = provider
+	m.model = model
+}
+
+// Provider returns the label of the active rerank provider ("" when disabled).
+func (m *RerankManager) Provider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.reranker == nil {
+		return ""
+	}
+	return m.provider
+}
+
+// Model returns the label of the active rerank model ("" when disabled).
+func (m *RerankManager) Model() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.reranker == nil {
+		return ""
+	}
+	return m.model
+}
+
 // LoadFromDB loads rerank settings from the database and creates the reranker.
 func (m *RerankManager) LoadFromDB(ctx context.Context, appCfg *config.Config) error {
 	keys := []string{"rerank_provider", "rerank_model", "rerank_api_key", "embedding_api_key"}
@@ -57,7 +89,7 @@ func (m *RerankManager) LoadFromDB(ctx context.Context, appCfg *config.Config) e
 		return err
 	}
 
-	m.Set(reranker)
+	m.setActive(reranker, cfg.RerankProvider, cfg.RerankModel)
 	return nil
 }
 
@@ -87,7 +119,7 @@ func (m *RerankManager) UpdateFromSettings(ctx context.Context, provider, model,
 		return err
 	}
 
-	m.Set(reranker)
+	m.setActive(reranker, provider, model)
 
 	if reranker != nil {
 		m.log.Info("rerank provider updated",

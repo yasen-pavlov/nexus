@@ -128,7 +128,7 @@ func newTestRouterWithJobs(t *testing.T) (*store.Store, *search.Client, *Connect
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, sjm, authWrap(router, token)
 }
@@ -448,10 +448,9 @@ func TestSearchOwnershipScoping(t *testing.T) {
 	}
 	sc.Refresh(ctx) //nolint:errcheck // test
 
-
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
 		t.Helper()
@@ -940,7 +939,7 @@ func TestConnectorManager_LoadFromDB_SkipsDisabled(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "disabled-conn",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: false, Shared: true,
 	}
 	if err := st.CreateConnectorConfig(ctx, cfg); err != nil {
@@ -968,7 +967,7 @@ func TestConnectorManager_Update_DisableRemovesFromMap(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "to-disable",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 	}
 	if err := cm.Add(ctx, cfg); err != nil {
@@ -1099,7 +1098,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1116,7 +1115,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1230,8 +1229,8 @@ func TestEmbeddingManager_LoadFromDB_WithSettings(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-populate DB settings
-	st.SetSetting(ctx, "embedding_provider", "ollama")   //nolint:errcheck // test
-	st.SetSetting(ctx, "embedding_model", "nomic-embed-text") //nolint:errcheck // test
+	st.SetSetting(ctx, "embedding_provider", "ollama")         //nolint:errcheck // test
+	st.SetSetting(ctx, "embedding_model", "nomic-embed-text")  //nolint:errcheck // test
 	st.SetSetting(ctx, "ollama_url", "http://localhost:11434") //nolint:errcheck // test
 
 	em := NewEmbeddingManager(st, zap.NewNop())
@@ -1264,7 +1263,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -2317,7 +2316,7 @@ func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	// Index a shared chunk so the doc exists
 	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
@@ -2334,7 +2333,7 @@ func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
 	if err != nil {
@@ -2373,7 +2372,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	}
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "dl-shared",
-		Config: map[string]any{"root_path": dir, "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": dir, "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 	}
 	if err := cm.Add(context.Background(), cfg); err != nil {
@@ -2388,7 +2387,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	_ = sc.Refresh(context.Background())
 
 	// Build an unwrapped router so we can use a non-admin token
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
 	if err != nil {
@@ -2422,7 +2421,7 @@ func TestDownloadDocument_Integration_PathTraversal(t *testing.T) {
 	}
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "dl-traversal",
-		Config: map[string]any{"root_path": dir, "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": dir, "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 	}
 	if err := cm.Add(context.Background(), cfg); err != nil {
@@ -2467,7 +2466,7 @@ func TestDeletionSync_Integration(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	jobs := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), jobs, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), jobs, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 
 	// Filesystem connector + temp dir. First sync indexes both files;
@@ -2544,8 +2543,8 @@ func TestDeletionSync_Integration(t *testing.T) {
 // FetchBinary method so the handler's type assertion fails.
 type nonFetcherConnector struct{ name string }
 
-func (n *nonFetcherConnector) Type() string                       { return "non-fetcher" }
-func (n *nonFetcherConnector) Name() string                       { return n.name }
+func (n *nonFetcherConnector) Type() string { return "non-fetcher" }
+func (n *nonFetcherConnector) Name() string { return n.name }
 func (n *nonFetcherConnector) Configure(cfg connector.Config) error {
 	if s, _ := cfg["name"].(string); s != "" {
 		n.name = s
@@ -2637,7 +2636,7 @@ func newTestRouterWithBinaryStore(t *testing.T) (*store.Store, *search.Client, *
 	}
 	cm.SetBinaryStore(bs)
 
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, bs, authWrap(router, token)
 }
@@ -2673,7 +2672,7 @@ func TestStorageHandlers_NilBinaryStore(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	wrapped := authWrap(router, token)
 
@@ -2806,7 +2805,7 @@ func TestStorageStats_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	// Non-admin user.
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
@@ -2956,7 +2955,7 @@ func TestDeleteStorageCache_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, zap.NewNop())
 
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	user, err := st.CreateUser(context.Background(), username, "hash", "user")
@@ -3111,15 +3110,15 @@ func TestRelated_IMAPReplyChain(t *testing.T) {
 	_, sc, _, router := newTestRouter(t)
 
 	seedChunk(t, sc, model.Chunk{
-		Title:         "Original", Content: "Let's meet",
-		SourceType:    "imap", SourceName: "test", SourceID: "INBOX:1",
+		Title: "Original", Content: "Let's meet",
+		SourceType: "imap", SourceName: "test", SourceID: "INBOX:1",
 		IMAPMessageID: "a@example.com",
 	})
 	// B replies to A; the edge carries A's Message-ID as target_source_id.
 	bDocID := model.DocumentID("imap", "test", "INBOX:2").String()
 	seedChunk(t, sc, model.Chunk{
-		Title:         "Re: Original", Content: "Sounds good",
-		SourceType:    "imap", SourceName: "test", SourceID: "INBOX:2",
+		Title: "Re: Original", Content: "Sounds good",
+		SourceType: "imap", SourceName: "test", SourceID: "INBOX:2",
 		IMAPMessageID: "b@example.com",
 		Relations: []model.Relation{{
 			Type: model.RelationReplyTo, TargetSourceID: "a@example.com",
@@ -3155,7 +3154,7 @@ func TestRelated_TelegramMessageNeighbors(t *testing.T) {
 	})
 	msg1DocID := model.DocumentID("telegram", "test", "99:100:msg").String()
 	seedChunk(t, sc, model.Chunk{
-		Title:   "Chat", Content: "msg1",
+		Title: "Chat", Content: "msg1",
 		SourceType: "telegram", SourceName: "test", SourceID: "99:100:msg",
 		ConversationID: "99", Hidden: true,
 		Relations: []model.Relation{{
@@ -3164,7 +3163,7 @@ func TestRelated_TelegramMessageNeighbors(t *testing.T) {
 		}},
 	})
 	seedChunk(t, sc, model.Chunk{
-		Title:   "Chat", Content: "msg2",
+		Title: "Chat", Content: "msg2",
 		SourceType: "telegram", SourceName: "test", SourceID: "99:101:msg",
 		ConversationID: "99", Hidden: true,
 		Relations: []model.Relation{{
@@ -3207,7 +3206,7 @@ func TestSearch_ExcludesHiddenChunks(t *testing.T) {
 		SourceType: "telegram", SourceName: "test", SourceID: "1:10-11",
 	})
 	seedChunk(t, sc, model.Chunk{
-		Title:   "Message", Content: "hidden-docs-sentinel content here",
+		Title: "Message", Content: "hidden-docs-sentinel content here",
 		SourceType: "telegram", SourceName: "test", SourceID: "1:10:msg",
 		Hidden: true,
 	})
@@ -3237,7 +3236,7 @@ func TestConversations_MessagesOrderAndPagination(t *testing.T) {
 		seedChunk(t, sc, model.Chunk{
 			Title: "msg", Content: fmt.Sprintf("message %d", i),
 			SourceType: "telegram", SourceName: "test",
-			SourceID:   fmt.Sprintf("55:%d:msg", 1000+i),
+			SourceID:       fmt.Sprintf("55:%d:msg", 1000+i),
 			ConversationID: "55", Hidden: true,
 			CreatedAt: base.Add(time.Duration(i) * time.Minute),
 		})

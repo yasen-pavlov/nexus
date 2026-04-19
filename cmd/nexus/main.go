@@ -200,6 +200,14 @@ func run() error {
 		log.Warn("failed to load rerank settings", zap.Error(err))
 	}
 
+	// Ranking config (per-source half-life, floor, trust weight, plus
+	// rerank min score + feature toggles). Overlays any persisted overrides
+	// on top of the compiled-in defaults.
+	rankingMgr := api.NewRankingManager(st, log)
+	if err := rankingMgr.LoadFromDB(ctx); err != nil {
+		log.Warn("failed to load ranking settings", zap.Error(err))
+	}
+
 	// Set up JWT secret
 	jwtSecret := []byte(cfg.JWTSecret)
 	if len(jwtSecret) == 0 {
@@ -209,7 +217,7 @@ func run() error {
 		}
 		log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
 	}
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, jwtSecret, cfg.CORSOrigins, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, cfg.CORSOrigins, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

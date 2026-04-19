@@ -21,6 +21,7 @@ import (
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
+	"github.com/muty/nexus/internal/syncruns"
 	"go.uber.org/zap"
 )
 
@@ -33,6 +34,8 @@ type handler struct {
 	cm          *ConnectorManager
 	syncJobs    *SyncJobManager
 	binaryStore *storage.BinaryStore
+	sweeper     *syncruns.Sweeper
+	ranking     *RankingManager
 	jwtSecret   []byte
 	log         *zap.Logger
 }
@@ -148,14 +151,18 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Pull the current ranking config once per query; the manager returns a
+	// snapshot that's safe to read without further locking.
+	rankCfg := h.rankingConfig()
+
 	// Stage 3b: source trust weights. Adjusts reranker scores by a
 	// per-source multiplier so archived documents (Paperless) get a slight
 	// boost and inbox/chat noise (IMAP, Telegram) gets a slight penalty.
 	// Applied before the rerank floor so borderline inbox noise drops
 	// below the threshold while genuinely relevant emails survive.
-	if rerankerActive && search.DefaultSourceTrustEnabled {
+	if rerankerActive && rankCfg.SourceTrustEnabled {
 		for i := range result.Documents {
-			w, ok := search.SourceTrustWeight[result.Documents[i].SourceType]
+			w, ok := rankCfg.SourceTrustWeight[result.Documents[i].SourceType]
 			if !ok {
 				w = 1.0
 			}
@@ -169,7 +176,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	if rerankerActive {
 		filtered := result.Documents[:0]
 		for _, hit := range result.Documents {
-			if hit.Rank >= search.RerankMinScore {
+			if hit.Rank >= rankCfg.RerankerMinScore {
 				filtered = append(filtered, hit)
 			}
 		}
@@ -177,11 +184,13 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Stage 5: recency decay — boost recent documents, source-specific half-lives.
-	search.ApplyRecencyDecay(result)
+	search.ApplyRecencyDecay(result, rankCfg)
 
 	// Stage 6: metadata bonus — boost results whose structured metadata matches
 	// query terms (filename, sender, tags, etc.).
-	search.ApplyMetadataBonus(result, query)
+	if rankCfg.MetadataBonusEnabled {
+		search.ApplyMetadataBonus(result, query)
+	}
 
 	// Stage 6b: per-hit match attribution. For telegram window hits,
 	// map the BM25 highlight fragment back to the exact message_lines
@@ -678,6 +687,16 @@ func (h *handler) DeleteStorageCacheByConnector(w http.ResponseWriter, r *http.R
 		"deleted_count": count,
 		"bytes_freed":   bytesFreed,
 	})
+}
+
+// rankingConfig returns the active RankingConfig, falling back to compiled
+// defaults when the manager isn't wired (primarily in tests that don't
+// exercise ranking).
+func (h *handler) rankingConfig() search.RankingConfig {
+	if h.ranking == nil {
+		return search.DefaultRankingConfig()
+	}
+	return h.ranking.Get()
 }
 
 func (h *handler) rerankResults(ctx context.Context, query string, result *model.SearchResult) *model.SearchResult {

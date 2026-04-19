@@ -10,7 +10,7 @@ import "github.com/muty/nexus/internal/model"
 // position (1/(k+rank)), not relevance, so an absolute threshold would
 // arbitrarily drop strong single-phase matches (e.g., a doc that ranks #1 in
 // BM25 but doesn't semantically embed near the query). The reranker stage
-// downstream is the correct place to enforce relevance, via RerankMinScore.
+// downstream is the correct place to enforce relevance, via RankingConfig.RerankerMinScore.
 type rankedChunk struct {
 	parentID string
 	doc      model.Document
@@ -18,45 +18,61 @@ type rankedChunk struct {
 	score    float64
 }
 
-// Ranking thresholds. These are starting values tuned empirically — they live
-// here as named constants so the future "Search quality settings in UI" backlog
-// item can promote them to DB-backed configurable values without changing the
-// code paths that consume them.
-const (
-	// RerankMinScore is the minimum reranker score for a doc to survive the
-	// rerank stage. Voyage rerank-2 scores are 0-1 with 0.5+ meaning "actually
-	// related". 0.4 is a starting point: empirically the gap between
-	// signal (~0.6+) and noise (~0.27-0.45) for our corpus puts the cleanest
-	// cut around 0.5, but 0.4 is more permissive to allow cross-language
-	// matches (e.g. English "invoice" → German "Rechnung" scores ~0.45-0.49).
-	// Tune higher if noise leaks through.
-	//
-	// Only applied when a reranker is configured. Without one we have no
-	// principled noise filter — searches that hit kNN-only matches will have
-	// some hub noise in the long tail. Add a reranker if that's a problem.
-	RerankMinScore = 0.4
-
-	// DefaultSourceTrustEnabled controls whether per-source trust weights
-	// are applied to reranker scores. When the Settings UI lands this
-	// becomes a toggle + per-source weight sliders.
-	DefaultSourceTrustEnabled = true
-)
-
-// SourceTrustWeight maps source types to a multiplicative weight applied
-// to the reranker score before the rerank floor. Values > 1 boost,
-// < 1 penalize. The intent is to express that some sources are
-// intrinsically more authoritative for document-type queries:
-// Paperless stores deliberately-archived documents, while IMAP is an
-// unfiltered inbox and Telegram is ephemeral chat.
+// RankingConfig bundles the knobs that shape per-query result ranking.
+// Persisted in the `settings` table, loaded + hot-swapped by
+// api.RankingManager, and read by the search path on every query.
 //
-// Applied between the reranker stage and the rerank floor so that
-// borderline inbox noise (reranker ~0.40) drops below the floor after
-// the penalty, while genuinely relevant emails (reranker 0.45+) survive.
-var SourceTrustWeight = map[string]float64{
-	"paperless":  1.05, // archived documents — slight boost
-	"filesystem": 1.00, // neutral
-	"imap":       0.92, // unfiltered inbox — penalty
-	"telegram":   0.92, // chat noise — penalty
+// Callers must treat the embedded maps as immutable — the manager hands
+// out shared references for zero-copy reads.
+type RankingConfig struct {
+	// SourceHalfLifeDays: recency decay half-life per source_type. After
+	// one half-life, the freshness multiplier drops to 50%.
+	SourceHalfLifeDays map[string]float64
+	// SourceRecencyFloor: minimum freshness multiplier per source_type.
+	// 0.9 means the oldest doc still keeps 90% of its reranker score.
+	SourceRecencyFloor map[string]float64
+	// SourceTrustWeight: multiplicative weight applied to reranker scores
+	// before the rerank floor. >1 boosts, <1 penalizes.
+	SourceTrustWeight map[string]float64
+	// RerankerMinScore: docs with a reranker score below this are dropped.
+	// Only applied when a reranker is configured.
+	RerankerMinScore float64
+	// MetadataBonusEnabled: when true, ApplyMetadataBonus runs at stage 6.
+	MetadataBonusEnabled bool
+	// SourceTrustEnabled: when true, SourceTrustWeight is applied at stage 3b.
+	SourceTrustEnabled bool
+}
+
+// DefaultRankingConfig returns the compiled-in defaults. Used when the
+// settings table is empty and as the source of truth for values the admin
+// hasn't persisted.
+func DefaultRankingConfig() RankingConfig {
+	return RankingConfig{
+		SourceHalfLifeDays: map[string]float64{
+			"telegram":   14,  // chat is ephemeral
+			"imap":       30,  // emails get stale
+			"filesystem": 90,  // files stay relevant longer
+			"paperless":  180, // documents are semi-permanent
+		},
+		SourceRecencyFloor: map[string]float64{
+			"telegram":   0.65,
+			"imap":       0.75,
+			"filesystem": 0.85,
+			"paperless":  0.90,
+		},
+		SourceTrustWeight: map[string]float64{
+			"paperless":  1.05,
+			"filesystem": 1.00,
+			"imap":       0.92,
+			"telegram":   0.92,
+		},
+		// 0.4 is the empirical cleanest cut between signal (~0.6+) and
+		// noise (~0.27-0.45) on this corpus, with a small allowance for
+		// cross-language matches that tend to score 0.45-0.49.
+		RerankerMinScore:     0.4,
+		MetadataBonusEnabled: true,
+		SourceTrustEnabled:   true,
+	}
 }
 
 const (

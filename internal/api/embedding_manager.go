@@ -15,6 +15,8 @@ import (
 type EmbeddingManager struct {
 	mu       sync.RWMutex
 	embedder embedding.Embedder
+	provider string
+	model    string
 	store    *store.Store
 	log      *zap.Logger
 }
@@ -38,6 +40,17 @@ func (m *EmbeddingManager) Set(e embedding.Embedder) {
 	m.embedder = e
 }
 
+// setActive replaces the embedder together with the provider + model labels
+// the admin UI wants to surface. Callers that swap the embedder via Set lose
+// the labels; this keeps them in sync.
+func (m *EmbeddingManager) setActive(e embedding.Embedder, provider, model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.embedder = e
+	m.provider = provider
+	m.model = model
+}
+
 // Dimension returns the current embedding dimension (0 if disabled).
 func (m *EmbeddingManager) Dimension() int {
 	m.mu.RLock()
@@ -46,6 +59,29 @@ func (m *EmbeddingManager) Dimension() int {
 		return 0
 	}
 	return m.embedder.Dimension()
+}
+
+// Provider returns the label of the active embedding provider ("" when
+// disabled). Populated when the manager loads from DB or UpdateFromSettings
+// runs, so the admin stats surface can display it without re-reading the
+// settings table.
+func (m *EmbeddingManager) Provider() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.embedder == nil {
+		return ""
+	}
+	return m.provider
+}
+
+// Model returns the label of the active embedding model ("" when disabled).
+func (m *EmbeddingManager) Model() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.embedder == nil {
+		return ""
+	}
+	return m.model
 }
 
 // LoadFromDB loads embedding settings from the database and creates the embedder.
@@ -70,7 +106,7 @@ func (m *EmbeddingManager) LoadFromDB(ctx context.Context, appCfg *config.Config
 		return err
 	}
 
-	m.Set(embedder)
+	m.setActive(embedder, cfg.EmbeddingProvider, cfg.EmbeddingModel)
 	return nil
 }
 
@@ -100,8 +136,8 @@ func (m *EmbeddingManager) UpdateFromSettings(ctx context.Context, provider, mod
 		return err
 	}
 
-	// Hot-swap the embedder
-	m.Set(embedder)
+	// Hot-swap the embedder together with the labels the admin UI surfaces.
+	m.setActive(embedder, provider, model)
 
 	if embedder != nil {
 		m.log.Info("embedding provider updated",

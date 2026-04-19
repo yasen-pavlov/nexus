@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -28,9 +29,10 @@ type authResponse struct {
 }
 
 type userResponse struct {
-	ID       uuid.UUID `json:"id"`
-	Username string    `json:"username"`
-	Role     string    `json:"role"`
+	ID        uuid.UUID `json:"id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type createUserRequest struct {
@@ -103,7 +105,7 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, authResponse{
 		Token: token,
-		User:  &userResponse{ID: user.ID, Username: user.Username, Role: user.Role},
+		User:  &userResponse{ID: user.ID, Username: user.Username, Role: user.Role, CreatedAt: user.CreatedAt},
 	})
 }
 
@@ -146,7 +148,7 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, authResponse{
 		Token: token,
-		User:  &userResponse{ID: user.ID, Username: user.Username, Role: user.Role},
+		User:  &userResponse{ID: user.ID, Username: user.Username, Role: user.Role, CreatedAt: user.CreatedAt},
 	})
 }
 
@@ -221,7 +223,7 @@ func (h *handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
+	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role, CreatedAt: user.CreatedAt})
 }
 
 // ListUsers godoc
@@ -242,7 +244,7 @@ func (h *handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]userResponse, len(users))
 	for i, u := range users {
-		result[i] = userResponse{ID: u.ID, Username: u.Username, Role: u.Role}
+		result[i] = userResponse{ID: u.ID, Username: u.Username, Role: u.Role, CreatedAt: u.CreatedAt}
 	}
 	writeJSON(w, http.StatusOK, result)
 }

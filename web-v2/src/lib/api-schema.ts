@@ -4,6 +4,54 @@
  */
 
 export interface paths {
+    "/admin/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * System-wide statistics
+         * @description Aggregates document counts, cache footprint, and engine configuration for the admin dashboard. Admin only.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.AdminStats"];
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -1220,6 +1268,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/settings/ranking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get search ranking tunables
+         * @description Returns the active ranking config — per-source half-life + floor + trust weight, plus the global bonus/trust toggles. Admin only.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.rankingSettings"];
+                    };
+                };
+            };
+        };
+        /**
+         * Update search ranking tunables
+         * @description Persists ranking knobs and hot-swaps them into the in-memory config so the next query sees the new values. Unknown source_type keys in any of the per-source maps are rejected with 400. Admin only.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description Ranking settings */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.rankingSettings"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.rankingSettings"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings/rerank": {
         parameters: {
             query?: never;
@@ -1229,7 +1353,7 @@ export interface paths {
         };
         /**
          * Get rerank settings
-         * @description Returns current reranking provider configuration. API keys are masked.
+         * @description Returns current reranking provider configuration + the min-score floor. API keys are masked.
          */
         get: {
             parameters: {
@@ -1253,7 +1377,7 @@ export interface paths {
         };
         /**
          * Update rerank settings
-         * @description Updates the reranking provider. Masked API keys (****...) are preserved.
+         * @description Updates the reranking provider + min-score floor. Masked API keys (****...) are preserved. min_score must be in [0,1].
          */
         put: {
             parameters: {
@@ -1290,6 +1414,132 @@ export interface paths {
             };
         };
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get sync-history retention settings
+         * @description Returns the currently-persisted retention policy. Admin only. Reports the hard floor on sweep interval so the UI can surface it as a disabled bound instead of letting the user submit an invalid value.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.retentionSettingsResponse"];
+                    };
+                };
+            };
+        };
+        /**
+         * Update sync-history retention settings
+         * @description Validates and persists the three retention keys the sweeper reads every tick. Retention values must be non-negative integers (0 disables the rule). The sweep interval is clamped to the hard floor reported by GET.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description Retention settings */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.retentionSettingsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.retentionSettingsResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/retention/sweep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run retention cleanup immediately
+         * @description Triggers a one-shot sweep of the sync_runs history using the currently-persisted retention rules. Admin only.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            [key: string]: boolean;
+                        };
+                    };
+                };
+                /** @description Internal Server Error */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -2180,6 +2430,30 @@ export interface components {
             data?: unknown;
             error?: string;
         };
+        "internal_api.AdminEngineStats": {
+            dimension?: number;
+            enabled?: boolean;
+            model?: string;
+            provider?: string;
+        };
+        "internal_api.AdminPerSourceStats": {
+            cache_bytes?: number;
+            cache_count?: number;
+            chunk_count?: number;
+            document_count?: number;
+            first_indexed_at?: string;
+            latest_indexed_at?: string;
+            source_name?: string;
+            source_type?: string;
+        };
+        "internal_api.AdminStats": {
+            embedding?: components["schemas"]["internal_api.AdminEngineStats"];
+            per_source?: components["schemas"]["internal_api.AdminPerSourceStats"][];
+            rerank?: components["schemas"]["internal_api.AdminEngineStats"];
+            total_chunks?: number;
+            total_documents?: number;
+            users_count?: number;
+        };
         "internal_api.SyncJob": {
             completed_at?: string;
             connector_id?: string;
@@ -2274,6 +2548,20 @@ export interface components {
             password?: string;
             username?: string;
         };
+        "internal_api.rankingSettings": {
+            known_source_types?: string[];
+            metadata_bonus_enabled?: boolean;
+            source_half_life_days?: {
+                [key: string]: number;
+            };
+            source_recency_floor?: {
+                [key: string]: number;
+            };
+            source_trust_enabled?: boolean;
+            source_trust_weight?: {
+                [key: string]: number;
+            };
+        };
         "internal_api.registerRequest": {
             password?: string;
             username?: string;
@@ -2288,13 +2576,31 @@ export interface components {
         };
         "internal_api.rerankSettingsRequest": {
             api_key?: string;
+            min_score?: number;
             model?: string;
             provider?: string;
         };
         "internal_api.rerankSettingsResponse": {
             api_key?: string;
+            /**
+             * @description MinScore is the post-rerank floor — docs below this are dropped.
+             *     Lives on the Rerank endpoint (rather than on Ranking) because it's
+             *     only meaningful when a reranker is configured.
+             */
+            min_score?: number;
             model?: string;
             provider?: string;
+        };
+        "internal_api.retentionSettingsRequest": {
+            retention_days?: number;
+            retention_per_connector?: number;
+            sweep_interval_minutes?: number;
+        };
+        "internal_api.retentionSettingsResponse": {
+            min_sweep_interval_minutes?: number;
+            retention_days?: number;
+            retention_per_connector?: number;
+            sweep_interval_minutes?: number;
         };
         "internal_api.updateConnectorRequest": {
             config?: {
@@ -2307,6 +2613,7 @@ export interface components {
             type?: string;
         };
         "internal_api.userResponse": {
+            created_at?: string;
             id?: string;
             role?: string;
             username?: string;

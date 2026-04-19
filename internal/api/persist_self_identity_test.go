@@ -15,7 +15,7 @@ func TestPersistSelfIdentity_WritesExternalFields(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "persist-identity",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 	}
 	if err := cm.Add(ctx, cfg); err != nil {
@@ -41,7 +41,7 @@ func TestPersistSelfIdentity_NoopOnZeroID(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "no-op",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 	}
 	if err := cm.Add(ctx, cfg); err != nil {
@@ -67,7 +67,7 @@ func TestPersistSelfIdentity_KeepsExistingNameWhenNewIsEmpty(t *testing.T) {
 
 	cfg := &model.ConnectorConfig{
 		Type: "filesystem", Name: "keep-name",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 		ExternalName: "Previous Name",
 	}

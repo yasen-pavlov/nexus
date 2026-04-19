@@ -22,19 +22,19 @@ func bytesReaderOf(s string) io.Reader { return bytes.NewReader([]byte(s)) }
 // method calls. The default zero-value is a pass-through that returns
 // empty/nil for everything.
 type fakeDB struct {
-	listExpiredErr  error
-	listLRUErr      error
-	totalSizeErr    error
-	statsErr        error
-	upsertErr       error
-	touchErr        error
-	getErr          error
-	deleteErr       error
-	deleteBySrcErr  error
-	deleteAllErr    error
-	totalSize       int64
-	lruEntries      []model.BinaryStoreEntry
-	expiredEntries  []model.BinaryStoreEntry
+	listExpiredErr error
+	listLRUErr     error
+	totalSizeErr   error
+	statsErr       error
+	upsertErr      error
+	touchErr       error
+	getErr         error
+	deleteErr      error
+	deleteBySrcErr error
+	deleteAllErr   error
+	totalSize      int64
+	lruEntries     []model.BinaryStoreEntry
+	expiredEntries []model.BinaryStoreEntry
 }
 
 func (f *fakeDB) UpsertBinaryStoreEntry(context.Context, *model.BinaryStoreEntry) error {

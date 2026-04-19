@@ -52,3 +52,26 @@ export const avatarKeys = {
   blob: (connectorID: string, externalID: string) =>
     [...avatarKeys.all, connectorID, externalID] as const,
 };
+
+export const adminKeys = {
+  all: ["admin"] as const,
+  stats: () => [...adminKeys.all, "stats"] as const,
+};
+
+export const settingsKeys = {
+  all: ["settings"] as const,
+  embedding: () => [...settingsKeys.all, "embedding"] as const,
+  rerank: () => [...settingsKeys.all, "rerank"] as const,
+  retention: () => [...settingsKeys.all, "retention"] as const,
+  ranking: () => [...settingsKeys.all, "ranking"] as const,
+};
+
+export const userKeys = {
+  all: ["users"] as const,
+  list: () => [...userKeys.all, "list"] as const,
+};
+
+export const storageKeys = {
+  all: ["storage"] as const,
+  stats: () => [...storageKeys.all, "stats"] as const,
+};

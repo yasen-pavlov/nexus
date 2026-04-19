@@ -9,6 +9,37 @@
     "host": "localhost:8080",
     "basePath": "/api",
     "paths": {
+        "/admin/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Aggregates document counts, cache footprint, and engine configuration for the admin dashboard. Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "System-wide statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.AdminStats"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/auth/login": {
             "post": {
                 "consumes": [
@@ -1042,6 +1073,74 @@
                 }
             }
         },
+        "/settings/ranking": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the active ranking config — per-source half-life + floor + trust weight, plus the global bonus/trust toggles. Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Get search ranking tunables",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.rankingSettings"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Persists ranking knobs and hot-swaps them into the in-memory config so the next query sees the new values. Unknown source_type keys in any of the per-source maps are rejected with 400. Admin only.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Update search ranking tunables",
+                "parameters": [
+                    {
+                        "description": "Ranking settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.rankingSettings"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.rankingSettings"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/settings/rerank": {
             "get": {
                 "security": [
@@ -1049,7 +1148,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns current reranking provider configuration. API keys are masked.",
+                "description": "Returns current reranking provider configuration + the min-score floor. API keys are masked.",
                 "produces": [
                     "application/json"
                 ],
@@ -1072,7 +1171,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Updates the reranking provider. Masked API keys (****...) are preserved.",
+                "description": "Updates the reranking provider + min-score floor. Masked API keys (****...) are preserved. min_score must be in [0,1].",
                 "consumes": [
                     "application/json"
                 ],
@@ -1103,6 +1202,108 @@
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/retention": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the currently-persisted retention policy. Admin only. Reports the hard floor on sweep interval so the UI can surface it as a disabled bound instead of letting the user submit an invalid value.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Get sync-history retention settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.retentionSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Validates and persists the three retention keys the sweeper reads every tick. Retention values must be non-negative integers (0 disables the rule). The sweep interval is clamped to the hard floor reported by GET.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Update sync-history retention settings",
+                "parameters": [
+                    {
+                        "description": "Retention settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.retentionSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.retentionSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/retention/sweep": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Triggers a one-shot sweep of the sync_runs history using the currently-persisted retention rules. Admin only.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Run retention cleanup immediately",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/internal_api.APIResponse"
                         }
@@ -2030,6 +2231,78 @@
                 }
             }
         },
+        "internal_api.AdminEngineStats": {
+            "type": "object",
+            "properties": {
+                "dimension": {
+                    "type": "integer"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.AdminPerSourceStats": {
+            "type": "object",
+            "properties": {
+                "cache_bytes": {
+                    "type": "integer"
+                },
+                "cache_count": {
+                    "type": "integer"
+                },
+                "chunk_count": {
+                    "type": "integer"
+                },
+                "document_count": {
+                    "type": "integer"
+                },
+                "first_indexed_at": {
+                    "type": "string"
+                },
+                "latest_indexed_at": {
+                    "type": "string"
+                },
+                "source_name": {
+                    "type": "string"
+                },
+                "source_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.AdminStats": {
+            "type": "object",
+            "properties": {
+                "embedding": {
+                    "$ref": "#/definitions/internal_api.AdminEngineStats"
+                },
+                "per_source": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_api.AdminPerSourceStats"
+                    }
+                },
+                "rerank": {
+                    "$ref": "#/definitions/internal_api.AdminEngineStats"
+                },
+                "total_chunks": {
+                    "type": "integer"
+                },
+                "total_documents": {
+                    "type": "integer"
+                },
+                "users_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "internal_api.SyncJob": {
             "type": "object",
             "properties": {
@@ -2274,6 +2547,41 @@
                 }
             }
         },
+        "internal_api.rankingSettings": {
+            "type": "object",
+            "properties": {
+                "known_source_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "metadata_bonus_enabled": {
+                    "type": "boolean"
+                },
+                "source_half_life_days": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number"
+                    }
+                },
+                "source_recency_floor": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number"
+                    }
+                },
+                "source_trust_enabled": {
+                    "type": "boolean"
+                },
+                "source_trust_weight": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "number"
+                    }
+                }
+            }
+        },
         "internal_api.registerRequest": {
             "type": "object",
             "properties": {
@@ -2319,6 +2627,9 @@
                 "api_key": {
                     "type": "string"
                 },
+                "min_score": {
+                    "type": "number"
+                },
                 "model": {
                     "type": "string"
                 },
@@ -2333,11 +2644,46 @@
                 "api_key": {
                     "type": "string"
                 },
+                "min_score": {
+                    "description": "MinScore is the post-rerank floor — docs below this are dropped.\nLives on the Rerank endpoint (rather than on Ranking) because it's\nonly meaningful when a reranker is configured.",
+                    "type": "number"
+                },
                 "model": {
                     "type": "string"
                 },
                 "provider": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_api.retentionSettingsRequest": {
+            "type": "object",
+            "properties": {
+                "retention_days": {
+                    "type": "integer"
+                },
+                "retention_per_connector": {
+                    "type": "integer"
+                },
+                "sweep_interval_minutes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_api.retentionSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "min_sweep_interval_minutes": {
+                    "type": "integer"
+                },
+                "retention_days": {
+                    "type": "integer"
+                },
+                "retention_per_connector": {
+                    "type": "integer"
+                },
+                "sweep_interval_minutes": {
+                    "type": "integer"
                 }
             }
         },
@@ -2368,6 +2714,9 @@
         "internal_api.userResponse": {
             "type": "object",
             "properties": {
+                "created_at": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },

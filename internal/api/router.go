@@ -12,6 +12,7 @@ import (
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
+	"github.com/muty/nexus/internal/syncruns"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.uber.org/zap"
 
@@ -27,6 +28,8 @@ func NewRouter(
 	rm *RerankManager,
 	syncJobs *SyncJobManager,
 	binaryStore *storage.BinaryStore,
+	sweeper *syncruns.Sweeper,
+	ranking *RankingManager,
 	jwtSecret []byte,
 	corsOrigins []string,
 	log *zap.Logger,
@@ -57,6 +60,8 @@ func NewRouter(
 		cm:          cm,
 		syncJobs:    syncJobs,
 		binaryStore: binaryStore,
+		sweeper:     sweeper,
+		ranking:     ranking,
 		jwtSecret:   jwtSecret,
 		log:         log,
 	}
@@ -120,6 +125,7 @@ func NewRouter(
 
 				r.Post("/reindex", h.TriggerReindex)
 				r.Delete("/sync/cursors", h.DeleteAllCursors)
+				r.Get("/admin/stats", h.GetAdminStats)
 				r.Get("/storage/stats", h.GetStorageStats)
 				r.Delete("/storage/cache", h.DeleteStorageCache)
 				r.Delete("/storage/cache/{id}", h.DeleteStorageCacheByConnector)
@@ -129,6 +135,11 @@ func NewRouter(
 					r.Put("/embedding", h.UpdateEmbeddingSettings)
 					r.Get("/rerank", h.GetRerankSettings)
 					r.Put("/rerank", h.UpdateRerankSettings)
+					r.Get("/retention", h.GetRetentionSettings)
+					r.Put("/retention", h.UpdateRetentionSettings)
+					r.Post("/retention/sweep", h.RunRetentionSweep)
+					r.Get("/ranking", h.GetRankingSettings)
+					r.Put("/ranking", h.UpdateRankingSettings)
 				})
 
 				r.Post("/users", h.CreateUser)

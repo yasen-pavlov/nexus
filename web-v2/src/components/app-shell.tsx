@@ -5,6 +5,7 @@ import {
   BarChart3,
   Cable,
   ChevronUp,
+  KeyRound,
   Library,
   LogOut,
   Monitor,
@@ -14,6 +15,8 @@ import {
   Sun,
   Users,
 } from "lucide-react";
+
+import { ChangePasswordSheet } from "@/components/admin/change-password-sheet";
 import type { User } from "@/lib/api-types";
 import { useLogout } from "@/hooks/use-auth";
 import { useSyncJobs } from "@/hooks/use-sync-jobs";
@@ -163,6 +166,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
 
 function UserCard({ user }: { user: User }) {
   const [open, setOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const logout = useLogout();
   const initials = user.username.slice(0, 2).toUpperCase();
@@ -249,6 +253,18 @@ function UserCard({ user }: { user: User }) {
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
+                  setChangePasswordOpen(true);
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground/90 transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <KeyRound className="size-3.5 text-muted-foreground" aria-hidden />
+                <span>Change password</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
                   logout();
                 }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-sm text-foreground/90 transition-colors hover:bg-accent hover:text-foreground"
@@ -259,6 +275,15 @@ function UserCard({ user }: { user: User }) {
             </div>
           </div>
         </>
+      )}
+
+      {changePasswordOpen && (
+        <ChangePasswordSheet
+          open={changePasswordOpen}
+          onOpenChange={setChangePasswordOpen}
+          userId={user.id}
+          label="your password"
+        />
       )}
     </div>
   );

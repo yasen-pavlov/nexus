@@ -32,7 +32,7 @@ func TestGetMyIdentities_ReturnsOwnedConnectorsWithExternalID(t *testing.T) {
 	// populated (shared connectors have no "me").
 	shared := &model.ConnectorConfig{
 		Type: "filesystem", Name: "shared-fs",
-		Config: map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
+		Config:  map[string]any{"root_path": t.TempDir(), "patterns": "*.txt"},
 		Enabled: true, Shared: true,
 		ExternalID: "ignored",
 	}
@@ -144,7 +144,7 @@ func TestGetMyIdentities_SkipsConnectorsWithoutExternalID(t *testing.T) {
 	// empty identity row.
 	cfg := &model.ConnectorConfig{
 		Type: "telegram", Name: "tg-unauthed",
-		Config: map[string]any{"api_id": 1, "api_hash": "h", "phone": "+1"},
+		Config:  map[string]any{"api_id": 1, "api_hash": "h", "phone": "+1"},
 		Enabled: true, UserID: &userID,
 	}
 	if err := st.CreateConnectorConfig(context.Background(), cfg); err != nil {
