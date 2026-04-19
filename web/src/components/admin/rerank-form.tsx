@@ -297,14 +297,17 @@ function ModelCombobox({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return options;
+    // Pristine state — input still holds the saved value because the user
+    // hasn't typed anything yet. Show every option so opening the dropdown
+    // is a discovery surface, not a one-row self-match.
+    if (!q || q === value.trim().toLowerCase()) return options;
     return options.filter(
       (o) =>
         o.value.toLowerCase().includes(q) ||
         o.label.toLowerCase().includes(q) ||
         (o.notes?.toLowerCase().includes(q) ?? false),
     );
-  }, [options, query]);
+  }, [options, query, value]);
 
   useEffect(() => {
     if (!open) return;

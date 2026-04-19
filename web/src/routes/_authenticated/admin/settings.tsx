@@ -704,14 +704,17 @@ function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return options;
+    // Pristine state — input still holds the saved value because the user
+    // hasn't typed anything yet. Show every option so opening the dropdown
+    // is a discovery surface, not a one-row self-match.
+    if (!q || q === value.trim().toLowerCase()) return options;
     return options.filter(
       (o) =>
         o.value.toLowerCase().includes(q) ||
         o.label.toLowerCase().includes(q) ||
         (o.notes?.toLowerCase().includes(q) ?? false),
     );
-  }, [options, query]);
+  }, [options, query, value]);
 
   useEffect(() => {
     if (!open) return;
@@ -770,7 +773,7 @@ function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="e.g. voyage-3-large"
+          placeholder="e.g. voyage-4-large"
           className="h-10 pr-10 font-mono text-[13px]"
           role="combobox"
           aria-expanded={open}

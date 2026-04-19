@@ -32,8 +32,8 @@ export const EMBEDDING_MODELS: Record<EmbeddingProvider, ModelOption[]> = {
   "": [],
   ollama: [
     { value: "nomic-embed-text", label: "nomic-embed-text", dimension: 768, notes: "Good balance, 768-d" },
-    { value: "mxbai-embed-large", label: "mxbai-embed-large", dimension: 1024 },
-    { value: "snowflake-arctic-embed", label: "snowflake-arctic-embed" },
+    { value: "mxbai-embed-large", label: "mxbai-embed-large", dimension: 1024, notes: "Higher quality" },
+    { value: "snowflake-arctic-embed", label: "snowflake-arctic-embed", notes: "Retrieval-tuned" },
     { value: "all-minilm", label: "all-minilm", dimension: 384, notes: "Fast + small" },
   ],
   openai: [
@@ -41,17 +41,18 @@ export const EMBEDDING_MODELS: Record<EmbeddingProvider, ModelOption[]> = {
     { value: "text-embedding-3-large", label: "text-embedding-3-large", dimension: 3072, notes: "Highest quality" },
   ],
   voyage: [
-    { value: "voyage-3-large", label: "voyage-3-large", dimension: 1024, notes: "Best general-purpose" },
-    { value: "voyage-3", label: "voyage-3", dimension: 1024 },
+    { value: "voyage-4-large", label: "voyage-4-large", dimension: 1024, notes: "Recommended" },
+    { value: "voyage-3-large", label: "voyage-3-large", dimension: 1024, notes: "Previous flagship" },
+    { value: "voyage-3", label: "voyage-3", dimension: 1024, notes: "v3 base" },
     { value: "voyage-3-lite", label: "voyage-3-lite", dimension: 512, notes: "Lower cost" },
     { value: "voyage-code-3", label: "voyage-code-3", dimension: 1024, notes: "Code-aware" },
-    { value: "voyage-multilingual-2", label: "voyage-multilingual-2", dimension: 1024 },
+    { value: "voyage-multilingual-2", label: "voyage-multilingual-2", dimension: 1024, notes: "Multilingual" },
     { value: "voyage-law-2", label: "voyage-law-2", dimension: 1024, notes: "Legal / financial" },
   ],
   cohere: [
     { value: "embed-v4.0", label: "embed-v4.0", dimension: 1024, notes: "Latest" },
-    { value: "embed-multilingual-v3.0", label: "embed-multilingual-v3.0", dimension: 1024 },
-    { value: "embed-english-v3.0", label: "embed-english-v3.0", dimension: 1024 },
+    { value: "embed-multilingual-v3.0", label: "embed-multilingual-v3.0", dimension: 1024, notes: "Multilingual" },
+    { value: "embed-english-v3.0", label: "embed-english-v3.0", dimension: 1024, notes: "English-only" },
   ],
 };
 
@@ -60,12 +61,12 @@ export const RERANK_MODELS: Record<RerankProvider, ModelOption[]> = {
   voyage: [
     { value: "rerank-2", label: "rerank-2", notes: "Recommended" },
     { value: "rerank-2-lite", label: "rerank-2-lite", notes: "Lower cost" },
-    { value: "rerank-1", label: "rerank-1" },
+    { value: "rerank-1", label: "rerank-1", notes: "Legacy" },
   ],
   cohere: [
     { value: "rerank-v3.5", label: "rerank-v3.5", notes: "Latest" },
-    { value: "rerank-multilingual-v3.0", label: "rerank-multilingual-v3.0" },
-    { value: "rerank-english-v3.0", label: "rerank-english-v3.0" },
+    { value: "rerank-multilingual-v3.0", label: "rerank-multilingual-v3.0", notes: "Multilingual" },
+    { value: "rerank-english-v3.0", label: "rerank-english-v3.0", notes: "English-only" },
   ],
 };
 
@@ -76,7 +77,7 @@ export const DEFAULT_EMBEDDING_MODEL: Record<EmbeddingProvider, string> = {
   "": "",
   ollama: "nomic-embed-text",
   openai: "text-embedding-3-small",
-  voyage: "voyage-3-large",
+  voyage: "voyage-4-large",
   cohere: "embed-v4.0",
 };
 
