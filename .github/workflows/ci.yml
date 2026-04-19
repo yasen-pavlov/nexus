@@ -62,7 +62,9 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.0
+          # Must be built with Go >= our go.mod directive (currently 1.26.1);
+          # v2.0.2 shipped with Go 1.24 and fails to load the config.
+          version: v2.11.4
           args: --timeout=5m
 
       - name: Unit tests
