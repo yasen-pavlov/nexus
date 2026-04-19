@@ -14,7 +14,8 @@ web/dist/
 
 # Playwright MCP + screenshot artifacts from ad-hoc visual verification
 .playwright-mcp/
-web-v2/.playwright-mcp/
+web/.playwright-mcp/
+web/test-results/
 ranking-verify*.png
 
 # Runtime: local binary cache for `make dev` / go run ./cmd/nexus

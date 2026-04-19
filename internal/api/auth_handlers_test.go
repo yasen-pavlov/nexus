@@ -218,6 +218,10 @@ func TestMe_Authenticated(t *testing.T) {
 	if user["role"] != "admin" {
 		t.Errorf("expected role=admin, got %v", user["role"])
 	}
+	createdAt, ok := user["created_at"].(string)
+	if !ok || createdAt == "" {
+		t.Errorf("expected created_at to be a non-empty timestamp, got %v", user["created_at"])
+	}
 }
 
 func TestMe_Unauthenticated(t *testing.T) {
@@ -763,6 +767,43 @@ func TestDeleteUser_StoreError(t *testing.T) {
 	w := doJSON(t, closedRouter, http.MethodDelete, "/api/users/"+uuid.New().String(), "", admin.token)
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestMe_StoreError(t *testing.T) {
+	router, _ := newAuthTestRouter(t)
+	admin, _ := setupAdminAndUser(t, router)
+
+	st, sc, cm := newTestDeps(t)
+	st.Close()
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	closedRouter := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+
+	// Token is valid, but the closed store fails the GetUserByID lookup → 500.
+	w := doJSON(t, closedRouter, http.MethodGet, "/api/auth/me", "", admin.token)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestMe_DeletedUser(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+
+	_, user := setupAdminAndUser(t, router)
+
+	// Delete the regular user out from under their valid token.
+	if err := st.DeleteUser(context.Background(), user.id); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+
+	// /me should 401 (not 500), so the FE auto-redirects to /login.
+	w := doJSON(t, router, http.MethodGet, "/api/auth/me", "", user.token)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for deleted user, got %d; body: %s", w.Code, w.Body.String())
 	}
 }
 

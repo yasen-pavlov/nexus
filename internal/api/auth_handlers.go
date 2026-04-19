@@ -158,6 +158,8 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 //	@Tags		auth
 //	@Produce	json
 //	@Success	200	{object}	userResponse
+//	@Failure	401	{object}	APIResponse	"Not authenticated"
+//	@Failure	500	{object}	APIResponse	"Lookup failed"
 //	@Security	BearerAuth
 //	@Router		/auth/me [get]
 func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
@@ -166,10 +168,22 @@ func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	user, err := h.store.GetUserByID(r.Context(), claims.UserID)
+	if err != nil {
+		// Token references a user that's been deleted — treat as expired.
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusUnauthorized, "user no longer exists")
+			return
+		}
+		h.log.Error("me: lookup user", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "lookup failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, userResponse{
-		ID:       claims.UserID,
-		Username: claims.Username,
-		Role:     claims.Role,
+		ID:        user.ID,
+		Username:  user.Username,
+		Role:      user.Role,
+		CreatedAt: user.CreatedAt,
 	})
 }
 

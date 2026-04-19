@@ -211,6 +211,12 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		var selfID int64
 		if self, err := client.Self(ctx); err == nil && self != nil {
 			selfID = self.ID
+			// Cache the user's own avatar so the connectors-list
+			// identity row + any UI surface that shows "you" can render
+			// the same photo as a sent-message bubble. Without this,
+			// peer avatars get cached during message walks but the
+			// self-avatar never has a code path that fetches it.
+			c.ensureAvatarCached(ctx, liveMediaDownloader{client: client}, self)
 		}
 		var fetchErr error
 		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor, selfID)

@@ -106,6 +106,18 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/internal_api.userResponse"
                         }
+                    },
+                    "401": {
+                        "description": "Not authenticated",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Lookup failed",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
                     }
                 }
             }

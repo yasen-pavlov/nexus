@@ -1,8 +1,12 @@
 # Stage 1: Build frontend
-FROM node:22-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+# --legacy-peer-deps: openapi-typescript@7 declares peer typescript@^5 but
+# we run typescript@~6.0; recent npm tolerates this loosely, the older npm
+# in node:22-alpine does not. The local dev install runs without the flag
+# (npm 11+) and produces an identical tree.
+RUN npm ci --legacy-peer-deps
 COPY web/ ./
 RUN npm run build
 
