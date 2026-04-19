@@ -21,7 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/muty/nexus/internal/api"
+	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
 	_ "github.com/muty/nexus/internal/connector/imap"
@@ -217,7 +220,28 @@ func run() error {
 		}
 		log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
 	}
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, cfg.CORSOrigins, log)
+
+	// Token-revocation cache: maps user ID → current token_version with a
+	// 30 s TTL so the auth middleware doesn't issue a DB roundtrip per
+	// request. Invalidated explicitly when ChangePassword bumps the row.
+	revocationCache := auth.NewTokenRevocationCache(
+		func(ctx context.Context, id uuid.UUID) (int, error) {
+			u, err := st.GetUserByID(ctx, id)
+			if err != nil {
+				return 0, err
+			}
+			return u.TokenVersion, nil
+		},
+		30*time.Second,
+	)
+
+	// Login rate limiter: 5 failed attempts in any rolling 5-minute window
+	// triggers a 5-minute lockout per (username, IP) bucket. Defends weak
+	// passwords against online brute force; legitimate users only hit it if
+	// they fat-finger five times in a row.
+	loginLimiter := auth.NewLoginRateLimiter(auth.DefaultLoginRateLimiterConfig())
+
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{

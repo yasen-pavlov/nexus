@@ -31,6 +31,8 @@ func NewRouter(
 	sweeper *syncruns.Sweeper,
 	ranking *RankingManager,
 	jwtSecret []byte,
+	revocation *auth.TokenRevocationCache,
+	loginLimiter *auth.LoginRateLimiter,
 	corsOrigins []string,
 	log *zap.Logger,
 ) chi.Router {
@@ -52,24 +54,27 @@ func NewRouter(
 	}))
 
 	h := &handler{
-		store:       store,
-		search:      search,
-		pipeline:    pipeline,
-		em:          em,
-		rm:          rm,
-		cm:          cm,
-		syncJobs:    syncJobs,
-		binaryStore: binaryStore,
-		sweeper:     sweeper,
-		ranking:     ranking,
-		jwtSecret:   jwtSecret,
-		log:         log,
+		store:        store,
+		search:       search,
+		pipeline:     pipeline,
+		em:           em,
+		rm:           rm,
+		cm:           cm,
+		syncJobs:     syncJobs,
+		binaryStore:  binaryStore,
+		sweeper:      sweeper,
+		ranking:      ranking,
+		jwtSecret:    jwtSecret,
+		revocation:   revocation,
+		loginLimiter: loginLimiter,
+		log:          log,
 	}
 
 	// SSE endpoints — outside the timeout middleware (long-lived connections)
 	// Protected by auth (Bearer header or ?token= query param for EventSource).
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(jwtSecret))
+		r.Use(auth.RevocationMiddleware(revocation))
 		// Multiplexed stream: one connection, all visible jobs.
 		r.Get("/api/sync/progress", h.StreamAllSyncProgress)
 		// Per-job legacy stream, kept for backward compat.
@@ -85,6 +90,7 @@ func NewRouter(
 		// Protected routes (any authenticated user)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.Middleware(jwtSecret))
+			r.Use(auth.RevocationMiddleware(revocation))
 
 			r.Get("/auth/me", h.Me)
 			r.Get("/me/identities", h.GetMyIdentities)

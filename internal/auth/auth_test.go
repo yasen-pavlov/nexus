@@ -38,7 +38,7 @@ var testSecret = []byte("test-secret-key-for-jwt-testing!")
 
 func TestGenerateAndParseToken(t *testing.T) {
 	userID := uuid.New()
-	token, err := GenerateToken(testSecret, userID, "alice", "admin")
+	token, err := GenerateToken(testSecret, userID, "alice", "admin", 1)
 	if err != nil {
 		t.Fatalf("GenerateToken: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestGenerateAndParseToken(t *testing.T) {
 }
 
 func TestParseToken_InvalidSecret(t *testing.T) {
-	token, _ := GenerateToken(testSecret, uuid.New(), "alice", "admin")
+	token, _ := GenerateToken(testSecret, uuid.New(), "alice", "admin", 1)
 	_, err := ParseToken([]byte("wrong-secret"), token)
 	if err == nil {
 		t.Fatal("expected error for wrong secret")
@@ -78,7 +78,7 @@ func TestParseToken_InvalidToken(t *testing.T) {
 
 func TestMiddleware_ValidToken(t *testing.T) {
 	userID := uuid.New()
-	token, _ := GenerateToken(testSecret, userID, "alice", "user")
+	token, _ := GenerateToken(testSecret, userID, "alice", "user", 1)
 
 	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := UserFromContext(r.Context())
@@ -149,7 +149,7 @@ func TestMiddleware_ExpiredToken(t *testing.T) {
 }
 
 func TestRequireRole_Admin(t *testing.T) {
-	token, _ := GenerateToken(testSecret, uuid.New(), "alice", "admin")
+	token, _ := GenerateToken(testSecret, uuid.New(), "alice", "admin", 1)
 
 	handler := Middleware(testSecret)(RequireRole("admin")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -166,7 +166,7 @@ func TestRequireRole_Admin(t *testing.T) {
 }
 
 func TestRequireRole_Forbidden(t *testing.T) {
-	token, _ := GenerateToken(testSecret, uuid.New(), "bob", "user")
+	token, _ := GenerateToken(testSecret, uuid.New(), "bob", "user", 1)
 
 	handler := Middleware(testSecret)(RequireRole("admin")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -185,7 +185,7 @@ func TestRequireRole_Forbidden(t *testing.T) {
 func TestMiddleware_QueryParamToken(t *testing.T) {
 	// EventSource cannot set headers, so the middleware accepts ?token= as fallback.
 	userID := uuid.New()
-	token, _ := GenerateToken(testSecret, userID, "alice", "user")
+	token, _ := GenerateToken(testSecret, userID, "alice", "user", 1)
 
 	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := UserFromContext(r.Context())
@@ -208,8 +208,8 @@ func TestMiddleware_HeaderTakesPrecedenceOverQuery(t *testing.T) {
 	// If both Authorization header and ?token= are present, header wins.
 	headerID := uuid.New()
 	queryID := uuid.New()
-	headerToken, _ := GenerateToken(testSecret, headerID, "alice", "user")
-	queryToken, _ := GenerateToken(testSecret, queryID, "bob", "user")
+	headerToken, _ := GenerateToken(testSecret, headerID, "alice", "user", 1)
+	queryToken, _ := GenerateToken(testSecret, queryID, "bob", "user", 1)
 
 	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := UserFromContext(r.Context())

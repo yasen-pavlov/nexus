@@ -58,8 +58,10 @@ func (h *handler) CancelSyncJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
-		// Mirror canModify semantics: 404 rather than 403 to avoid leaking existence.
-		writeError(w, http.StatusNotFound, "sync job not found")
+		// Owners of a shared connector can read but no longer mutate; surface
+		// 403 so the FE can explain. Strangers (no read access either) get
+		// 404 for existence-leak parity with the read endpoints.
+		writeMutationDenied(w, auth.UserFromContext(r.Context()), cfg)
 		return
 	}
 

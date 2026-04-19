@@ -274,3 +274,83 @@ func TestCountUsers_StoreError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestCreateFirstAdmin_Empty(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := st.CreateFirstAdmin(ctx, "boot", "hash")
+	if err != nil {
+		t.Fatalf("first admin: %v", err)
+	}
+	if u.Role != "admin" {
+		t.Errorf("role = %q, want admin", u.Role)
+	}
+	if u.TokenVersion != 1 {
+		t.Errorf("token_version = %d, want 1", u.TokenVersion)
+	}
+}
+
+func TestCreateFirstAdmin_AlreadyExists(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateFirstAdmin(ctx, "boot", "hash"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	_, err := st.CreateFirstAdmin(ctx, "second", "hash")
+	if err != ErrFirstAdminExists {
+		t.Errorf("second call: expected ErrFirstAdminExists, got %v", err)
+	}
+}
+
+func TestCreateFirstAdmin_DuplicateUsername(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := st.CreateUser(ctx, "boot", "h", "user"); err != nil {
+		t.Fatal(err)
+	}
+	// Different username path: ErrFirstAdminExists.
+	_, err := st.CreateFirstAdmin(ctx, "different", "hash")
+	if err != ErrFirstAdminExists {
+		t.Errorf("expected ErrFirstAdminExists when table is non-empty, got %v", err)
+	}
+}
+
+func TestCreateFirstAdmin_StoreError(t *testing.T) {
+	st := newClosedStore(t)
+	_, err := st.CreateFirstAdmin(context.Background(), "x", "h")
+	if err == nil {
+		t.Fatal("expected error on closed store")
+	}
+	if err == ErrFirstAdminExists {
+		t.Errorf("closed store should not return ErrFirstAdminExists, got %v", err)
+	}
+}
+
+func TestUpdateUserPassword_BumpsTokenVersion(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := st.CreateUser(ctx, "alice", "old-hash", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := u.TokenVersion
+	if before != 1 {
+		t.Fatalf("initial token_version = %d, want 1", before)
+	}
+
+	if err := st.UpdateUserPassword(ctx, u.ID, "new-hash"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TokenVersion != before+1 {
+		t.Errorf("token_version = %d, want %d", got.TokenVersion, before+1)
+	}
+}

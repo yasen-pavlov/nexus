@@ -33,7 +33,7 @@ func TestRankingRuntimeWiring_RecencyOverrideShiftsResults(t *testing.T) {
 		NewRerankManager(st, zap.NewNop()),
 		NewSyncJobManager(st, zap.NewNop()),
 		nil, nil, rankingMgr,
-		testJWTSecret, nil, zap.NewNop(),
+		testJWTSecret, nil, nil, nil, zap.NewNop(),
 	)
 	_, adminToken := createTestAdmin(t, st)
 

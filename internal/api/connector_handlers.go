@@ -55,9 +55,12 @@ func canReadConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
 	return cfg.UserID != nil && *cfg.UserID == claims.UserID
 }
 
-// canModifyConnector returns true if the user is allowed to mutate this connector.
-// Admins can modify everything. Users can only modify their own connectors.
-// Shared connectors that are not owned by the user are admin-only.
+// canModifyConnector returns true if the user is allowed to mutate this
+// connector. Admins can modify everything. Regular users can mutate their
+// own private connectors only — shared connectors are admin-only even
+// for the owner, so an owner can't unilaterally flip `shared=false`,
+// rotate credentials, or delete a connector that other users are
+// reading from. Owners who need to revoke sharing must ask an admin.
 func canModifyConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
 	if claims == nil {
 		return false
@@ -65,7 +68,24 @@ func canModifyConnector(claims *auth.Claims, cfg *model.ConnectorConfig) bool {
 	if claims.Role == "admin" {
 		return true
 	}
+	if cfg.Shared {
+		return false
+	}
 	return cfg.UserID != nil && *cfg.UserID == claims.UserID
+}
+
+// writeMutationDenied returns the right status when canModifyConnector
+// said no. If the caller can't even READ the resource, return 404 to
+// avoid leaking existence; if they CAN read it (e.g. it's shared, they're
+// the owner of a shared connector now restricted to admins, or they're
+// any user looking at a shared connector), return 403 with a descriptive
+// reason — they already know it's there, hiding the policy serves no one.
+func writeMutationDenied(w http.ResponseWriter, claims *auth.Claims, cfg *model.ConnectorConfig) {
+	if canReadConnector(claims, cfg) {
+		writeError(w, http.StatusForbidden, "shared connectors can only be modified by an admin")
+		return
+	}
+	writeError(w, http.StatusNotFound, "connector not found")
 }
 
 // canReadDocument returns true if the user is allowed to read a document with
@@ -263,7 +283,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !canModifyConnector(auth.UserFromContext(r.Context()), existing) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, auth.UserFromContext(r.Context()), existing)
 		return
 	}
 
@@ -341,7 +361,7 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !canModifyConnector(auth.UserFromContext(r.Context()), existing) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, auth.UserFromContext(r.Context()), existing)
 		return
 	}
 

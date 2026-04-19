@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -69,35 +70,31 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.store.CountUsers(r.Context())
-	if err != nil {
-		h.log.Error("count users failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "registration failed")
-		return
-	}
-	if count > 0 {
-		writeError(w, http.StatusForbidden, "registration is disabled, contact an admin")
-		return
-	}
-
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "registration failed")
 		return
 	}
 
-	user, err := h.store.CreateUser(r.Context(), req.Username, hash, "admin")
+	// Atomic first-admin insert. The store does INSERT ... WHERE NOT EXISTS
+	// in one statement so two concurrent registrations can't both win and
+	// both become admin (the historical CountUsers + CreateUser race).
+	user, err := h.store.CreateFirstAdmin(r.Context(), req.Username, hash)
 	if err != nil {
-		if errors.Is(err, store.ErrDuplicateUsername) {
+		switch {
+		case errors.Is(err, store.ErrFirstAdminExists):
+			writeError(w, http.StatusForbidden, "registration is disabled, contact an admin")
+			return
+		case errors.Is(err, store.ErrDuplicateUsername):
 			writeError(w, http.StatusConflict, "username already exists")
 			return
 		}
-		h.log.Error("create user failed", zap.Error(err))
+		h.log.Error("create first admin failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "registration failed")
 		return
 	}
 
-	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role)
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "registration failed")
 		return
@@ -126,24 +123,54 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-(username, IP) rate limit. Tripping returns 429 with Retry-After
+	// so clients (and brute-force bots) get a clear backoff signal. The
+	// limiter call short-circuits before the bcrypt comparison so a tripped
+	// bucket doesn't burn ~200ms of CPU per attempt.
+	clientIP := r.RemoteAddr
+	if h.loginLimiter != nil {
+		if ok, retryAfter := h.loginLimiter.Allow(req.Username, clientIP); !ok {
+			retrySec := max(int(retryAfter.Seconds()), 1)
+			w.Header().Set("Retry-After", strconv.Itoa(retrySec))
+			writeError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+			return
+		}
+	}
+
 	// Bad credentials return 400, reserving 401 exclusively for expired /
 	// invalid session tokens on protected endpoints. This lets the frontend
 	// treat every 401 as "log out and redirect" without carve-outs.
+	//
+	// Constant-time path: even when the username is missing, run bcrypt
+	// against a precomputed dummy hash so an attacker can't distinguish
+	// "no such user" (would otherwise return in ~1ms) from "wrong password"
+	// (~200ms via real bcrypt) and enumerate usernames by latency.
 	user, passwordHash, err := h.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
+		_ = auth.CheckPasswordConstantTime("", req.Password)
+		if h.loginLimiter != nil {
+			h.loginLimiter.RecordFailure(req.Username, clientIP)
+		}
 		writeError(w, http.StatusBadRequest, "invalid username or password")
 		return
 	}
 
-	if !auth.CheckPassword(passwordHash, req.Password) {
+	if !auth.CheckPasswordConstantTime(passwordHash, req.Password) {
+		if h.loginLimiter != nil {
+			h.loginLimiter.RecordFailure(req.Username, clientIP)
+		}
 		writeError(w, http.StatusBadRequest, "invalid username or password")
 		return
 	}
 
-	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role)
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "login failed")
 		return
+	}
+
+	if h.loginLimiter != nil {
+		h.loginLimiter.RecordSuccess(req.Username, clientIP)
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{
@@ -353,6 +380,43 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		h.log.Error("change password failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "failed to change password")
+		return
+	}
+
+	// UpdateUserPassword bumps token_version atomically with the password
+	// write, invalidating every JWT minted before this request. Drop the
+	// cached version so the change takes effect immediately rather than
+	// after the cache TTL.
+	if h.revocation != nil {
+		h.revocation.Invalidate(id)
+	}
+
+	// Self-rotation: mint a fresh token so the caller stays signed in. If
+	// we returned 204 like before, the FE's next request would 401 and
+	// bounce to /login — surprising for a "rotate freely" UX. For admin-
+	// changes-someone-else, we deliberately return 204 with no new token,
+	// since the goal IS to revoke that user's existing sessions.
+	if claims.UserID == id {
+		user, err := h.store.GetUserByID(r.Context(), id)
+		if err != nil {
+			h.log.Error("change password: re-fetch user", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "failed to change password")
+			return
+		}
+		token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to change password")
+			return
+		}
+		writeJSON(w, http.StatusOK, authResponse{
+			Token: token,
+			User: &userResponse{
+				ID:        user.ID,
+				Username:  user.Username,
+				Role:      user.Role,
+				CreatedAt: user.CreatedAt,
+			},
+		})
 		return
 	}
 

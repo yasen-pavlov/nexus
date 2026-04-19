@@ -25,6 +25,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// Search pagination ceilings. Together they bound how much OpenSearch is
+// asked to retrieve+rank for a single API call. 1000 covers any realistic
+// "load more" scroll on a homelab corpus; deep-paginating past 10k results
+// is almost certainly a misuse pattern (or a scraper) and would be better
+// served by tightening the query.
+const (
+	maxSearchLimit  = 1000
+	maxSearchOffset = 10000
+)
+
 type handler struct {
 	store       *store.Store
 	search      *search.Client
@@ -37,7 +47,13 @@ type handler struct {
 	sweeper     *syncruns.Sweeper
 	ranking     *RankingManager
 	jwtSecret   []byte
+	revocation  *auth.TokenRevocationCache
 	log         *zap.Logger
+	// loginLimiter throttles failed /auth/login attempts per
+	// (username, ip) bucket to defend weak passwords against online
+	// brute-force. Nil disables throttling (used in tests that don't
+	// care about rate limiting).
+	loginLimiter *auth.LoginRateLimiter
 }
 
 // Health godoc
@@ -87,8 +103,17 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
+	// Cap at maxSearchLimit so an attacker can't request millions of
+	// results in a single call. Mirrors the maxConversationLimit pattern
+	// in document_handlers.go.
+	if limit > maxSearchLimit {
+		limit = maxSearchLimit
+	}
 	if offset < 0 {
 		offset = 0
+	}
+	if offset > maxSearchOffset {
+		offset = maxSearchOffset
 	}
 
 	req := model.SearchRequest{
@@ -239,7 +264,7 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, auth.UserFromContext(r.Context()), cfg)
 		return
 	}
 
@@ -415,7 +440,7 @@ func (h *handler) DeleteCursor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, auth.UserFromContext(r.Context()), cfg)
 		return
 	}
 	if err := h.store.DeleteSyncCursor(r.Context(), id); err != nil {

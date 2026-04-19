@@ -15,6 +15,11 @@ import (
 // ErrDuplicateUsername is returned when a username is already taken.
 var ErrDuplicateUsername = errors.New("username already exists")
 
+// ErrFirstAdminExists is returned by CreateFirstAdmin when the users table
+// already has at least one row, so the new user can't be the first admin.
+// Callers should treat this as "registration disabled, contact an admin".
+var ErrFirstAdminExists = errors.New("first admin already exists")
+
 // CreateUser creates a new user with the given password hash and role.
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role string) (*model.User, error) {
 	id := uuid.New()
@@ -31,21 +36,55 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role str
 	}
 
 	return &model.User{
-		ID:        id,
-		Username:  username,
-		Role:      role,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:           id,
+		Username:     username,
+		Role:         role,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		TokenVersion: 1,
+	}, nil
+}
+
+// CreateFirstAdmin atomically creates the bootstrap admin user iff the users
+// table is empty. Returns ErrFirstAdminExists if any row already exists,
+// closing the check-then-insert race that the caller would otherwise have.
+func (s *Store) CreateFirstAdmin(ctx context.Context, username, passwordHash string) (*model.User, error) {
+	id := uuid.New()
+	now := time.Now()
+
+	query := `
+		INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
+		SELECT $1, $2, $3, 'admin', $4, $4
+		WHERE NOT EXISTS (SELECT 1 FROM users)
+	`
+	tag, err := s.pool.Exec(ctx, query, id, username, passwordHash, now)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, ErrDuplicateUsername
+		}
+		return nil, fmt.Errorf("store: create first admin: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrFirstAdminExists
+	}
+	return &model.User{
+		ID:           id,
+		Username:     username,
+		Role:         "admin",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		TokenVersion: 1,
 	}, nil
 }
 
 // GetUserByUsername returns a user and their password hash by username.
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (*model.User, string, error) {
-	query := `SELECT id, username, password_hash, role, created_at, updated_at FROM users WHERE username = $1`
+	query := `SELECT id, username, password_hash, role, created_at, updated_at, token_version FROM users WHERE username = $1`
 	var user model.User
 	var passwordHash string
 	err := s.pool.QueryRow(ctx, query, username).Scan(
-		&user.ID, &user.Username, &passwordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Username, &passwordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.TokenVersion,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -58,10 +97,10 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (*model.
 
 // GetUserByID returns a user by ID.
 func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
-	query := `SELECT id, username, role, created_at, updated_at FROM users WHERE id = $1`
+	query := `SELECT id, username, role, created_at, updated_at, token_version FROM users WHERE id = $1`
 	var user model.User
 	err := s.pool.QueryRow(ctx, query, id).Scan(
-		&user.ID, &user.Username, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Username, &user.Role, &user.CreatedAt, &user.UpdatedAt, &user.TokenVersion,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -74,7 +113,7 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*model.User, err
 
 // ListUsers returns all users.
 func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
-	query := `SELECT id, username, role, created_at, updated_at FROM users ORDER BY created_at`
+	query := `SELECT id, username, role, created_at, updated_at, token_version FROM users ORDER BY created_at`
 	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("store: list users: %w", err)
@@ -84,7 +123,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 	var users []model.User
 	for rows.Next() {
 		var u model.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &u.UpdatedAt, &u.TokenVersion); err != nil {
 			return nil, fmt.Errorf("store: scan user: %w", err)
 		}
 		users = append(users, u)
@@ -107,9 +146,15 @@ func (s *Store) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// UpdateUserPassword updates a user's password hash.
+// UpdateUserPassword updates a user's password hash AND bumps token_version,
+// invalidating every JWT minted before this call. The increment is atomic
+// with the password write so there's no window where the old password is
+// gone but old tokens still work.
 func (s *Store) UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
-	result, err := s.pool.Exec(ctx, `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`, passwordHash, id)
+	result, err := s.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = now() WHERE id = $2`,
+		passwordHash, id,
+	)
 	if err != nil {
 		return fmt.Errorf("store: update password: %w", err)
 	}

@@ -21,7 +21,7 @@ func retentionRouter(t *testing.T, withSweeper bool) (http.Handler, string, stri
 	if withSweeper {
 		sw = syncruns.NewSweeper(st, st, zap.NewNop())
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, sw, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, sw, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 	_, userToken := createTestUser(t, st)
 	return router, adminToken, userToken
@@ -150,7 +150,7 @@ func TestGetRetentionSettings_StoreClosedSurfacesError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 
 	st.Close()
@@ -165,7 +165,7 @@ func TestUpdateRetentionSettings_StoreClosedSurfacesError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 
 	st.Close()

@@ -117,7 +117,7 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	claims := nauth.UserFromContext(r.Context())
 	if !canModifyConnector(claims, cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, claims, cfg)
 		return
 	}
 
@@ -234,7 +234,7 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	}
 	claims := nauth.UserFromContext(r.Context())
 	if !canModifyConnector(claims, cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeMutationDenied(w, claims, cfg)
 		return
 	}
 

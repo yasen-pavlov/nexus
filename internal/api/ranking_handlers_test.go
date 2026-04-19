@@ -16,7 +16,7 @@ func rankingRouter(t *testing.T) (http.Handler, *RankingManager, string, string)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	rankingMgr := NewRankingManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, rankingMgr, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, admin := createTestAdmin(t, st)
 	_, user := createTestUser(t, st)
 	return router, rankingMgr, admin, user
@@ -164,7 +164,7 @@ func TestUpdateRankingSettings_StoreClosedSurfacesError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, NewRankingManager(st, zap.NewNop()), testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, NewRankingManager(st, zap.NewNop()), testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 
 	st.Close()

@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { fetchAPI } from "@/lib/api-client";
-import type { User } from "@/lib/api-types";
-import { userKeys } from "@/lib/query-keys";
+import { fetchAPI, setToken } from "@/lib/api-client";
+import type { AuthResponse, User } from "@/lib/api-types";
+import { authKeys, userKeys } from "@/lib/query-keys";
 
 // Server returns the raw array under {data: []} of User entries.
 // AdminUserRow is now identical to User (created_at is included for every
@@ -67,6 +67,14 @@ export function useUsers() {
     onError: (err: Error) => toast.error(err.message || "Delete failed"),
   });
 
+  // Self-rotation contract: when the user changes their own password,
+  // the backend bumps the `token_version` row column and the caller's
+  // existing JWT is now revoked (next request would 401 → /login).
+  // To preserve the "rotate freely, stay signed in" UX, the backend
+  // returns 200 with a freshly minted token. Swap it into localStorage
+  // and update the cached `me` so subsequent requests authenticate.
+  // For admin-changes-someone-else, the response is 204 (no body) —
+  // the target user's sessions are deliberately revoked.
   const changePassword = useMutation({
     mutationFn: async ({ userId, password }: ChangePasswordArgs) => {
       const token = localStorage.getItem("nexus_jwt");
@@ -79,6 +87,14 @@ export function useUsers() {
         body: JSON.stringify({ password }),
       });
       if (res.status === 401) throw new Error("Unauthorized");
+      if (res.status === 200) {
+        const body = (await res.json()) as { data: AuthResponse };
+        if (body.data?.token) {
+          setToken(body.data.token);
+          qc.setQueryData(authKeys.me(), body.data.user);
+        }
+        return;
+      }
       if (!res.ok && res.status !== 204) {
         const body = await res.json().catch(() => ({ error: "" }));
         throw new Error(body.error || `HTTP ${res.status}`);

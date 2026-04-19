@@ -22,7 +22,7 @@ func adminStatsTestRouter(t *testing.T) (http.Handler, string, string) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 	_, userToken := createTestUser(t, st)
 	return router, adminToken, userToken
@@ -90,7 +90,7 @@ func TestGetAdminStats_StoreClosedSurfacesError(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 
 	// Close the pool — subsequent queries fail with "closed pool".
@@ -107,7 +107,7 @@ func TestGetAdminStats_PopulatedIndex(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	em.setActive(&mockEmbedder{dim: 1024}, "voyage", "voyage-3-large")
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, adminToken := createTestAdmin(t, st)
 
 	ctx := context.Background()

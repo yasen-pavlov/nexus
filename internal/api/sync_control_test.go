@@ -109,7 +109,7 @@ func TestCancelSyncJob_UserCannotCancelOtherUsersJob(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	otherOwner, _ := createTestAdmin(t, st)
 	cfg := seedEnabledConnector(t, cm, otherOwner, "cancel-other", false)
@@ -236,7 +236,7 @@ func TestListSyncRunsForConnector_UserCannotReadOtherUsersConnector(t *testing.T
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	otherOwner, _ := createTestAdmin(t, st)
 	cfg := seedEnabledConnector(t, cm, otherOwner, "runs-hidden", false)
@@ -259,7 +259,7 @@ func TestStreamAllSyncProgress_DeliversEventsForReadableJobs(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	admin, adminToken := createTestAdmin(t, st)
 	cfg := seedEnabledConnector(t, cm, admin, "sse-visible", false)
@@ -325,7 +325,7 @@ func TestStreamAllSyncProgress_AcceptsTokenQueryParam(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	_, adminToken := createTestAdmin(t, st)
 
@@ -361,7 +361,7 @@ func TestStreamAllSyncProgress_FiltersOrphanedJobs(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	admin, adminToken := createTestAdmin(t, st)
 	cfg := seedEnabledConnector(t, cm, admin, "sse-orphan", false)
@@ -415,7 +415,7 @@ func TestStreamAllSyncProgress_FiltersJobsUserCannotRead(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	otherAdmin, _ := createTestAdmin(t, st)
 	hiddenCfg := seedEnabledConnector(t, cm, otherAdmin, "sse-hidden", false)
