@@ -9,6 +9,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Opt in to the Node 24 runtime ahead of June 2026 so the Node 20
+# deprecation warnings the pinned actions emit go away.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   backend:
     name: Backend (Go)
@@ -92,6 +97,9 @@ jobs:
           name: backend-coverage
           path: coverage.out
           retention-days: 14
+          # Earlier steps (lint, tests) may exit before coverage.out is
+          # produced; suppress the "no files found" warning in that case.
+          if-no-files-found: ignore
 
   frontend:
     name: Frontend (web/)
@@ -148,3 +156,4 @@ jobs:
           name: frontend-coverage
           path: web/coverage
           retention-days: 14
+          if-no-files-found: ignore
