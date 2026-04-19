@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // High-value E2E: start a sync, cancel it, and assert that the UI flips
 // through running → cancel-requested → terminal "canceled" state end-to-end.

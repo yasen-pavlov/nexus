@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // Intercept the authenticated API surface with stable fixtures so the test
 // doesn't depend on live indexed content. The login endpoint still hits the

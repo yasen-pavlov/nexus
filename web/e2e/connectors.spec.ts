@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // Phase 3 smoke: log in (mock), open connectors page, create a filesystem
 // connector via the sheet, trigger a sync, verify the completion toast

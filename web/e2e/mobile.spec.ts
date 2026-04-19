@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // Mobile responsiveness smoke. Renders the most-affected admin surfaces
 // at iPhone-size viewport and asserts the mobile-friendly variants kick

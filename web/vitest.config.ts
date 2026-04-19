@@ -9,6 +9,18 @@ export default mergeConfig(
       globals: true,
       setupFiles: ["./src/test/setup.ts"],
       include: ["src/**/*.test.{ts,tsx}"],
+      coverage: {
+        enabled: !!process.env.COVERAGE,
+        provider: "custom",
+        customProviderModule: "vitest-monocart-coverage",
+        include: ["src/**/*.{ts,tsx}"],
+        exclude: [
+          "src/test/**",
+          "src/**/*.test.{ts,tsx}",
+          "src/routeTree.gen.ts",
+          "src/**/*.d.ts",
+        ],
+      },
     },
   }),
 );

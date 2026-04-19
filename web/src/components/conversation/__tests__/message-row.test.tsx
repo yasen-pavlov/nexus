@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@/test/test-utils";
+import { http, HttpResponse } from "msw";
+import { render, screen, waitFor } from "@/test/test-utils";
 import { MessageRow, type MessageRowModel } from "../message-row";
+import { server } from "@/test/mocks/server";
+import { setToken } from "@/lib/api-client";
 
 function baseRow(overrides: Partial<MessageRowModel>): MessageRowModel {
   return {
@@ -72,6 +75,79 @@ describe("MessageRow attachment partitioning", () => {
       <MessageRow model={baseRow({ body: "hi", attachments: undefined })} />,
     );
     expect(screen.queryByText("(no text)")).not.toBeInTheDocument();
+  });
+
+  it("ConnectedSenderAvatar fetches and shows an authed avatar when connectorId+avatarKey are present", async () => {
+    setToken("tok");
+    server.use(
+      http.get(
+        "*/api/connectors/:connectorId/avatars/:externalId",
+        () => new HttpResponse(new Blob(["img"]), { status: 200 }),
+      ),
+    );
+    const model = baseRow({
+      senderId: "1001",
+      avatarKey: "avatar-1001",
+      connectorId: "c-tg",
+      position: "solo",
+    });
+    render(<MessageRow model={model} />);
+    // Falls through to the <img> variant once the blob resolves.
+    await waitFor(() =>
+      expect(document.querySelector('img[src^="blob:"]')).toBeTruthy(),
+    );
+  });
+
+  it("LazyReplyQuote resolves pendingReplyTarget via /documents/by-source", async () => {
+    setToken("tok");
+    server.use(
+      http.get("*/api/documents/by-source", () =>
+        HttpResponse.json({
+          data: {
+            id: "doc-2",
+            source_type: "telegram",
+            source_id: "42:9",
+            content: "morning! coffee?",
+            metadata: { sender_name: "Bob" },
+          },
+        }),
+      ),
+    );
+    const model = baseRow({
+      body: "sure",
+      pendingReplyTarget: { sourceType: "telegram", sourceId: "42:9" },
+      position: "solo",
+    });
+    render(<MessageRow model={model} />);
+    await waitFor(() => expect(screen.getByText("Bob")).toBeInTheDocument());
+    expect(screen.getByText(/morning/i)).toBeInTheDocument();
+  });
+
+  it("LazyReplyQuote falls back to the unavailable state on fetch error", async () => {
+    setToken("tok");
+    server.use(
+      http.get("*/api/documents/by-source", () =>
+        HttpResponse.json({ error: "not found" }, { status: 404 }),
+      ),
+    );
+    const model = baseRow({
+      body: "mmm",
+      pendingReplyTarget: { sourceType: "telegram", sourceId: "42:99" },
+      position: "solo",
+    });
+    render(<MessageRow model={model} />);
+    // ReplyQuote renders the "message unavailable" copy for the
+    // unavailable state.
+    await waitFor(() =>
+      expect(screen.getByText(/unavailable/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("respects position=last so shared edges render squared", () => {
+    const model = baseRow({ position: "last", body: "tail of burst" });
+    const { container } = render(<MessageRow model={model} />);
+    const article = container.querySelector('article[data-group="last"]');
+    expect(article).toBeTruthy();
   });
 
   it("renders the PDF chip inside the bubble container (same parent as body)", () => {

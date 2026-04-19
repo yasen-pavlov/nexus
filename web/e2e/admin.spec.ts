@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // High-value E2E: walk the three admin surfaces end-to-end — Settings
 // (read + dirty state), Users (create + delete via typed confirm), Stats

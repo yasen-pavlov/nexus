@@ -12,6 +12,11 @@
     "test:watch": "NODE_OPTIONS=--no-experimental-webstorage vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "coverage:clean": "rm -rf coverage .v8-coverage",
+    "coverage:unit": "NODE_OPTIONS=--no-experimental-webstorage COVERAGE=1 vitest run",
+    "coverage:e2e": "playwright test",
+    "coverage:report": "node scripts/coverage-report.mjs",
+    "coverage:all": "npm run coverage:clean && npm run coverage:unit && (npm run coverage:e2e; npm run coverage:report)",
     "gen:types": "bash scripts/gen-api-types.sh"
   },
   "dependencies": {
@@ -53,12 +58,14 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.4",
     "eslint": "^9.39.4",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "happy-dom": "^20.9.0",
     "jsdom": "^29.0.2",
+    "monocart-coverage-reports": "^2.12.10",
     "msw": "^2.13.4",
     "openapi-typescript": "^7.13.0",
     "swagger2openapi": "^7.0.8",
@@ -66,6 +73,7 @@
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",
     "vite": "^8.0.4",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "vitest-monocart-coverage": "^4.0.2"
   }
 }

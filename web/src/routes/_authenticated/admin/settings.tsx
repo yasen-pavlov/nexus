@@ -99,7 +99,7 @@ const NAV: NavItem[] = [
 // chance to cross the offset line. In that case we fall back to picking the
 // bottom-most section whose header is visible inside the scroller, so the
 // nav still surfaces the section the user actually landed on.
-function scoreActiveSection(
+export function scoreActiveSection(
   positions: { id: string; top: number }[],
   viewportHeight: number,
   atBottom: boolean,
@@ -336,7 +336,7 @@ function SettingsPage() {
 // Embeddings form
 // ---------------------------------------------------------------------------
 
-function EmbeddingsForm() {
+export function EmbeddingsForm() {
   const { data, isPending, update } = useEmbeddingSettings();
   const stats = useSystemStats();
   const savedRef = useRef<EmbeddingSettings | null>(null);

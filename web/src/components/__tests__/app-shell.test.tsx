@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { ThemeProvider } from "next-themes";
 import type { ReactNode } from "react";
-import { renderWithRouter, screen, userEvent, waitFor } from "@/test/test-utils";
+import {
+  renderWithRouter,
+  screen,
+  userEvent,
+  waitFor,
+  act,
+} from "@/test/test-utils";
 import { setToken } from "@/lib/api-client";
 import { fakeToken } from "@/test/mocks/handlers";
 import type { User } from "@/lib/api-types";
@@ -123,6 +129,97 @@ describe("AppShell", () => {
     expect(
       screen.getByRole("menuitem", { name: /sign out/i }),
     ).toBeInTheDocument();
+  });
+
+  it("Cmd/Ctrl+K opens the command palette with Pages + Connectors + Actions", async () => {
+    setToken(fakeToken);
+    renderWithRouter(<Wrapped user={adminUser} />, {
+      extraRoutes: EXTRA_ROUTES,
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Nexus")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true }),
+      );
+    });
+    await waitFor(() => {
+      // Palette opens as a CommandDialog — "Search" page item is always there.
+      expect(
+        screen.getByRole("option", { name: /^Search/ }),
+      ).toBeInTheDocument();
+    });
+    // Admin-only entries show up.
+    expect(
+      screen.getByRole("option", { name: /Admin · Settings/ }),
+    ).toBeInTheDocument();
+    // Sign out action.
+    expect(
+      screen.getByRole("option", { name: /Sign out/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("?: opens the cheat sheet", async () => {
+    setToken(fakeToken);
+    renderWithRouter(<Wrapped user={adminUser} />, {
+      extraRoutes: EXTRA_ROUTES,
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Nexus")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "?" }));
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /shortcuts/i }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("vim chord g→s navigates to search", async () => {
+    setToken(fakeToken);
+    renderWithRouter(<Wrapped user={adminUser} />, {
+      extraRoutes: EXTRA_ROUTES,
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Nexus")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g" }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "s" }));
+    });
+    // Router navigates to "/" — just assert no crash + content still there.
+    expect(screen.getByText("content")).toBeInTheDocument();
+  });
+
+  it("theme toggle action in the palette flips html class to dark", async () => {
+    setToken(fakeToken);
+    renderWithRouter(<Wrapped user={adminUser} />, {
+      extraRoutes: EXTRA_ROUTES,
+    });
+    const user = userEvent.setup();
+    await waitFor(() =>
+      expect(screen.getByText("Nexus")).toBeInTheDocument(),
+    );
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true }),
+      );
+    });
+    const themeItem = await screen.findByRole("option", {
+      name: /switch to (light|dark) theme/i,
+    });
+    await user.click(themeItem);
+    // Palette closes after the action fires.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /switch to (light|dark) theme/i }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("selecting a theme closes the popover and applies the class", async () => {

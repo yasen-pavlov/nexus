@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatCount, formatRelative } from "../format";
+import {
+  formatAbsolute,
+  formatBytes,
+  formatCount,
+  formatRelative,
+} from "../format";
 
 describe("formatBytes", () => {
   it("em-dashes invalid input", () => {
@@ -53,5 +58,20 @@ describe("formatRelative", () => {
 
   it("falls back to the raw value on unparseable input", () => {
     expect(formatRelative("not-a-date")).toBe("not-a-date");
+  });
+});
+
+describe("formatAbsolute", () => {
+  it("em-dashes empty input", () => {
+    expect(formatAbsolute(undefined)).toBe("—");
+    expect(formatAbsolute(null)).toBe("—");
+    expect(formatAbsolute("")).toBe("—");
+  });
+
+  it("formats a valid iso into the locale string", () => {
+    const iso = "2026-04-19T12:00:00.000Z";
+    const out = formatAbsolute(iso);
+    expect(out).not.toBe(iso);
+    expect(out).not.toBe("—");
   });
 });

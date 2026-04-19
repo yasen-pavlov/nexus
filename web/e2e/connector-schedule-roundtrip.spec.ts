@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // High-value E2E: the Schedule tab must round-trip — set Weekly on a
 // specific day, save, reload, and see the preset re-detected as

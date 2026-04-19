@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
 
 // High-value E2E: the typed-confirmation delete dialog. Destroying a
 // connector is irreversible (MTProto sessions, cached binaries, indexed

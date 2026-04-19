@@ -10,6 +10,20 @@ import { useSyncJobs } from "../use-sync-jobs";
 import type { SyncJob } from "@/lib/api-types";
 import { setToken } from "@/lib/api-client";
 
+// Capture the live-frame callback passed into openSyncProgressSSE so tests
+// can simulate server-sent transitions without booting an EventSource.
+let sseOnMessage: ((frame: SyncJob) => void) | null = null;
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    openSyncProgressSSE: <T,>(onMessage: (frame: T) => void) => {
+      sseOnMessage = onMessage as (frame: SyncJob) => void;
+      return { close: () => {} } as unknown as EventSource;
+    },
+  };
+});
+
 function wrap() {
   const client = new QueryClient({
     defaultOptions: {
@@ -59,6 +73,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   server.resetHandlers();
+  sseOnMessage = null;
 });
 
 describe("useSyncJobs — list hydration", () => {
@@ -212,5 +227,149 @@ describe("useSyncJobs — mutations", () => {
       returned = await result.current.triggerAll();
     });
     expect(returned).toHaveLength(2);
+  });
+
+  it("triggerAll surfaces a toast on failure", async () => {
+    server.use(
+      http.get("*/api/sync", () => HttpResponse.json({ data: [] })),
+      http.post("*/api/sync", () =>
+        HttpResponse.json({ error: "busy" }, { status: 409 }),
+      ),
+    );
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useSyncJobs(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    let ret: SyncJob[] = [];
+    await act(async () => {
+      ret = await result.current.triggerAll();
+    });
+    expect(ret).toEqual([]);
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("cancelSync surfaces a toast on failure", async () => {
+    server.use(
+      http.get("*/api/sync", () => HttpResponse.json({ data: [] })),
+      http.post("*/api/sync/jobs/job-1/cancel", () =>
+        HttpResponse.json({ error: "gone" }, { status: 404 }),
+      ),
+    );
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useSyncJobs(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await result.current.cancelSync("job-1");
+    });
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("resetCursor surfaces a toast on failure", async () => {
+    server.use(
+      http.get("*/api/sync", () => HttpResponse.json({ data: [] })),
+      http.delete("*/api/sync/cursors/c-1", () =>
+        HttpResponse.json({ error: "nope" }, { status: 500 }),
+      ),
+    );
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useSyncJobs(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await result.current.resetCursor("c-1");
+    });
+    expect(toast.error).toHaveBeenCalled();
+  });
+});
+
+describe("useSyncJobs — live SSE transitions", () => {
+  function mountWithEmptyList() {
+    server.use(http.get("*/api/sync", () => HttpResponse.json({ data: [] })));
+    const { Wrapper } = wrap();
+    return renderHook(() => useSyncJobs(), { wrapper: Wrapper });
+  }
+
+  it("running → completed fires a success toast", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "running" })));
+    act(() => sseOnMessage?.(job({ status: "completed" })));
+    expect(toast.success).toHaveBeenCalledWith("Sync finished: notes");
+  });
+
+  it("running → failed fires an error toast with description", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "running" })));
+    act(() => sseOnMessage?.(job({ status: "failed", error: "boom" })));
+    expect(toast.error).toHaveBeenCalledWith("Sync failed: notes", {
+      description: "boom",
+    });
+  });
+
+  it("running → canceled fires an info toast", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "running" })));
+    act(() => sseOnMessage?.(job({ status: "canceled" })));
+    expect(toast.info).toHaveBeenCalledWith("Canceled: notes");
+  });
+
+  it("subsequent frames with the same status don't retoast", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "running" })));
+    act(() => sseOnMessage?.(job({ status: "completed" })));
+    act(() => sseOnMessage?.(job({ status: "completed" })));
+    expect(vi.mocked(toast.success).mock.calls.length).toBe(1);
+  });
+
+  it("jobsByConnector: running wins over completed for the same connector on reversed arrival", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Completed lands first, running arrives after. The derivation must
+    // swap the completed row out for the running one — exercises the
+    // "existing.status !== 'running' && job.status === 'running'" branch.
+    act(() =>
+      sseOnMessage?.(
+        job({
+          id: "job-done",
+          status: "completed",
+          started_at: "2026-04-01T00:00:00Z",
+        }),
+      ),
+    );
+    act(() =>
+      sseOnMessage?.(
+        job({
+          id: "job-new",
+          status: "running",
+          started_at: "2026-04-02T00:00:00Z",
+        }),
+      ),
+    );
+    expect(result.current.jobsByConnector.get("c-1")?.id).toBe("job-new");
+  });
+
+  it("jobsByConnector: keeps the existing running row when an older completed arrives later", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() =>
+      sseOnMessage?.(
+        job({
+          id: "job-running",
+          status: "running",
+          started_at: "2026-04-02T00:00:00Z",
+        }),
+      ),
+    );
+    act(() =>
+      sseOnMessage?.(
+        job({
+          id: "job-old",
+          status: "completed",
+          started_at: "2026-04-01T00:00:00Z",
+        }),
+      ),
+    );
+    expect(result.current.jobsByConnector.get("c-1")?.id).toBe("job-running");
   });
 });
