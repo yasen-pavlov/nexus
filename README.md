@@ -23,16 +23,6 @@ them — with highlighted snippets, hybrid ranking, and optional semantic search
 - **Multi-user, auth-scoped.** Username + bcrypt password, JWT sessions, two roles (admin/user). Every search result is scoped to the calling user — shared connectors (e.g. the family NAS) are visible to everyone, personal connectors (your email) are not.
 - **Single container to run.** One binary serves the React frontend and the API. The only hard dependencies are Postgres and OpenSearch.
 
-## See it
-
-| | |
-| --- | --- |
-| First boot asks you to create the admin account. No mandatory SaaS signup, no "enterprise" tier. | ![First boot](docs/screenshots/01-first-boot.png) |
-| Drop in any combination of Filesystem, IMAP, Paperless-ngx, or Telegram. Credentials are encrypted at rest with AES-256-GCM. | ![New connector](docs/screenshots/09-add-connector.png) |
-| Each connector page shows config, sync schedule, and full run history. | ![Connector detail](docs/screenshots/04-connector-detail.png) |
-| Stats keep an eye on what's indexed, how fresh it is, and which retrieval stack is active. | ![Stats](docs/screenshots/08-stats.png) |
-| Tune the retrieval stack — pick embedding and reranking providers, set source trust weights and recency half-lives. | ![Settings](docs/screenshots/07-settings.png) |
-
 ## Quick start
 
 Requirements: Docker Engine 24+ with the Compose plugin. That's it.

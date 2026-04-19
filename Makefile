@@ -28,10 +28,18 @@ test-integration:
 lint:
 	golangci-lint run ./...
 
-# Coverage report (excludes testutil).
+# Total-coverage floor. Override on the command line with `make coverage
+# COVERAGE_FLOOR=95` to demand more.
+COVERAGE_FLOOR ?= 90
+
+# Coverage report (excludes testutil). Fails if total coverage drops below
+# the floor — mirrors the check enforced in CI (.github/workflows/ci.yml).
 coverage:
 	go test -tags integration $$(go list ./internal/... | grep -v testutil) -coverprofile=coverage.out
-	go tool cover -func=coverage.out | tail -1
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
+		echo "total: $${total}%"; \
+		awk -v t="$${total}" -v f="$(COVERAGE_FLOOR)" 'BEGIN { exit (t + 0 < f + 0) ? 1 : 0 }' \
+		  || { echo "Coverage $${total}% is below the $(COVERAGE_FLOOR)% floor."; exit 1; }
 	@echo "Run 'go tool cover -html=coverage.out' for detailed report"
 
 # Generate swagger docs (requires: go install github.com/swaggo/swag/cmd/swag@v1.8.12)
