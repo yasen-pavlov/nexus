@@ -5,6 +5,9 @@ import { fetchAPI } from "@/lib/api-client";
 import type { EmbeddingSettings, RerankSettings } from "@/lib/api-types";
 import { searchKeys, settingsKeys } from "@/lib/query-keys";
 
+export type UseEmbeddingSettings = ReturnType<typeof useEmbeddingSettings>;
+export type UseRerankSettings = ReturnType<typeof useRerankSettings>;
+
 export function useEmbeddingSettings() {
   const qc = useQueryClient();
 

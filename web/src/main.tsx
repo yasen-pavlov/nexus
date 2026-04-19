@@ -5,8 +5,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 import { ThemeProvider } from "@/components/theme-provider";
-import { Toaster } from "@/components/ui/sonner";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { ResponsiveToaster } from "@/components/responsive-toaster";
 import { queryClient } from "@/lib/query-client";
 import { setUnauthorizedHandler } from "@/lib/api-client";
 import { router } from "./router";
@@ -17,18 +16,6 @@ setUnauthorizedHandler(() => {
   queryClient.setQueryData(["auth", "me"], null);
   void router.navigate({ to: "/login" });
 });
-
-// Mobile keyboards eat the bottom of the viewport — top-center keeps toasts
-// from being hidden behind the on-screen keyboard or browser chrome.
-function ResponsiveToaster() {
-  const isMobile = useIsMobile();
-  return (
-    <Toaster
-      richColors
-      position={isMobile ? "top-center" : "bottom-right"}
-    />
-  );
-}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

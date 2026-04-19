@@ -12,6 +12,11 @@ coverage.out
 web/node_modules/
 web/dist/
 
+# The React SPA is copied here by Docker / goreleaser so `//go:embed` picks it up.
+# Only the .gitkeep is tracked; the actual bundle is generated, never committed.
+internal/api/static/*
+!internal/api/static/.gitkeep
+
 # Playwright MCP + screenshot artifacts from ad-hoc visual verification
 .playwright-mcp/
 web/.playwright-mcp/
@@ -24,6 +29,7 @@ data/
 # Environment
 .env
 .env.*
+!.env.example
 
 # IDE
 .idea/

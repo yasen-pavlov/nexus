@@ -1,4 +1,3 @@
-import { type ReactNode } from "react";
 import { render, type RenderOptions } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -18,13 +17,6 @@ function createTestQueryClient() {
   });
 }
 
-function AllProviders({ children }: { children: ReactNode }) {
-  const queryClient = createTestQueryClient();
-  return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
-}
-
 /**
  * Render a component wrapped in QueryClientProvider only (no router).
  * Use renderWithRouter when the component needs TanStack Router context.
@@ -33,7 +25,11 @@ function renderWithProviders(
   ui: React.ReactElement,
   options?: Omit<RenderOptions, "wrapper">,
 ) {
-  return render(ui, { wrapper: AllProviders, ...options });
+  const queryClient = createTestQueryClient();
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    options,
+  );
 }
 
 /**

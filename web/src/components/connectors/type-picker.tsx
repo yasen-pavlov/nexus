@@ -1,7 +1,8 @@
 import type { CSSProperties } from "react";
 
 import { cn } from "@/lib/utils";
-import { ConnectorLogo, connectorTypeLabel } from "./connector-logo";
+import { ConnectorLogo } from "./connector-logo";
+import { connectorTypeLabel } from "./connector-labels";
 
 export type ConnectorTypeKey = "filesystem" | "imap" | "paperless" | "telegram";
 

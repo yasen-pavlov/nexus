@@ -6,12 +6,8 @@ import { useDocumentBySource } from "@/hooks/use-document-by-source";
 import { SenderAvatar } from "./sender-avatar";
 import { ReplyQuote, type ReplyQuoteState } from "./reply-quote";
 import { AttachmentChip, AttachmentChipRow } from "./attachment-chip";
-import {
-  InlineImage,
-  InlineVideo,
-  mimeIsImage,
-  mimeIsVideo,
-} from "./inline-media";
+import { InlineImage, InlineVideo } from "./inline-media";
+import { mimeIsImage, mimeIsVideo } from "./mime-helpers";
 import { AnchorRing } from "./anchor-ring";
 
 export type GroupPosition = "solo" | "first" | "mid" | "last";

@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 
-import {
-  StatusChip,
-  StatusLamp,
-  statusFromSync,
-  type ConnectorStatus,
-} from "../status-lamp";
+import { StatusChip, StatusLamp } from "../status-lamp";
+import { statusFromSync, type ConnectorStatus } from "../status";
 import { render } from "@/test/test-utils";
 
 describe("statusFromSync", () => {

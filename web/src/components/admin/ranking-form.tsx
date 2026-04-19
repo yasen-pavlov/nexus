@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,10 @@ import { Slider } from "@/components/ui/slider";
 import { ConnectorLogo } from "@/components/connectors/connector-logo";
 import { SourceChip } from "@/components/source-chip";
 
-import { useRankingSettings } from "@/hooks/use-ranking-settings";
+import {
+  useRankingSettings,
+  type UseRankingSettings,
+} from "@/hooks/use-ranking-settings";
 import type { RankingSettings } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -67,36 +70,9 @@ const SOURCE_LABEL: Record<(typeof SOURCE_ORDER)[number], string> = {
 };
 
 export function RankingForm() {
-  const { data, isPending, update } = useRankingSettings();
-  const savedRef = useRef<RankingSettings | null>(null);
+  const ctx = useRankingSettings();
 
-  const [form, setForm] = useState<RankingSettings>(emptyForm());
-
-  useEffect(() => {
-    if (!data) return;
-    savedRef.current = data;
-    setForm(data);
-  }, [data]);
-
-  const saved = savedRef.current;
-  const dirty = saved ? !sameRanking(form, saved) : false;
-
-  const revert = () => {
-    if (saved) setForm(saved);
-  };
-
-  const resetAll = () => {
-    setForm({
-      ...form,
-      source_half_life_days: { ...DEFAULTS.halfLife },
-      source_recency_floor: { ...DEFAULTS.floor },
-      source_trust_weight: { ...DEFAULTS.trust },
-      metadata_bonus_enabled: true,
-      source_trust_enabled: true,
-    });
-  };
-
-  if (isPending || !data) {
+  if (ctx.isPending || !ctx.data) {
     return (
       <div className="flex flex-col gap-4">
         <Skeleton className="h-20 w-full" />
@@ -105,6 +81,44 @@ export function RankingForm() {
       </div>
     );
   }
+
+  // Remount on every new server-side snapshot so form state re-seeds from
+  // data via useState's initializer — no useEffect-driven sync, no ref
+  // reads during render.
+  return <RankingFormInner key={rankingFingerprint(ctx.data)} ctx={ctx} />;
+}
+
+function rankingFingerprint(s: RankingSettings): string {
+  const bySource = (m: Record<string, number>) =>
+    SOURCE_ORDER.map((k) => `${k}:${m[k] ?? "?"}`).join(",");
+  return [
+    bySource(s.source_half_life_days),
+    bySource(s.source_recency_floor),
+    bySource(s.source_trust_weight),
+    s.metadata_bonus_enabled ? "1" : "0",
+    s.source_trust_enabled ? "1" : "0",
+  ].join("|");
+}
+
+function RankingFormInner({ ctx }: { ctx: UseRankingSettings }) {
+  const { data, update } = ctx;
+  const saved = data!;
+  const [form, setForm] = useState<RankingSettings>(saved);
+
+  const dirty = !sameRanking(form, saved);
+
+  const revert = () => setForm(saved);
+
+  const resetAll = () => {
+    setForm((f) => ({
+      ...f,
+      source_half_life_days: { ...DEFAULTS.halfLife },
+      source_recency_floor: { ...DEFAULTS.floor },
+      source_trust_weight: { ...DEFAULTS.trust },
+      metadata_bonus_enabled: true,
+      source_trust_enabled: true,
+    }));
+  };
 
   return (
     <form
@@ -345,7 +359,7 @@ function SourceCard({
   onChange,
   onReset,
 }: SourceCardProps) {
-  const presets = PRESETS[sourceType] ?? {};
+  const presets = useMemo(() => PRESETS[sourceType] ?? {}, [sourceType]);
   const activePreset = useMemo(() => {
     for (const [name, p] of Object.entries(presets)) {
       if (sameKnobs(knobs, p)) return name;
@@ -675,16 +689,6 @@ function DecayCurve({ halfLife, floor }: { halfLife: number; floor: number }) {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-function emptyForm(): RankingSettings {
-  return {
-    source_half_life_days: { ...DEFAULTS.halfLife },
-    source_recency_floor: { ...DEFAULTS.floor },
-    source_trust_weight: { ...DEFAULTS.trust },
-    metadata_bonus_enabled: true,
-    source_trust_enabled: true,
-  };
-}
 
 function sameKnobs(a: SourceKnobs, b: SourceKnobs): boolean {
   return (

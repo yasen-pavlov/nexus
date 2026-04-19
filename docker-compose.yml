@@ -1,3 +1,11 @@
+# Nexus stack — single compose file for both local dev and full deployment.
+#
+#   docker compose up -d                        # deps only (db, opensearch, tika) for local `make dev` / `go run`
+#   docker compose --profile app up -d          # full stack including the nexus app container
+#   docker compose --profile app --profile ollama up -d   # + local embeddings via Ollama
+#
+# First-run setup: `cp .env.example .env` and fill in secrets. See README for details.
+
 services:
   db:
     image: pgvector/pgvector:pg17
@@ -8,7 +16,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${NEXUS_DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nexus"]
       interval: 5s
@@ -20,11 +28,11 @@ services:
     environment:
       - discovery.type=single-node
       - DISABLE_SECURITY_PLUGIN=true
-      - OPENSEARCH_JAVA_OPTS=-Xms256m -Xmx256m
+      - OPENSEARCH_JAVA_OPTS=-Xms${OPENSEARCH_HEAP:-512m} -Xmx${OPENSEARCH_HEAP:-512m}
     volumes:
       - osdata:/usr/share/opensearch/data
     ports:
-      - "9200:9200"
+      - "${NEXUS_OPENSEARCH_PORT:-9200}:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -36,61 +44,54 @@ services:
       context: .
       dockerfile: Dockerfile.tika
     ports:
-      - "9998:9998"
+      - "${NEXUS_TIKA_PORT:-9998}:9998"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9998/tika"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # Optional: local embeddings provider. Only starts with `--profile ollama`.
+  # Alternatives are OpenAI/Voyage/Cohere (configure via Settings UI — no extra service needed).
   ollama:
     image: ollama/ollama:latest
+    profiles: [ollama]
     volumes:
       - ollama-data:/root/.ollama
     ports:
-      - "11434:11434"
+      - "${NEXUS_OLLAMA_PORT:-11434}:11434"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
 
   nexus:
     build: .
+    profiles: [app]
     ports:
-      - "8080:8080"
+      - "${NEXUS_PORT:-8080}:8080"
     environment:
       NEXUS_DATABASE_URL: postgres://nexus:nexus@db:5432/nexus?sslmode=disable
       NEXUS_OPENSEARCH_URL: http://opensearch:9200
       NEXUS_TIKA_URL: http://tika:9998
+      NEXUS_OLLAMA_URL: http://ollama:11434
       NEXUS_FS_ROOT_PATH: /data
-      NEXUS_FS_PATTERNS: "*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png"
-      NEXUS_ENCRYPTION_KEY: REDACTED_DEV_ENCRYPTION_KEY
-      # Binary content cache. Mounted as a named volume so attachments /
-      # Telegram media survive container rebuilds.
+      NEXUS_FS_PATTERNS: ${NEXUS_FS_PATTERNS:-*.txt,*.md,*.pdf,*.docx,*.xlsx,*.pptx,*.doc,*.xls,*.jpg,*.png}
       NEXUS_BINARY_STORE_PATH: /var/lib/nexus/binaries
-      # JWT signing secret. If unset, a random one is generated on each boot
-      # (which logs everyone out on restart). Set explicitly for stable sessions.
-      NEXUS_JWT_SECRET: change-me-to-a-long-random-string-at-least-32-bytes
-      # CORS allowed origins (comma-separated). Add your domain when serving from
-      # something other than localhost:5173.
-      # NEXUS_CORS_ORIGINS: http://localhost:5173,https://nexus.example.com
-      # Embedding configured via Settings UI, or uncomment for env var override:
-      # NEXUS_EMBEDDING_PROVIDER: ollama
-      # NEXUS_OLLAMA_URL: http://ollama:11434
-      # For API providers instead:
-      # NEXUS_EMBEDDING_PROVIDER: openai
-      # NEXUS_EMBEDDING_API_KEY: sk-...
-      # Reranking (configured via Settings UI, or uncomment for env var):
-      # NEXUS_RERANK_PROVIDER: voyage
-      # NEXUS_RERANK_MODEL: rerank-2
+      NEXUS_ENCRYPTION_KEY: ${NEXUS_ENCRYPTION_KEY:?set NEXUS_ENCRYPTION_KEY in .env — see .env.example}
+      NEXUS_JWT_SECRET: ${NEXUS_JWT_SECRET:?set NEXUS_JWT_SECRET in .env — see .env.example}
+      NEXUS_CORS_ORIGINS: ${NEXUS_CORS_ORIGINS:-}
+      NEXUS_LOG_LEVEL: ${NEXUS_LOG_LEVEL:-info}
     volumes:
-      - ./testdata:/data:ro
+      - ${NEXUS_DATA_PATH:-./testdata}:/data:ro
       - nexus-binaries:/var/lib/nexus/binaries
     depends_on:
       db:
         condition: service_healthy
       opensearch:
+        condition: service_healthy
+      tika:
         condition: service_healthy
 
 volumes:

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@/test/test-utils";
-import { SenderAvatar, initialsFor, hueFor } from "../sender-avatar";
+import { SenderAvatar } from "../sender-avatar";
+import { initialsFor, hueFor } from "../avatar-utils";
 
 describe("initialsFor", () => {
   it("returns first+last initial for a two-word name", () => {

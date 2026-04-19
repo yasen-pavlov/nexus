@@ -1,0 +1,91 @@
+version: 2
+
+project_name: nexus
+
+before:
+  hooks:
+    # Frontend build + copy into the go:embed target so the binary ships the SPA.
+    # The shell glob preserves internal/api/static/.gitkeep so the embed target
+    # always exists, and everything under it is gitignored so the tree stays clean.
+    - sh -c "cd web && npm ci --legacy-peer-deps"
+    - sh -c "cd web && npm run build"
+    - sh -c "rm -rf internal/api/static/* && cp -r web/dist/* internal/api/static/"
+
+builds:
+  - id: nexus
+    main: ./cmd/nexus
+    binary: nexus
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: nexus
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-SNAPSHOT-{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "typo"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+
+release:
+  github:
+    owner: yasen-pavlov
+    name: nexus
+  draft: false
+  prerelease: auto
+  header: |
+    ## Nexus {{ .Tag }}
+
+    Self-hosted personal search. See the [README](https://github.com/yasen-pavlov/nexus) for the full feature list.
+  footer: |
+    ### Container image
+
+    ```
+    docker pull ghcr.io/yasen-pavlov/nexus:{{ .Tag }}
+    ```

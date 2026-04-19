@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTimeline } from "../message-list";
+import { buildTimeline } from "../timeline";
 import type { MessageRowModel } from "../message-row";
 
 function row(

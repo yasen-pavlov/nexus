@@ -1,12 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { waitFor } from "@testing-library/react";
 import { render, screen, userEvent } from "@/test/test-utils";
-import {
-  InlineImage,
-  InlineVideo,
-  mimeIsImage,
-  mimeIsVideo,
-} from "../inline-media";
+import { InlineImage, InlineVideo } from "../inline-media";
+import { mimeIsImage, mimeIsVideo } from "../mime-helpers";
 
 // --- IntersectionObserver mock shared by the visibility-gate tests.
 // Exposes the last-created observer's trigger() so tests can simulate

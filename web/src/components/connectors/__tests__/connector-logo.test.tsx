@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { siTelegram, siPaperlessngx } from "simple-icons";
 
-import { ConnectorLogo, connectorTypeLabel } from "../connector-logo";
+import { ConnectorLogo } from "../connector-logo";
+import { connectorTypeLabel } from "../connector-labels";
 import { render } from "@/test/test-utils";
 
 describe("ConnectorLogo", () => {

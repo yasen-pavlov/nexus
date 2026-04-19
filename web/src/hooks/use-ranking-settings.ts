@@ -5,6 +5,8 @@ import { fetchAPI } from "@/lib/api-client";
 import type { RankingSettings } from "@/lib/api-types";
 import { searchKeys, settingsKeys } from "@/lib/query-keys";
 
+export type UseRankingSettings = ReturnType<typeof useRankingSettings>;
+
 // The RankingManager hot-swaps these values on save — the next query sees
 // them immediately. We invalidate cached search results so the user sees
 // the new ordering without a hard refresh.

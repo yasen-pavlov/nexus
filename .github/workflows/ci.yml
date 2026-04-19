@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: nexus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      opensearch:
+        image: opensearchproject/opensearch:2
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        ports:
+          - 9200:9200
+        options: >-
+          --health-cmd "curl -sf http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      NEXUS_TEST_DATABASE_URL: postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable
+      NEXUS_TEST_OPENSEARCH_URL: http://localhost:9200
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          # Must be built with Go >= our go.mod directive (currently 1.26.1);
+          # v2.0.2 shipped with Go 1.24 and fails to load the config.
+          version: v2.11.4
+          args: --timeout=5m
+
+      - name: Unit tests
+        run: go test ./internal/...
+
+      - name: Integration tests + coverage
+        run: |
+          go test -tags integration \
+            $(go list ./internal/... | grep -v testutil) \
+            -coverprofile=coverage.out
+
+      - name: Enforce coverage floor (90%)
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit (t + 0 < 90) ? 1 : 0 }' || {
+            echo "Coverage ${total}% is below the 90% floor."
+            exit 1
+          }
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: backend-coverage
+          path: coverage.out
+          retention-days: 14
+          # Earlier steps (lint, tests) may exit before coverage.out is
+          # produced; suppress the "no files found" warning in that case.
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (web/)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        # --legacy-peer-deps: openapi-typescript@7 declares peer typescript@^5 but
+        # we run typescript@~6.0; see Dockerfile for the same note.
+        run: npm ci --legacy-peer-deps
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check + build
+        run: npm run build
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Unit tests + E2E + coverage (with floor)
+        env:
+          CI: "true"
+        run: npm run coverage:all
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: frontend-coverage
+          path: web/coverage
+          retention-days: 14
+          if-no-files-found: ignore

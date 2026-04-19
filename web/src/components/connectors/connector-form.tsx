@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { FormProvider, useForm, type Resolver } from "react-hook-form";
+import { FormProvider, useForm, useWatch, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Loader2 } from "lucide-react";
@@ -148,21 +148,31 @@ export function ConnectorForm({
   });
 
   const {
-    watch,
+    control,
+    getValues,
     setValue,
     register,
     handleSubmit,
     formState: { errors, isSubmitting, isDirty },
   } = methods;
 
-  const type = watch("type");
+  // useWatch is memoizable; `watch()` returns a non-memoizable function that
+  // trips react-hooks/incompatible-library, so everywhere we actually need
+  // a reactive value (not just defaults) we read via useWatch instead.
+  const type = useWatch({ control, name: "type" });
+  const schedule = useWatch({ control, name: "schedule" });
+  const enabled = useWatch({ control, name: "enabled" });
+  const shared = useWatch({ control, name: "shared" });
 
   useEffect(() => {
     if (mode === "edit") return;
     setValue("config", defaultConfigFor(type) as ConnectorFormValues["config"], {
       shouldValidate: false,
     });
-    if (!watch("name")) setValue("name", suggestedName(type));
+    // getValues — not watch — so we read the current name without subscribing.
+    // watch inside an effect trips react-hooks/incompatible-library because
+    // RHF's watch returns a non-memoizable function.
+    if (!getValues("name")) setValue("name", suggestedName(type));
     // Deliberate: only run when the user changes `type` in create mode.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, mode]);
@@ -215,7 +225,7 @@ export function ConnectorForm({
             description="When Nexus should run this connector automatically. Manual triggers always work."
           >
             <ScheduleField
-              value={watch("schedule") ?? ""}
+              value={schedule ?? ""}
               onChange={(next) => setValue("schedule", next, { shouldDirty: true })}
             />
           </FormSection>
@@ -225,14 +235,14 @@ export function ConnectorForm({
               <ToggleRow
                 label="Enabled"
                 hint="Disabled connectors skip scheduled syncs but stay searchable."
-                checked={watch("enabled") ?? true}
+                checked={enabled ?? true}
                 onCheckedChange={(v) => setValue("enabled", v, { shouldDirty: true })}
               />
               {isAdmin && (
                 <ToggleRow
                   label="Share with all users"
                   hint="Shared connectors are visible to everyone on this Nexus instance."
-                  checked={watch("shared") ?? false}
+                  checked={shared ?? false}
                   onCheckedChange={(v) => setValue("shared", v, { shouldDirty: true })}
                 />
               )}

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch, type Control } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
@@ -347,6 +347,11 @@ function UsersTable({
     [currentUserId, onChangePassword, onDelete],
   );
 
+  // TanStack Table's useReactTable returns methods that intentionally
+  // aren't memoized — React Compiler can't auto-memoize components that
+  // consume it. That's a library-level constraint, not a local smell, so
+  // we explicitly opt out of the warning here.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data: rows,
     columns,
@@ -571,12 +576,7 @@ function NewUserSheet({
 
               <div className="flex flex-col gap-1.5">
                 <Label className="text-[13px] font-medium">Role</Label>
-                <RolePicker
-                  value={form.watch("role")}
-                  onChange={(r) =>
-                    form.setValue("role", r, { shouldDirty: true })
-                  }
-                />
+                <RoleField control={form.control} onChange={(r) => form.setValue("role", r, { shouldDirty: true })} />
                 <p className="text-[12px] leading-[1.5] text-muted-foreground">
                   Admins can manage users, tweak settings, and reindex.
                   Regular users can search and manage their own connectors.
@@ -603,6 +603,22 @@ function NewUserSheet({
       </SheetContent>
     </Sheet>
   );
+}
+
+// `useWatch` is the memoizable equivalent of `form.watch("role")` — reading
+// it via `form.watch` directly in JSX trips react-hooks/incompatible-library
+// because watch returns a non-memoizable function. Wrapping in a subscriber
+// component keeps the role value reactive without involving the form object
+// outside RolePicker.
+function RoleField({
+  control,
+  onChange,
+}: {
+  control: Control<NewUserValues>;
+  onChange: (v: "user" | "admin") => void;
+}) {
+  const value = useWatch({ control, name: "role" });
+  return <RolePicker value={value} onChange={onChange} />;
 }
 
 function RolePicker({

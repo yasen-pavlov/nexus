@@ -29,10 +29,18 @@ export function SearchBar({ params }: Props) {
   const [mode, setMode] = useState<Mode>("search");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Mirror URL → input when the URL changes from elsewhere.
-  useEffect(() => {
-    setValue(params.q ?? "");
-  }, [params.q]);
+  // Mirror URL → input when the URL changes from *elsewhere* (e.g. a result
+  // click navigates with a different query). Tracking the last q we synced
+  // from lets us skip the mirror during the user's own typing round-trip
+  // (type → debounce → navigate → params.q updates → value already matches),
+  // and uses the "adjust state during rendering" pattern rather than a
+  // useEffect(setValue) that the React Compiler rules flag.
+  const externalQ = params.q ?? "";
+  const [lastSyncedQ, setLastSyncedQ] = useState(externalQ);
+  if (lastSyncedQ !== externalQ) {
+    setLastSyncedQ(externalQ);
+    setValue(externalQ);
+  }
 
   // Listen for the global "/" shortcut. The handler dispatches a custom
   // event so we don't have to thread a ref through the route tree.

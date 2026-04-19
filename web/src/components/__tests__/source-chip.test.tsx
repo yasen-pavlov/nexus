@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { SourceChip, sourceMetaFor } from "../source-chip";
+import { SourceChip } from "../source-chip";
+import { sourceMetaFor } from "../source-meta";
 
 describe("SourceChip", () => {
   it("default variant renders the source label and icon", () => {

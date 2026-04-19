@@ -14,7 +14,10 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 
-import { useRerankSettings } from "@/hooks/use-embedding-settings";
+import {
+  useRerankSettings,
+  type UseRerankSettings,
+} from "@/hooks/use-embedding-settings";
 import type { RerankSettings } from "@/lib/api-types";
 import {
   DEFAULT_RERANK_MODEL,
@@ -30,31 +33,48 @@ function providerLabel(value: RerankProvider): string {
 }
 
 export function RerankForm() {
-  const { data, isPending, update } = useRerankSettings();
-  const savedRef = useRef<RerankSettings | null>(null);
+  const ctx = useRerankSettings();
 
-  const [form, setForm] = useState<RerankSettings>({
+  if (ctx.isPending) {
+    return (
+      <div className="flex flex-col gap-4">
+        <Skeleton className="h-9 w-full max-w-xl" />
+        <Skeleton className="h-9 w-full max-w-xl" />
+      </div>
+    );
+  }
+
+  // Re-seed form state whenever the backend hands us a new snapshot. Keyed
+  // remount keeps the useState initializer authoritative and avoids the
+  // useEffect(setForm(data)) + savedRef-during-render pattern that the
+  // React Compiler rules reject.
+  return (
+    <RerankFormInner key={rerankFingerprint(ctx.data ?? null)} ctx={ctx} />
+  );
+}
+
+function rerankFingerprint(s: RerankSettings | null): string {
+  if (!s) return "empty";
+  return `${s.provider}|${s.model}|${s.api_key}|${s.min_score}`;
+}
+
+function RerankFormInner({ ctx }: { ctx: UseRerankSettings }) {
+  const { data, update } = ctx;
+  const saved: RerankSettings = data ?? {
     provider: "",
     model: "",
     api_key: "",
     min_score: 0.4,
-  });
+  };
+
+  const [form, setForm] = useState<RerankSettings>(saved);
   const [replacingKey, setReplacingKey] = useState(false);
 
-  useEffect(() => {
-    if (!data) return;
-    savedRef.current = data;
-    setForm(data);
-    setReplacingKey(false);
-  }, [data]);
-
-  const saved = savedRef.current;
-  const dirtyProvider = !!saved && form.provider !== saved.provider;
-  const dirtyModel = !!saved && form.model !== saved.model;
+  const dirtyProvider = form.provider !== saved.provider;
+  const dirtyModel = form.model !== saved.model;
   const dirtyKey =
     replacingKey && form.api_key !== "" && !form.api_key.startsWith("****");
-  const dirtyMinScore =
-    !!saved && Math.abs(form.min_score - saved.min_score) > 1e-6;
+  const dirtyMinScore = Math.abs(form.min_score - saved.min_score) > 1e-6;
   const dirty = dirtyProvider || dirtyModel || dirtyKey || dirtyMinScore;
 
   const needsAPIKey = ["voyage", "cohere"].includes(form.provider);
@@ -62,7 +82,7 @@ export function RerankForm() {
   const handleProviderChange = (next: RerankProvider) => {
     // Returning to the saved provider — restore the saved draft so the
     // masked key display reappears on cycle-back.
-    const returningToSaved = !!saved && saved.provider === next;
+    const returningToSaved = saved.provider === next;
     setForm((f) => ({
       ...f,
       provider: next,
@@ -75,18 +95,9 @@ export function RerankForm() {
   };
 
   const revert = () => {
-    if (saved) setForm(saved);
+    setForm(saved);
     setReplacingKey(false);
   };
-
-  if (isPending) {
-    return (
-      <div className="flex flex-col gap-4">
-        <Skeleton className="h-9 w-full max-w-xl" />
-        <Skeleton className="h-9 w-full max-w-xl" />
-      </div>
-    );
-  }
 
   return (
     <form
@@ -128,6 +139,7 @@ export function RerankForm() {
             hint="Pick a curated option or type your own."
           >
             <ModelCombobox
+              key={form.provider}
               value={form.model}
               onChange={(v) => setForm((f) => ({ ...f, model: v }))}
               options={RERANK_MODELS[form.provider] ?? []}
@@ -198,7 +210,7 @@ export function RerankForm() {
                   className="h-10 flex-1 font-mono text-[13px]"
                   autoFocus={replacingKey}
                 />
-                {replacingKey && saved?.api_key && (
+                {replacingKey && saved.api_key && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -275,6 +287,10 @@ function Field({
  * Local copy of the combobox — rerank has a smaller catalog (no dimension
  * chips, fewer notes) but the interaction is identical. Inlining avoids a
  * generic primitive pulling in EmbeddingProvider typing.
+ *
+ * Parents should `key={provider}` (or similar) this component so external
+ * value changes reset its internal edit buffer via remount rather than a
+ * useEffect(setQuery(value)) that the React Compiler rules flag.
  */
 function ModelCombobox({
   value,
@@ -290,10 +306,6 @@ function ModelCombobox({
   const [highlighted, setHighlighted] = useState(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setQuery(value);
-  }, [value]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -323,14 +335,11 @@ function ModelCombobox({
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  useEffect(() => {
-    setHighlighted(0);
-  }, [query, open]);
-
   const commit = (v: string) => {
     onChange(v);
     setQuery(v);
     setOpen(false);
+    setHighlighted(0);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -363,6 +372,7 @@ function ModelCombobox({
             setQuery(v);
             onChange(v);
             setOpen(true);
+            setHighlighted(0);
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
