@@ -72,6 +72,21 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
 
+      # Postgres SQL linting for goose migrations. SonarCloud's PL/SQL
+      # analyzer is Oracle-only, so migrations/ is out of its scope — we
+      # use sqlfluff to enforce Postgres-aware syntax + style checks.
+      # Locally runs via `make lint-sql` so verdicts stay identical.
+      - name: Set up Python (for sqlfluff)
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install sqlfluff
+        run: pip install "sqlfluff==4.1.0"
+
+      - name: sqlfluff (migrations)
+        run: make lint-sql
+
       - name: Unit tests
         run: go test ./internal/...
 

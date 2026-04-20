@@ -1,0 +1,9 @@
+# Only migrations should be linted for now. `internal/store/*.go` contains
+# embedded SQL strings but sqlfluff doesn't extract them and complaining
+# about formatting inside a .go file is a separate (harder) problem.
+web/
+internal/
+cmd/
+bin/
+docs/
+testdata/

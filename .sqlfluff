@@ -1,0 +1,51 @@
+[sqlfluff]
+# Goose migrations are plain Postgres SQL with `-- +goose Up / Down`
+# templating directives. Lint with the postgres dialect so sqlfluff
+# understands JSONB, TSVECTOR, GIN indexes, RETURNING, partial indexes,
+# `CREATE EXTENSION`, and the other Postgres-isms we use.
+dialect = postgres
+# `jinja` is the default templater; our files have no Jinja, so use the
+# raw templater to avoid spurious `{{`/`}}` parsing warnings on SQL
+# strings that happen to contain curly braces.
+templater = raw
+
+# Migration files only — keep it focused.
+sql_file_exts = .sql
+
+# Don't be pedantic about style we don't care about; keep the rule set
+# small and opinionated so the check is actionable rather than noisy.
+# The excluded rules are:
+#   LT05 — long lines; migrations are often wider for readability (CTE-heavy).
+#   LT09 — SELECT targets on new lines; we keep short selects on one line.
+#   RF02 — qualified column references; unnecessary noise in single-table DDL.
+#   RF03 — inconsistent column references; same reason.
+#   ST06 — SELECT column order; DDL columns don't need ordering policy.
+#   CP02 — case conventions on identifiers; we use snake_case for names
+#          but PascalCase for some types (TSVECTOR). Mixed by design.
+#   AM04 — query produces an unknown number of result columns; fires on
+#          SELECT * which we do occasionally use in migrations.
+#   LT02 — indent size; goose migrations use varied indent (some Oracle-
+#          style 4-space, some 2-space); the important thing is syntactic
+#          validity, not cosmetic consistency.
+#   RF04 — keywords used as identifiers. Our schema uses `type`, `name`,
+#          `content`, `key`, `value`, `role` — all legal in Postgres,
+#          flagged per SQL-92. Renaming would ripple through every Go
+#          query; not worth the churn.
+exclude_rules = LT05, LT09, RF02, RF03, ST06, CP02, AM04, LT02, RF04
+
+# Keep keywords upper-case (CREATE TABLE, NOT NULL, …) — Postgres lowercases
+# them internally but upper-case is the community convention and matches
+# the existing style in our migrations.
+[sqlfluff:rules:capitalisation.keywords]
+capitalisation_policy = upper
+
+[sqlfluff:rules:capitalisation.identifiers]
+extended_capitalisation_policy = lower
+
+[sqlfluff:rules:capitalisation.functions]
+extended_capitalisation_policy = lower
+
+# Two-space indents match the style of our hand-written migrations.
+[sqlfluff:indentation]
+tab_space_size = 4
+indent_unit = space
