@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual dry-run: lets us verify the cross-compile fits the runner
+  # (and picks up any other regressions) on a branch without publishing
+  # a real release. Invoked as `gh workflow run release.yml --ref <branch>`.
+  workflow_dispatch:
 
 jobs:
   goreleaser:
@@ -29,10 +33,24 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # Serialize the cross-compile. The hosted runner has ~16 GB of RAM
+      # but goreleaser's default parallelism (GOMAXPROCS = 4 on this
+      # runner) runs four Go cross-compiles simultaneously — between the
+      # Go toolchain working set, cached node_modules, and the linker
+      # phase, that tips over the runner and we get a silent kill with
+      # no further log output. `--parallelism 1` costs a few extra
+      # minutes per release but keeps the run deterministic.
+      #
+      # On manual dispatch, use `build --snapshot` instead of `release` so
+      # we don't create a GitHub Release / upload artifacts — just
+      # exercises the full cross-compile path to verify it fits.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --clean
+          args: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && 'build --clean --snapshot --parallelism 1'
+                || 'release --clean --parallelism 1' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
