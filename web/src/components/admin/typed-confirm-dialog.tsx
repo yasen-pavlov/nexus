@@ -45,7 +45,7 @@ export function TypedConfirmDialog({
   icon: Icon = TriangleAlert,
   variant = "destructive",
   onConfirm,
-}: TypedConfirmDialogProps) {
+}: Readonly<TypedConfirmDialogProps>) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const armed = typed === confirmPhrase;

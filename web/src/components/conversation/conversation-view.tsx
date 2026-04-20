@@ -35,7 +35,7 @@ export function ConversationView({
   onOlderIntersect,
   onNewerIntersect,
   onBack,
-}: Props) {
+}: Readonly<Props>) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const olderRef = useRef<HTMLDivElement>(null);
   const newerRef = useRef<HTMLDivElement>(null);
@@ -186,8 +186,8 @@ function MessageSkeletons() {
   const widths = [62, 78, 48, 70, 56];
   return (
     <div className="flex flex-col gap-5 py-8">
-      {widths.map((w, i) => (
-        <div key={i} className="flex gap-3">
+      {widths.map((w) => (
+        <div key={`skeleton-${w}`} className="flex gap-3">
           <div className="size-8 shrink-0 animate-pulse rounded-full bg-muted/60" />
           <div className="flex-1 space-y-2">
             <div className="h-3.5 w-28 animate-pulse rounded bg-muted/60" />
@@ -217,5 +217,5 @@ function EmptyState() {
 }
 
 function cssSafeId(id: string): string {
-  return id.replace(/([^\w-])/g, "\\$1");
+  return id.replaceAll(/([^\w-])/g, String.raw`\$1`);
 }

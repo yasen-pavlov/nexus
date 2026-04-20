@@ -21,7 +21,7 @@ export function SyncProgress({
   errors = 0,
   compact,
   className,
-}: SyncProgressProps) {
+}: Readonly<SyncProgressProps>) {
   const pct = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
   const indeterminate = total === 0;
   return (

@@ -99,38 +99,7 @@ func parseEmailBody(raw []byte) (string, []attachment) {
 		if err != nil {
 			break
 		}
-
-		switch h := part.Header.(type) {
-		case *mail.InlineHeader:
-			contentType, _, _ := h.ContentType()
-
-			body, readErr := io.ReadAll(part.Body)
-			if readErr != nil {
-				continue
-			}
-
-			switch {
-			case strings.HasPrefix(contentType, "text/plain"):
-				plainText = string(body)
-			case strings.HasPrefix(contentType, "text/html") && htmlText == "":
-				htmlText = string(body)
-			}
-
-		case *mail.AttachmentHeader:
-			filename, _ := h.Filename()
-			contentType, _, _ := h.ContentType()
-
-			data, readErr := io.ReadAll(part.Body)
-			if readErr != nil {
-				continue
-			}
-
-			attachments = append(attachments, attachment{
-				Filename:    filename,
-				ContentType: contentType,
-				Data:        data,
-			})
-		}
+		consumeMIMEPart(part, &plainText, &htmlText, &attachments)
 	}
 
 	// Prefer plain text; fall back to stripped HTML
@@ -145,6 +114,38 @@ func parseEmailBody(raw []byte) (string, []attachment) {
 	content = cleanEmailText(content)
 
 	return strings.TrimSpace(content), attachments
+}
+
+// consumeMIMEPart routes a single MIME part into one of the three accumulators
+// (plain-text body, HTML body, attachment list) based on its header kind.
+// Kept separate so parseEmailBody's outer loop has only the pagination logic.
+func consumeMIMEPart(part *mail.Part, plainText, htmlText *string, attachments *[]attachment) {
+	switch h := part.Header.(type) {
+	case *mail.InlineHeader:
+		contentType, _, _ := h.ContentType()
+		body, readErr := io.ReadAll(part.Body)
+		if readErr != nil {
+			return
+		}
+		switch {
+		case strings.HasPrefix(contentType, "text/plain"):
+			*plainText = string(body)
+		case strings.HasPrefix(contentType, "text/html") && *htmlText == "":
+			*htmlText = string(body)
+		}
+	case *mail.AttachmentHeader:
+		filename, _ := h.Filename()
+		contentType, _, _ := h.ContentType()
+		data, readErr := io.ReadAll(part.Body)
+		if readErr != nil {
+			return
+		}
+		*attachments = append(*attachments, attachment{
+			Filename:    filename,
+			ContentType: contentType,
+			Data:        data,
+		})
+	}
 }
 
 // stripHTML walks the HTML DOM and extracts the user-visible text. It drops

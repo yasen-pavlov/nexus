@@ -28,7 +28,7 @@ export function TelegramAuthPanel({
   status,
   error,
   needs2FA,
-}: TelegramAuthPanelProps) {
+}: Readonly<TelegramAuthPanelProps>) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
 
@@ -101,7 +101,7 @@ export function TelegramAuthPanel({
               <Input
                 id="tg-code"
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                onChange={(e) => setCode(e.target.value.replaceAll(/\D/g, ""))}
                 inputMode="numeric"
                 maxLength={6}
                 placeholder="12345"
@@ -152,12 +152,16 @@ function Step({
   label,
   active,
   done,
-}: {
+}: Readonly<{
   n: number;
   label: string;
   active?: boolean;
   done?: boolean;
-}) {
+}>) {
+  let badgeClass: string;
+  if (done) badgeClass = "border-transparent bg-primary text-primary-foreground";
+  else if (active) badgeClass = "border-primary text-primary";
+  else badgeClass = "border-border text-muted-foreground";
   return (
     <li
       className={cn(
@@ -169,11 +173,7 @@ function Step({
       <span
         className={cn(
           "inline-flex h-5 w-5 items-center justify-center rounded-full border",
-          done
-            ? "border-transparent bg-primary text-primary-foreground"
-            : active
-              ? "border-primary text-primary"
-              : "border-border text-muted-foreground",
+          badgeClass,
         )}
       >
         {n}

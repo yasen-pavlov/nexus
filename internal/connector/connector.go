@@ -68,10 +68,11 @@ type CacheConfig struct {
 	Mode string
 }
 
-// CacheAware is an optional capability for connectors that participate
-// in the binary cache. Connectors that accept caching (IMAP, Telegram)
-// implement this to receive the BinaryStore and their resolved policy
-// at wire-up time.
-type CacheAware interface {
+// BinaryStoreSetter is an optional capability for connectors that
+// participate in the binary cache. Connectors that accept caching (IMAP,
+// Telegram) implement this to receive the BinaryStore and their
+// resolved policy at wire-up time. Named following Go's -er convention
+// for single-method interfaces.
+type BinaryStoreSetter interface {
 	SetBinaryStore(store BinaryStoreAPI, config CacheConfig)
 }

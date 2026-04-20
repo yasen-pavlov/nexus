@@ -5,7 +5,7 @@ import type { SyncRun } from "@/lib/api-types";
 import { StatusLamp } from "./status-lamp";
 import { statusFromSync, type ConnectorStatus } from "./status";
 
-export function ActivityTimeline({ runs }: { runs: SyncRun[] }) {
+export function ActivityTimeline({ runs }: Readonly<{ runs: SyncRun[] }>) {
   if (runs.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border bg-card p-8 text-center">

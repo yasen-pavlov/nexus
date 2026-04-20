@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useAvatarBlob } from "@/hooks/use-avatar-blob";
@@ -75,7 +75,7 @@ const ConnectedSenderAvatar = memo(function ConnectedSenderAvatar({
 // LazyReplyQuote fetches the reply target lazily when the quoted
 // message isn't loaded in the current window. Returns the resolved
 // state to ReplyQuote; the pure ReplyQuote handles visual states.
-function LazyReplyQuote({ target }: { target: PendingReplyTarget }) {
+function LazyReplyQuote({ target }: Readonly<{ target: PendingReplyTarget }>) {
   const { data, isLoading, isError } = useDocumentBySource(
     target.sourceType,
     target.sourceId,
@@ -115,7 +115,7 @@ function readSenderName(d: {
 // any remaining files (PDFs, documents, etc.) click-to-download.
 // Renders inside the message bubble so media sits flush with the
 // caption/body text instead of trailing in a separate container.
-function AttachmentRow({ attachments }: { attachments: AttachmentModel[] }) {
+function AttachmentRow({ attachments }: Readonly<{ attachments: AttachmentModel[] }>) {
   const inline: AttachmentModel[] = [];
   const files: AttachmentModel[] = [];
   for (const att of attachments) {
@@ -178,7 +178,7 @@ function groupedBubbleRadius(position: GroupPosition): string {
 }
 
 function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
+  const one = s.replaceAll(/\s+/g, " ").trim();
   if (one.length <= n) return one;
   return one.slice(0, n - 1).trimEnd() + "…";
 }
@@ -191,11 +191,38 @@ export const MessageRow = memo(function MessageRow({ model }: Props) {
   const showHeader = model.position === "first" || model.position === "solo";
   const tightTop = model.position === "mid" || model.position === "last";
   const tightBottom = model.position === "first" || model.position === "mid";
+  const avatarSeed = model.senderId || model.senderName || "anon";
+
+  let avatarSlot: ReactNode;
+  if (!showHeader) {
+    avatarSlot = <div className="size-8" aria-hidden />;
+  } else if (model.avatarKey && model.connectorId && model.senderId) {
+    avatarSlot = (
+      <ConnectedSenderAvatar
+        connectorId={model.connectorId}
+        externalId={model.senderId}
+        senderName={model.senderName}
+        seed={avatarSeed}
+      />
+    );
+  } else {
+    avatarSlot = (
+      <SenderAvatar senderName={model.senderName} seed={avatarSeed} />
+    );
+  }
+
+  const hasAttachments = !!model.attachments && model.attachments.length > 0;
+  let bubbleText: ReactNode = null;
+  if (model.body) {
+    bubbleText = <span>{model.body}</span>;
+  } else if (!hasAttachments) {
+    bubbleText = <span>(no text)</span>;
+  }
 
   const row = (
     <article
       id={`msg-${model.sourceId}`}
-      tabIndex={0}
+      tabIndex={-1}
       data-group={model.position}
       className={cn(
         "group flex gap-3 px-2 outline-none",
@@ -210,25 +237,7 @@ export const MessageRow = memo(function MessageRow({ model }: Props) {
         "focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-primary/40",
       )}
     >
-      <div className="w-8 shrink-0 pt-0.5">
-        {showHeader ? (
-          model.avatarKey && model.connectorId && model.senderId ? (
-            <ConnectedSenderAvatar
-              connectorId={model.connectorId}
-              externalId={model.senderId}
-              senderName={model.senderName}
-              seed={model.senderId || model.senderName || "anon"}
-            />
-          ) : (
-            <SenderAvatar
-              senderName={model.senderName}
-              seed={model.senderId || model.senderName || "anon"}
-            />
-          )
-        ) : (
-          <div className="size-8" aria-hidden />
-        )}
-      </div>
+      <div className="w-8 shrink-0 pt-0.5">{avatarSlot}</div>
 
       <div className="min-w-0 flex-1">
         {showHeader && (
@@ -273,13 +282,9 @@ export const MessageRow = memo(function MessageRow({ model }: Props) {
               "italic text-muted-foreground/80",
           )}
         >
-          {model.body ? (
-            <span>{model.body}</span>
-          ) : !model.attachments || model.attachments.length === 0 ? (
-            <span>(no text)</span>
-          ) : null}
+          {bubbleText}
 
-          {model.attachments && model.attachments.length > 0 && (
+          {hasAttachments && model.attachments && (
             <AttachmentRow attachments={model.attachments} />
           )}
         </div>

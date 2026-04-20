@@ -34,7 +34,7 @@ export function useDocumentDownload() {
 
       let filename = suggestedFilename ?? "download";
       const disposition = res.headers.get("Content-Disposition") ?? "";
-      const match = disposition.match(/filename="?([^";]+)"?/);
+      const match = /filename="?([^";]+)"?/.exec(disposition);
       if (match) filename = match[1];
 
       const blob = await res.blob();
@@ -44,7 +44,7 @@ export function useDocumentDownload() {
       a.download = filename;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      a.remove();
       URL.revokeObjectURL(blobURL);
     },
   });

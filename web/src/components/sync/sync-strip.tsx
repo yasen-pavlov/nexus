@@ -30,7 +30,7 @@ export interface SyncStripProps {
  * The leader label shows the first running job's name + its own %; this
  * is the one the user most likely kicked off themselves.
  */
-export function SyncStrip({ stats, running, totalActive }: SyncStripProps) {
+export function SyncStrip({ stats, running, totalActive }: Readonly<SyncStripProps>) {
   const idle = running.length === 0;
   const leader = running[0];
 

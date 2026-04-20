@@ -37,7 +37,6 @@ function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> {
 
 interface Props {
   docID: string;
-  count: number;
   onNavigate: (doc: DocumentHit) => void;
 }
 
@@ -47,7 +46,7 @@ interface Props {
  * open/close, so this component renders its body immediately without an
  * internal toggle.
  */
-export function RelatedFooter({ docID, onNavigate }: Props) {
+export function RelatedFooter({ docID, onNavigate }: Readonly<Props>) {
   const { data, isLoading, error } = useRelated(docID, true);
 
   if (isLoading) {
@@ -86,9 +85,9 @@ export function RelatedFooter({ docID, onNavigate }: Props) {
       {hasOutgoing && (
         <Section title="Points to">
           <ul className="flex flex-col gap-1">
-            {data.outgoing.map((edge, i) => (
+            {data.outgoing.map((edge) => (
               <OutgoingRow
-                key={`o-${i}`}
+                key={`o-${edge.relation.type}-${edge.relation.target_id ?? edge.relation.target_source_id ?? ""}`}
                 edge={edge}
                 onNavigate={onNavigate}
               />
@@ -118,10 +117,10 @@ export function RelatedFooter({ docID, onNavigate }: Props) {
 function Section({
   title,
   children,
-}: {
+}: Readonly<{
   title: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div>
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
@@ -135,10 +134,10 @@ function Section({
 function OutgoingRow({
   edge,
   onNavigate,
-}: {
+}: Readonly<{
   edge: RelatedEdge;
   onNavigate: (d: DocumentHit) => void;
-}) {
+}>) {
   const label = labelFor(edge.relation.type, "outgoing");
   const fallbackID =
     edge.relation.target_source_id ?? edge.relation.target_id ?? "?";
@@ -172,11 +171,11 @@ function IncomingGroup({
   type,
   edges,
   onNavigate,
-}: {
+}: Readonly<{
   type: string;
   edges: RelatedEdge[];
   onNavigate: (d: DocumentHit) => void;
-}) {
+}>) {
   return (
     <div>
       <div className="flex items-baseline gap-1.5 text-[12.5px]">
@@ -203,10 +202,10 @@ function IncomingGroup({
 function IncomingRow({
   edge,
   onNavigate,
-}: {
+}: Readonly<{
   edge: RelatedEdge;
   onNavigate: (d: DocumentHit) => void;
-}) {
+}>) {
   const fallbackID =
     edge.relation.target_source_id ?? edge.relation.target_id ?? "?";
   return (

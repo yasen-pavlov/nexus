@@ -26,10 +26,10 @@ import (
 	"github.com/muty/nexus/internal/api"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
-	_ "github.com/muty/nexus/internal/connector/filesystem"
-	_ "github.com/muty/nexus/internal/connector/imap"
-	_ "github.com/muty/nexus/internal/connector/paperless"
-	_ "github.com/muty/nexus/internal/connector/telegram"
+	_ "github.com/muty/nexus/internal/connector/filesystem" // register filesystem connector via init()
+	_ "github.com/muty/nexus/internal/connector/imap"       // register imap connector via init()
+	_ "github.com/muty/nexus/internal/connector/paperless"  // register paperless connector via init()
+	_ "github.com/muty/nexus/internal/connector/telegram"   // register telegram connector via init()
 	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/pipeline"
@@ -59,12 +59,7 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	var log *zap.Logger
-	if cfg.LogLevel == "debug" {
-		log, _ = zap.NewDevelopment()
-	} else {
-		log, _ = zap.NewProduction()
-	}
+	log := newLogger(cfg.LogLevel)
 	defer log.Sync() //nolint:errcheck // best-effort flush
 
 	st, err := store.New(ctx, cfg.DatabaseURL, log)
@@ -88,34 +83,94 @@ func run() error {
 		log.Info("swept interrupted sync runs on startup", zap.Int64("count", n))
 	}
 
-	// Set up encryption for connector secrets
-	if cfg.EncryptionKey != "" {
-		key, err := crypto.NewKey(cfg.EncryptionKey)
-		if err != nil {
-			return fmt.Errorf("encryption key: %w", err)
-		}
-		st.SetEncryptionKey(key)
-
-		// Encrypt any existing plaintext configs
-		n, err := st.EncryptExistingConfigs(ctx)
-		if err != nil {
-			return fmt.Errorf("encrypt existing configs: %w", err)
-		}
-		if n > 0 {
-			log.Info("encrypted existing connector configs", zap.Int("count", n))
-		}
-
-		// Encrypt any existing plaintext sensitive settings (API keys, telegram sessions)
-		ns, err := st.EncryptExistingSettings(ctx)
-		if err != nil {
-			return fmt.Errorf("encrypt existing settings: %w", err)
-		}
-		if ns > 0 {
-			log.Info("encrypted existing sensitive settings", zap.Int("count", ns))
-		}
+	if err := setupEncryption(ctx, st, cfg.EncryptionKey, log); err != nil {
+		return err
 	}
 
-	// Set up embedding (DB settings override env vars)
+	em, searchClient, extractorRegistry, binaryStore, err := setupSearchStack(ctx, cfg, st, log)
+	if err != nil {
+		return err
+	}
+	go binaryStore.RunEviction(ctx, storage.DefaultCacheConfig, time.Hour)
+
+	cm, p, syncJobs, sched, sweeper, err := setupSyncStack(ctx, cfg, st, em, searchClient, extractorRegistry, binaryStore, log)
+	if err != nil {
+		return err
+	}
+	defer sweeper.Stop()
+
+	// Set up reranking
+	rm := api.NewRerankManager(st, log)
+	if err := rm.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load rerank settings", zap.Error(err))
+	}
+
+	// Ranking config (per-source half-life, floor, trust weight, plus
+	// rerank min score + feature toggles). Overlays any persisted overrides
+	// on top of the compiled-in defaults.
+	rankingMgr := api.NewRankingManager(st, log)
+	if err := rankingMgr.LoadFromDB(ctx); err != nil {
+		log.Warn("failed to load ranking settings", zap.Error(err))
+	}
+
+	jwtSecret, err := resolveJWTSecret(cfg.JWTSecret, log)
+	if err != nil {
+		return err
+	}
+
+	revocationCache, loginLimiter := setupAuthCaches(st)
+
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
+
+	return serve(ctx, cfg.Port, router, sched, log)
+}
+
+// newLogger builds the zap logger matching the configured log level.
+func newLogger(level string) *zap.Logger {
+	var log *zap.Logger
+	if level == "debug" {
+		log, _ = zap.NewDevelopment()
+	} else {
+		log, _ = zap.NewProduction()
+	}
+	return log
+}
+
+// setupEncryption installs the connector-secret encryption key and migrates
+// any still-plaintext configs/settings in-place. No-op when encryption is off.
+func setupEncryption(ctx context.Context, st *store.Store, encryptionKey string, log *zap.Logger) error {
+	if encryptionKey == "" {
+		return nil
+	}
+	key, err := crypto.NewKey(encryptionKey)
+	if err != nil {
+		return fmt.Errorf("encryption key: %w", err)
+	}
+	st.SetEncryptionKey(key)
+
+	n, err := st.EncryptExistingConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("encrypt existing configs: %w", err)
+	}
+	if n > 0 {
+		log.Info("encrypted existing connector configs", zap.Int("count", n))
+	}
+
+	ns, err := st.EncryptExistingSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("encrypt existing settings: %w", err)
+	}
+	if ns > 0 {
+		log.Info("encrypted existing sensitive settings", zap.Int("count", ns))
+	}
+	return nil
+}
+
+// setupSearchStack wires the embedding manager, OpenSearch client, extractor
+// registry, and binary cache store. OpenSearch mapping-drift is reported as a
+// warning so operators know to run POST /api/reindex but the server still
+// comes up on stale mappings.
+func setupSearchStack(ctx context.Context, cfg *config.Config, st *store.Store, log *zap.Logger) (*api.EmbeddingManager, *search.Client, *extractor.Registry, *storage.BinaryStore, error) {
 	em := api.NewEmbeddingManager(st, log)
 	if err := em.LoadFromDB(ctx, cfg); err != nil {
 		log.Warn("failed to load embedding settings, falling back to env vars", zap.Error(err))
@@ -133,13 +188,12 @@ func run() error {
 	// Settings UI lands this becomes a DB-backed setting.
 	languages := lang.Default()
 
-	// Set up OpenSearch
 	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, languages)
 	if err != nil {
-		return fmt.Errorf("init search: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("init search: %w", err)
 	}
 	if err := searchClient.EnsureIndex(ctx, embeddingDim); err != nil {
-		return fmt.Errorf("ensure search index: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("ensure search index: %w", err)
 	}
 	// Warn if a pre-existing index is missing the language sub-fields
 	// (upgrade path). Non-fatal: multi_match uses lenient:true so queries
@@ -149,29 +203,29 @@ func run() error {
 		log.Warn("search index mapping is out of date; run POST /api/reindex to rebuild with per-language analyzers")
 	}
 
-	// Set up content extraction
 	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages)
 
-	// Set up binary content cache. Connectors that opt in via
-	// connector.CacheAware (IMAP lazy, Telegram eager) will receive this
-	// during instantiation. Eviction runs every hour.
 	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
 	if err != nil {
-		return fmt.Errorf("init binary store: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("init binary store: %w", err)
 	}
-	go binaryStore.RunEviction(ctx, storage.DefaultCacheConfig, time.Hour)
+	return em, searchClient, extractorRegistry, binaryStore, nil
+}
 
-	// Set up connector manager
+// setupSyncStack builds the connector manager (seeded from DB + env), the
+// pipeline, the sync-job manager, the scheduler, and the retention sweeper.
+// The scheduler is started before returning so cron-triggered runs flow
+// through the sync-job manager identically to manual triggers.
+func setupSyncStack(ctx context.Context, cfg *config.Config, st *store.Store, em *api.EmbeddingManager, searchClient *search.Client, extractorRegistry *extractor.Registry, binaryStore *storage.BinaryStore, log *zap.Logger) (*api.ConnectorManager, *pipeline.Pipeline, *api.SyncJobManager, *scheduler.Scheduler, *syncruns.Sweeper, error) {
 	cm := api.NewConnectorManager(st, log)
 	cm.SetExtractor(extractorRegistry)
 	cm.SetBinaryStore(binaryStore)
 
 	if err := cm.LoadFromDB(ctx); err != nil {
-		return fmt.Errorf("load connectors from db: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("load connectors from db: %w", err)
 	}
-
 	if err := cm.SeedFromEnv(ctx, cfg); err != nil {
-		return fmt.Errorf("seed connectors from env: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("seed connectors from env: %w", err)
 	}
 
 	// Set up pipeline + sync-job manager. Both get wired into the
@@ -186,7 +240,7 @@ func run() error {
 	cm.SetScheduleObserver(sched)
 
 	if err := sched.Start(ctx); err != nil {
-		return fmt.Errorf("start scheduler: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("start scheduler: %w", err)
 	}
 
 	// Retention sweeper: periodic cleanup of sync_runs history per the
@@ -195,35 +249,27 @@ func run() error {
 	// retune retention without a restart.
 	sweeper := syncruns.NewSweeper(st, st, log)
 	sweeper.Start(ctx)
-	defer sweeper.Stop()
 
-	// Set up reranking
-	rm := api.NewRerankManager(st, log)
-	if err := rm.LoadFromDB(ctx, cfg); err != nil {
-		log.Warn("failed to load rerank settings", zap.Error(err))
+	return cm, p, syncJobs, sched, sweeper, nil
+}
+
+// resolveJWTSecret returns the configured JWT secret or generates a random
+// one, warning that sessions won't survive restarts in the latter case.
+func resolveJWTSecret(configured string, log *zap.Logger) ([]byte, error) {
+	if configured != "" {
+		return []byte(configured), nil
 	}
-
-	// Ranking config (per-source half-life, floor, trust weight, plus
-	// rerank min score + feature toggles). Overlays any persisted overrides
-	// on top of the compiled-in defaults.
-	rankingMgr := api.NewRankingManager(st, log)
-	if err := rankingMgr.LoadFromDB(ctx); err != nil {
-		log.Warn("failed to load ranking settings", zap.Error(err))
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate jwt secret: %w", err)
 	}
+	log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
+	return secret, nil
+}
 
-	// Set up JWT secret
-	jwtSecret := []byte(cfg.JWTSecret)
-	if len(jwtSecret) == 0 {
-		jwtSecret = make([]byte, 32)
-		if _, err := rand.Read(jwtSecret); err != nil {
-			return fmt.Errorf("generate jwt secret: %w", err)
-		}
-		log.Warn("no NEXUS_JWT_SECRET set, generated random secret (sessions will not survive restarts)")
-	}
-
-	// Token-revocation cache: maps user ID → current token_version with a
-	// 30 s TTL so the auth middleware doesn't issue a DB roundtrip per
-	// request. Invalidated explicitly when ChangePassword bumps the row.
+// setupAuthCaches builds the token-revocation cache (30s TTL, looks up
+// token_version per user) and the login rate limiter (5 fails / 5min).
+func setupAuthCaches(st *store.Store) (*auth.TokenRevocationCache, *auth.LoginRateLimiter) {
 	revocationCache := auth.NewTokenRevocationCache(
 		func(ctx context.Context, id uuid.UUID) (int, error) {
 			u, err := st.GetUserByID(ctx, id)
@@ -234,16 +280,15 @@ func run() error {
 		},
 		30*time.Second,
 	)
-
-	// Login rate limiter: 5 failed attempts in any rolling 5-minute window
-	// triggers a 5-minute lockout per (username, IP) bucket. Defends weak
-	// passwords against online brute force; legitimate users only hit it if
-	// they fat-finger five times in a row.
 	loginLimiter := auth.NewLoginRateLimiter(auth.DefaultLoginRateLimiterConfig())
+	return revocationCache, loginLimiter
+}
 
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
-
-	addr := fmt.Sprintf(":%d", cfg.Port)
+// serve runs the HTTP server with a graceful shutdown wired to ctx. The
+// scheduler is stopped alongside the server so in-flight jobs get a chance
+// to finish within the shutdown deadline.
+func serve(ctx context.Context, port int, router http.Handler, sched *scheduler.Scheduler, log *zap.Logger) error {
+	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: router,

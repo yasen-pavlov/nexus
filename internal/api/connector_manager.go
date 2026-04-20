@@ -17,9 +17,13 @@ import (
 )
 
 // ScheduleObserver is notified when connector schedules change.
+// ctx is the caller's context (typically an HTTP request's) so
+// observers can propagate cancellation into any follow-up work they
+// schedule — e.g. the cron scheduler captures it into the cron job's
+// closure.
 type ScheduleObserver interface {
-	OnConnectorChanged(cfg *model.ConnectorConfig)
-	OnConnectorRemoved(id uuid.UUID, name string)
+	OnConnectorChanged(ctx context.Context, cfg *model.ConnectorConfig)
+	OnConnectorRemoved(ctx context.Context, id uuid.UUID, name string)
 }
 
 // connectorEntry holds a connector instance along with its config metadata.
@@ -51,7 +55,7 @@ func (m *ConnectorManager) SetExtractor(ext *extractor.Registry) {
 }
 
 // SetBinaryStore sets the binary content cache. Connectors that
-// implement connector.CacheAware receive it (and their resolved cache
+// implement connector.BinaryStoreSetter receive it (and their resolved cache
 // policy) during instantiation.
 func (m *ConnectorManager) SetBinaryStore(bs *storage.BinaryStore) {
 	m.binaryStore = bs
@@ -165,7 +169,7 @@ func (m *ConnectorManager) Add(ctx context.Context, cfg *model.ConnectorConfig) 
 	}
 
 	if m.schedObserver != nil {
-		m.schedObserver.OnConnectorChanged(cfg)
+		m.schedObserver.OnConnectorChanged(ctx, cfg)
 	}
 
 	return nil
@@ -192,7 +196,7 @@ func (m *ConnectorManager) Update(ctx context.Context, cfg *model.ConnectorConfi
 	}
 
 	if m.schedObserver != nil {
-		m.schedObserver.OnConnectorChanged(cfg)
+		m.schedObserver.OnConnectorChanged(ctx, cfg)
 	}
 
 	return nil
@@ -232,7 +236,7 @@ func (m *ConnectorManager) Remove(ctx context.Context, id uuid.UUID) error {
 	m.mu.Unlock()
 
 	if m.schedObserver != nil {
-		m.schedObserver.OnConnectorRemoved(id, cfg.Name)
+		m.schedObserver.OnConnectorRemoved(ctx, id, cfg.Name)
 	}
 
 	return nil
@@ -316,7 +320,7 @@ func (m *ConnectorManager) instantiateConnector(cfg model.ConnectorConfig) (conn
 	// implement it (filesystem, paperless) never touch the cache and
 	// always re-fetch from source.
 	if m.binaryStore != nil {
-		if ca, ok := conn.(connector.CacheAware); ok {
+		if ca, ok := conn.(connector.BinaryStoreSetter); ok {
 			cacheCfg := storage.ResolveCacheConfig(cfg.Type, cfg.Config)
 			ca.SetBinaryStore(m.binaryStore, connector.CacheConfig{Mode: string(cacheCfg.Mode)})
 		}

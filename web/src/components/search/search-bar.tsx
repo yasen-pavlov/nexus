@@ -23,7 +23,7 @@ type Mode = "search" | "ask";
  * not wired yet). The Ask affordance telegraphs the conversational future
  * without requiring it to ship today.
  */
-export function SearchBar({ params }: Props) {
+export function SearchBar({ params }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const [value, setValue] = useState(params.q ?? "");
   const [mode, setMode] = useState<Mode>("search");
@@ -51,8 +51,8 @@ export function SearchBar({ params }: Props) {
       el.focus();
       el.select();
     };
-    window.addEventListener(FOCUS_SEARCH_EVENT, onFocus);
-    return () => window.removeEventListener(FOCUS_SEARCH_EVENT, onFocus);
+    globalThis.addEventListener(FOCUS_SEARCH_EVENT, onFocus);
+    return () => globalThis.removeEventListener(FOCUS_SEARCH_EVENT, onFocus);
   }, []);
 
   // Debounced commit to URL (search mode only).
@@ -60,13 +60,13 @@ export function SearchBar({ params }: Props) {
     if (mode !== "search") return;
     const next = value.trim();
     if (next === (params.q ?? "")) return;
-    const t = window.setTimeout(() => {
+    const t = globalThis.setTimeout(() => {
       navigate({
         search: { ...params, q: next || undefined },
         replace: true,
       });
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
+    return () => globalThis.clearTimeout(t);
   }, [value, params, navigate, mode]);
 
   const submitAsk = () => {
@@ -157,10 +157,10 @@ export function SearchBar({ params }: Props) {
 function ModeToggle({
   mode,
   onChange,
-}: {
+}: Readonly<{
   mode: Mode;
   onChange: (m: Mode) => void;
-}) {
+}>) {
   return (
     <div className="inline-flex h-7 w-fit items-center rounded-full border border-border bg-card p-0.5 text-xs">
       <ModeButton
@@ -184,12 +184,12 @@ function ModeButton({
   icon: Icon,
   active,
   onClick,
-}: {
+}: Readonly<{
   label: string;
   icon: typeof Search;
   active: boolean;
   onClick: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"

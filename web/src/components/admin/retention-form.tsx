@@ -36,7 +36,7 @@ function fingerprint(s: RetentionSettings): string {
   return `${s.retention_days}|${s.retention_per_connector}|${s.sweep_interval_minutes}`;
 }
 
-function RetentionFormInner({ ctx }: { ctx: UseRetentionSettings }) {
+function RetentionFormInner({ ctx }: Readonly<{ ctx: UseRetentionSettings }>) {
   const { data, update, runSweep } = ctx;
   const saved = data!;
   const min = saved.min_sweep_interval_minutes ?? 5;
@@ -168,14 +168,14 @@ function NumberField({
   min,
   invalid,
   onChange,
-}: {
+}: Readonly<{
   label: string;
   hint?: string;
   value: number;
   min: number;
   invalid?: boolean;
   onChange: (v: number) => void;
-}) {
+}>) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="text-[13px] font-medium">{label}</Label>

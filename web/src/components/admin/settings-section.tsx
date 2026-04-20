@@ -33,7 +33,7 @@ export function SettingsSection({
   actions,
   bare = false,
   children,
-}: SettingsSectionProps) {
+}: Readonly<SettingsSectionProps>) {
   return (
     <section id={id} className="scroll-mt-20">
       <header className="mb-4 flex items-start justify-between gap-4">

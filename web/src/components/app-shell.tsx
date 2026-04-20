@@ -67,7 +67,7 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
-export function AppShell({ user, children }: AppShellProps) {
+export function AppShell({ user, children }: Readonly<AppShellProps>) {
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const isAdmin = user.role === "admin";
@@ -89,21 +89,21 @@ export function AppShell({ user, children }: AppShellProps) {
       // If we're not on the search page, jump there first; either way the
       // SearchBar's window listener picks the focus call up after mount.
       if (currentPath !== "/") {
-        void navigate({ to: "/" });
+        navigate({ to: "/" });
       }
       // Defer one tick so the SearchBar mounts before we fire the event.
-      window.setTimeout(dispatchFocusSearch, 0);
+      globalThis.setTimeout(dispatchFocusSearch, 0);
     },
     onChord: (key: ChordKey) => {
       switch (key) {
         case "s":
-          void navigate({ to: "/" });
+          navigate({ to: "/" });
           return;
         case "c":
-          void navigate({ to: "/connectors" });
+          navigate({ to: "/connectors" });
           return;
         case "a":
-          if (isAdmin) void navigate({ to: "/admin/settings" });
+          if (isAdmin) navigate({ to: "/admin/settings" });
           return;
       }
     },
@@ -166,43 +166,45 @@ export function AppShell({ user, children }: AppShellProps) {
 
     // --- Actions ---
     const isDark = theme === "dark";
-    items.push({
-      id: "action-toggle-theme",
-      group: "Actions",
-      label: isDark ? "Switch to light theme" : "Switch to dark theme",
-      hint: "Light · Dark · System lives in your account menu",
-      icon: (
-        <PaletteIcon>
-          {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-        </PaletteIcon>
-      ),
-      onSelect: () => setTheme(isDark ? "light" : "dark"),
-    });
-    items.push({
-      id: "action-cheat-sheet",
-      group: "Actions",
-      label: "Show keyboard shortcuts",
-      hint: "All bindings, in one dialog",
-      icon: (
-        <PaletteIcon>
-          <Search className="size-4" />
-        </PaletteIcon>
-      ),
-      keyboardHint: "?",
-      onSelect: () => setCheatSheetOpen(true),
-    });
-    items.push({
-      id: "action-sign-out",
-      group: "Actions",
-      label: "Sign out",
-      hint: "Clears your session on this browser",
-      icon: (
-        <PaletteIcon tone="muted">
-          <LogOut className="size-4" />
-        </PaletteIcon>
-      ),
-      onSelect: () => logout(),
-    });
+    items.push(
+      {
+        id: "action-toggle-theme",
+        group: "Actions",
+        label: isDark ? "Switch to light theme" : "Switch to dark theme",
+        hint: "Light · Dark · System lives in your account menu",
+        icon: (
+          <PaletteIcon>
+            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </PaletteIcon>
+        ),
+        onSelect: () => setTheme(isDark ? "light" : "dark"),
+      },
+      {
+        id: "action-cheat-sheet",
+        group: "Actions",
+        label: "Show keyboard shortcuts",
+        hint: "All bindings, in one dialog",
+        icon: (
+          <PaletteIcon>
+            <Search className="size-4" />
+          </PaletteIcon>
+        ),
+        keyboardHint: "?",
+        onSelect: () => setCheatSheetOpen(true),
+      },
+      {
+        id: "action-sign-out",
+        group: "Actions",
+        label: "Sign out",
+        hint: "Clears your session on this browser",
+        icon: (
+          <PaletteIcon tone="muted">
+            <LogOut className="size-4" />
+          </PaletteIcon>
+        ),
+        onSelect: () => logout(),
+      },
+    );
 
     return items;
   }, [connectors, isAdmin, logout, navigate, setTheme, theme]);
@@ -309,7 +311,7 @@ function pageItem(
   onSelect: () => void,
 ): PaletteItem {
   return {
-    id: `page-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`,
+    id: `page-${label.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`,
     group: "Pages",
     label,
     hint,
@@ -338,7 +340,7 @@ function connectorHint(type: string): string {
   }
 }
 
-function NavRow({ item, active }: { item: NavItem; active: boolean }) {
+function NavRow({ item, active }: Readonly<{ item: NavItem; active: boolean }>) {
   const Icon = item.icon;
   return (
     <SidebarMenuItem>
@@ -372,7 +374,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-function UserCard({ user }: { user: User }) {
+function UserCard({ user }: Readonly<{ user: User }>) {
   const [open, setOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const logout = useLogout();
@@ -501,12 +503,12 @@ function ThemeRow({
   icon: Icon,
   active,
   onClick,
-}: {
+}: Readonly<{
   label: string;
   icon: typeof Sun;
   active: boolean;
   onClick: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"

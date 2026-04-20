@@ -12,6 +12,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
@@ -94,7 +95,7 @@ func (c *Connector) SetExtractor(ext *extractor.Registry) {
 }
 
 // SetBinaryStore wires the binary content cache plus the resolved
-// per-connector cache policy. Implements connector.CacheAware.
+// per-connector cache policy. Implements connector.BinaryStoreSetter.
 // Called once at wire time by ConnectorManager.instantiateConnector.
 func (c *Connector) SetBinaryStore(store connector.BinaryStoreAPI, cfg connector.CacheConfig) {
 	c.binaryStore = store
@@ -278,22 +279,8 @@ func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder s
 		folderSourceIDs = append(folderSourceIDs, fmt.Sprintf("%s:%d", folder, uid))
 	}
 
-	criteria := &imap.SearchCriteria{}
-
-	var lastUID imap.UID
-	if cursor != nil {
-		if uidVal, ok := cursor.CursorData["uid:"+folder].(float64); ok {
-			lastUID = imap.UID(uidVal)
-		}
-	}
-
-	if lastUID > 0 {
-		uidSet := imap.UIDSet{}
-		uidSet.AddRange(lastUID+1, 0) // 0 means * (all)
-		criteria.UID = []imap.UIDSet{uidSet}
-	} else if !c.syncSince.IsZero() {
-		criteria.Since = c.syncSince
-	}
+	lastUID := cursorUIDForFolder(cursor, folder)
+	criteria := buildFolderSearchCriteria(lastUID, c.syncSince)
 
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
@@ -332,6 +319,34 @@ func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder s
 	return docs, lastUID, folderSourceIDs, nil
 }
 
+// cursorUIDForFolder reads the previously-persisted last-seen UID for folder
+// out of a sync cursor, returning 0 for an absent/malformed entry.
+func cursorUIDForFolder(cursor *model.SyncCursor, folder string) imap.UID {
+	if cursor == nil {
+		return 0
+	}
+	uidVal, ok := cursor.CursorData["uid:"+folder].(float64)
+	if !ok {
+		return 0
+	}
+	return imap.UID(uidVal)
+}
+
+// buildFolderSearchCriteria builds the IMAP SEARCH criteria for fetching
+// messages strictly newer than lastUID. If there's no cursor yet but the
+// connector has a `syncSince` cutoff, falls back to a Since date filter.
+func buildFolderSearchCriteria(lastUID imap.UID, syncSince time.Time) *imap.SearchCriteria {
+	criteria := &imap.SearchCriteria{}
+	if lastUID > 0 {
+		uidSet := imap.UIDSet{}
+		uidSet.AddRange(lastUID+1, 0) // 0 means * (all)
+		criteria.UID = []imap.UIDSet{uidSet}
+	} else if !syncSince.IsZero() {
+		criteria.Since = syncSince
+	}
+	return criteria
+}
+
 func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folder string) []model.Document {
 	if msg.Envelope == nil {
 		return nil
@@ -352,13 +367,57 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 	// blobs and other non-text noise — useless for search and prone to blowing
 	// past embedding-API token limits. Skip these messages instead.
 
-	// Build metadata
+	metadata := buildEmailMetadata(env, folder, attachments)
+
+	// Build URL using mid: URI scheme
+	var msgURL string
+	if env.MessageID != "" {
+		msgURL = "mid:" + env.MessageID
+	}
+
+	createdAt := env.Date
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
+	emailRelations := buildEmailRelations(env, bodyData)
+
+	// Main email document. Subject comes off the IMAP ENVELOPE raw —
+	// RFC 2047 encoded-word subjects (common for non-ASCII European
+	// mail) need decoding before they're useful for BM25 or the UI.
+	decodedSubject := decodeHeader(env.Subject)
+	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
+	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
+	docs := []model.Document{{
+		ID:            emailDocID,
+		SourceType:    "imap",
+		SourceName:    c.name,
+		SourceID:      emailSourceID,
+		Title:         decodedSubject,
+		Content:       textContent,
+		Metadata:      metadata,
+		Relations:     emailRelations,
+		IMAPMessageID: strings.Trim(env.MessageID, " <>"),
+		URL:           msgURL,
+		Visibility:    "private",
+		CreatedAt:     createdAt,
+	}}
+
+	for i, att := range attachments {
+		docs = append(docs, c.attachmentDocument(att, i, folder, msg.UID, decodedSubject, emailSourceID, emailDocID, msgURL, createdAt))
+	}
+
+	return docs
+}
+
+// buildEmailMetadata assembles the per-email metadata map (folder, message-id,
+// date, addresses, and attachment filenames).
+func buildEmailMetadata(env *imap.Envelope, folder string, attachments []attachment) map[string]any {
 	metadata := map[string]any{
 		"folder":     folder,
 		"message_id": env.MessageID,
 		"date":       env.Date.Format(time.RFC3339),
 	}
-
 	if len(env.From) > 0 {
 		metadata["from"] = formatAddresses(env.From)
 	}
@@ -380,31 +439,21 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 			metadata["attachment_filenames"] = names
 		}
 	}
+	return metadata
+}
 
-	// Build URL using mid: URI scheme
-	var msgURL string
-	if env.MessageID != "" {
-		msgURL = "mid:" + env.MessageID
-	}
-
-	createdAt := env.Date
-	if createdAt.IsZero() {
-		createdAt = time.Now()
-	}
-
-	var docs []model.Document
-
-	// Thread + reply relations. env.InReplyTo is the direct parent
-	// Message-ID (optional); References is the full ancestor chain and
-	// we take its first entry as the canonical thread root so every
-	// message in a thread points at the same target.
-	var emailRelations []model.Relation
-	var inReplyTo string
+// buildEmailRelations derives thread + reply edges from the IMAP envelope and
+// the raw References: header. env.InReplyTo is the direct parent; the first
+// entry in References is treated as the canonical thread root so every
+// message in the thread points at the same target.
+func buildEmailRelations(env *imap.Envelope, bodyData []byte) []model.Relation {
+	var relations []model.Relation
+	inReplyTo := ""
 	if len(env.InReplyTo) > 0 {
 		inReplyTo = strings.Trim(env.InReplyTo[0], " <>")
 	}
 	if inReplyTo != "" {
-		emailRelations = append(emailRelations, model.Relation{
+		relations = append(relations, model.Relation{
 			Type:           model.RelationReplyTo,
 			TargetSourceID: inReplyTo,
 		})
@@ -418,91 +467,68 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 		threadRoot = inReplyTo
 	}
 	if threadRoot != "" {
-		emailRelations = append(emailRelations, model.Relation{
+		relations = append(relations, model.Relation{
 			Type:           model.RelationMemberOfThread,
 			TargetSourceID: threadRoot,
 		})
 	}
+	return relations
+}
 
-	// Main email document. Subject comes off the IMAP ENVELOPE raw —
-	// RFC 2047 encoded-word subjects (common for non-ASCII European
-	// mail) need decoding before they're useful for BM25 or the UI.
-	decodedSubject := decodeHeader(env.Subject)
-	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
-	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
-	docs = append(docs, model.Document{
-		ID:            emailDocID,
-		SourceType:    "imap",
-		SourceName:    c.name,
-		SourceID:      emailSourceID,
-		Title:         decodedSubject,
-		Content:       textContent,
-		Metadata:      metadata,
-		Relations:     emailRelations,
-		IMAPMessageID: strings.Trim(env.MessageID, " <>"),
-		URL:           msgURL,
-		Visibility:    "private",
-		CreatedAt:     createdAt,
-	})
-
-	// Attachment documents — always emitted, even when extraction fails or is
-	// unsupported. The doc carries empty content in that case but full metadata
-	// (filename, mime type, size) so it remains discoverable and previewable
-	// once an IMAP BinaryFetcher is implemented.
-	for i, att := range attachments {
-		var extracted string
-		if c.extractor != nil && c.extractor.CanExtract(att.ContentType) {
-			if out, err := c.extractor.Extract(context.Background(), att.ContentType, att.Data); err == nil {
-				extracted = out
-			}
-		}
-
-		attMetadata := map[string]any{
-			"parent_subject": decodedSubject,
-			"content_type":   att.ContentType,
-		}
-		if att.Filename != "" {
-			attMetadata["filename"] = att.Filename
-		}
-
-		attSourceID := fmt.Sprintf("%s:%d:attachment:%d", folder, msg.UID, i)
-		docs = append(docs, model.Document{
-			ID:         model.DocumentID("imap", c.name, attSourceID),
-			SourceType: "imap",
-			SourceName: c.name,
-			SourceID:   attSourceID,
-			Title:      att.Filename,
-			Content:    extracted,
-			MimeType:   att.ContentType,
-			Size:       int64(len(att.Data)),
-			Metadata:   attMetadata,
-			Relations: []model.Relation{{
-				Type:           model.RelationAttachmentOf,
-				TargetSourceID: emailSourceID,
-				TargetID:       emailDocID.String(),
-			}},
-			URL:        msgURL,
-			Visibility: "private",
-			CreatedAt:  createdAt,
-		})
-
-		// Eager cache population: the attachment bytes are already in
-		// memory from the MIME parse — dropping them here means the
-		// first preview click would have to re-fetch the entire email
-		// from IMAP. When the admin has opted into eager mode on this
-		// connector we proactively cache. Best-effort — a cache write
-		// failure shouldn't abort the sync.
-		if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
-			_ = c.binaryStore.Put(
-				context.Background(),
-				"imap", c.name, attSourceID,
-				bytes.NewReader(att.Data),
-				int64(len(att.Data)),
-			)
+// attachmentDocument builds the Document for a single attachment and, when
+// configured, eagerly populates the binary cache with the bytes already in
+// memory.
+func (c *Connector) attachmentDocument(att attachment, index int, folder string, uid imap.UID, parentSubject, emailSourceID string, emailDocID uuid.UUID, msgURL string, createdAt time.Time) model.Document {
+	var extracted string
+	if c.extractor != nil && c.extractor.CanExtract(att.ContentType) {
+		if out, err := c.extractor.Extract(context.Background(), att.ContentType, att.Data); err == nil {
+			extracted = out
 		}
 	}
 
-	return docs
+	attMetadata := map[string]any{
+		"parent_subject": parentSubject,
+		"content_type":   att.ContentType,
+	}
+	if att.Filename != "" {
+		attMetadata["filename"] = att.Filename
+	}
+
+	attSourceID := fmt.Sprintf("%s:%d:attachment:%d", folder, uid, index)
+	doc := model.Document{
+		ID:         model.DocumentID("imap", c.name, attSourceID),
+		SourceType: "imap",
+		SourceName: c.name,
+		SourceID:   attSourceID,
+		Title:      att.Filename,
+		Content:    extracted,
+		MimeType:   att.ContentType,
+		Size:       int64(len(att.Data)),
+		Metadata:   attMetadata,
+		Relations: []model.Relation{{
+			Type:           model.RelationAttachmentOf,
+			TargetSourceID: emailSourceID,
+			TargetID:       emailDocID.String(),
+		}},
+		URL:        msgURL,
+		Visibility: "private",
+		CreatedAt:  createdAt,
+	}
+
+	// Eager cache population: the attachment bytes are already in memory from
+	// the MIME parse — dropping them here means the first preview click would
+	// have to re-fetch the entire email from IMAP. When the admin has opted
+	// into eager mode we proactively cache. Best-effort — a cache write
+	// failure shouldn't abort the sync.
+	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
+		_ = c.binaryStore.Put(
+			context.Background(),
+			"imap", c.name, attSourceID,
+			bytes.NewReader(att.Data),
+			int64(len(att.Data)),
+		)
+	}
+	return doc
 }
 
 func formatAddresses(addrs []imap.Address) string {

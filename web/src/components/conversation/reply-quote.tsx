@@ -16,7 +16,7 @@ interface Props {
   state: ReplyQuoteState;
 }
 
-export function ReplyQuote({ state }: Props) {
+export function ReplyQuote({ state }: Readonly<Props>) {
   if (state.status === "loading") {
     return (
       <div className="mb-1.5 flex items-center gap-2 rounded-r-md border-l-2 border-border/60 bg-muted/25 pl-2.5 pr-3 py-1 text-[12.5px]">
@@ -77,10 +77,10 @@ export function ReplyQuote({ state }: Props) {
 function ReplyQuoteInner({
   authorName,
   snippet,
-}: {
+}: Readonly<{
   authorName: string;
   snippet: string;
-}) {
+}>) {
   return (
     <>
       <CornerUpLeft

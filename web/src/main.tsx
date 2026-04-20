@@ -14,7 +14,7 @@ import "./index.css";
 // On 401, drop cached user data and bounce to the login page.
 setUnauthorizedHandler(() => {
   queryClient.setQueryData(["auth", "me"], null);
-  void router.navigate({ to: "/login" });
+  router.navigate({ to: "/login" });
 });
 
 createRoot(document.getElementById("root")!).render(

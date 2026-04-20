@@ -14,6 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	errInvalidRequestBody = "invalid request body"
+	errRegistrationFailed = "registration failed"
+	errChangePasswordFail = "failed to change password"
+)
+
 type registerRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -61,7 +67,7 @@ type changePasswordRequest struct {
 func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -72,7 +78,7 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "registration failed")
+		writeError(w, http.StatusInternalServerError, errRegistrationFailed)
 		return
 	}
 
@@ -90,13 +96,13 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.log.Error("create first admin failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "registration failed")
+		writeError(w, http.StatusInternalServerError, errRegistrationFailed)
 		return
 	}
 
 	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "registration failed")
+		writeError(w, http.StatusInternalServerError, errRegistrationFailed)
 		return
 	}
 
@@ -119,7 +125,7 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -229,7 +235,7 @@ func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 func (h *handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -359,7 +365,7 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	var req changePasswordRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	if len(req.Password) < 8 {
@@ -369,7 +375,7 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to change password")
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
 		return
 	}
 
@@ -379,7 +385,7 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.log.Error("change password failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to change password")
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
 		return
 	}
 
@@ -397,28 +403,34 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// changes-someone-else, we deliberately return 204 with no new token,
 	// since the goal IS to revoke that user's existing sessions.
 	if claims.UserID == id {
-		user, err := h.store.GetUserByID(r.Context(), id)
-		if err != nil {
-			h.log.Error("change password: re-fetch user", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to change password")
-			return
-		}
-		token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to change password")
-			return
-		}
-		writeJSON(w, http.StatusOK, authResponse{
-			Token: token,
-			User: &userResponse{
-				ID:        user.ID,
-				Username:  user.Username,
-				Role:      user.Role,
-				CreatedAt: user.CreatedAt,
-			},
-		})
+		h.issueRotatedToken(w, r, id)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// issueRotatedToken mints a fresh JWT for a user who just rotated their own
+// password, so the caller stays signed in without bouncing to /login.
+func (h *handler) issueRotatedToken(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	user, err := h.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		h.log.Error("change password: re-fetch user", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
+		return
+	}
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
+		return
+	}
+	writeJSON(w, http.StatusOK, authResponse{
+		Token: token,
+		User: &userResponse{
+			ID:        user.ID,
+			Username:  user.Username,
+			Role:      user.Role,
+			CreatedAt: user.CreatedAt,
+		},
+	})
 }

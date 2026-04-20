@@ -158,12 +158,12 @@ function MaintenanceRow({
   title,
   description,
   onClick,
-}: {
+}: Readonly<{
   icon: React.ReactNode;
   title: string;
   description: React.ReactNode;
   onClick: () => void;
-}) {
+}>) {
   return (
     <div className="flex items-start gap-3 rounded-md border border-destructive/30 bg-destructive/[0.04] px-4 py-3">
       <div

@@ -84,7 +84,7 @@ export function CommandPalette({
   onOpenChange,
   items,
   placeholder = "Jump to or search…",
-}: CommandPaletteProps) {
+}: Readonly<CommandPaletteProps>) {
   const [query, setQuery] = useState("");
   // userActiveId tracks the user's explicit selection (via arrows / hover).
   // Reset to null whenever the visible list changes by way of `query`.
@@ -96,8 +96,8 @@ export function CommandPalette({
   // root by default — defer one tick so our focus call wins.
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(id);
+    const id = globalThis.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => globalThis.clearTimeout(id);
   }, [open]);
 
   const grouped = useMemo(() => groupItems(items, query), [items, query]);
@@ -155,7 +155,6 @@ export function CommandPalette({
         item.onSelect();
         handleOpenChange(false);
       }
-      return;
     }
   };
 
@@ -264,12 +263,12 @@ function PaletteRow({
   active,
   onSelect,
   onHover,
-}: {
+}: Readonly<{
   item: PaletteItem;
   active: boolean;
   onSelect: () => void;
   onHover: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"
@@ -307,7 +306,7 @@ function PaletteRow({
   );
 }
 
-function EmptyResult({ query }: { query: string }) {
+function EmptyResult({ query }: Readonly<{ query: string }>) {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
       <div
@@ -330,7 +329,7 @@ function EmptyResult({ query }: { query: string }) {
   );
 }
 
-function KeyHint({ label, keys }: { label: string; keys: string[] }) {
+function KeyHint({ label, keys }: Readonly<{ label: string; keys: string[] }>) {
   return (
     <span className="inline-flex items-center gap-1">
       {keys.map((k) => (
@@ -358,11 +357,11 @@ export function PaletteIcon({
   children,
   tone = "primary",
   sourceVar,
-}: {
+}: Readonly<{
   children: ReactNode;
   tone?: "primary" | "source" | "muted";
   sourceVar?: string; // e.g. "--source-imap"
-}) {
+}>) {
   if (tone === "source" && sourceVar) {
     return (
       <span

@@ -21,7 +21,7 @@ function formatBytes(n?: number): string {
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
-export function FilesystemCardBody({ hit }: { hit: DocumentHit }) {
+export function FilesystemCardBody({ hit }: Readonly<{ hit: DocumentHit }>) {
   const m = hit.metadata ?? {};
   const path = str(m.path) ?? hit.source_id;
   const extension = str(m.extension);

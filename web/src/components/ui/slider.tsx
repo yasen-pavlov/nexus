@@ -27,7 +27,7 @@ export function Slider({
   disabled,
   className,
   ...rest
-}: SliderProps) {
+}: Readonly<SliderProps>) {
   return (
     <SliderPrimitive.Root
       value={value}

@@ -29,7 +29,7 @@ export function ConnectorsLoading() {
  * at the "workbench" metaphor without being loud. Single primary CTA
  * opens the create sheet — no secondary distractions.
  */
-export function ConnectorsEmpty({ onAdd }: { onAdd: () => void }) {
+export function ConnectorsEmpty({ onAdd }: Readonly<{ onAdd: () => void }>) {
   return (
     <div className="relative overflow-hidden rounded-xl border border-border bg-card px-8 py-16 text-center">
       <div

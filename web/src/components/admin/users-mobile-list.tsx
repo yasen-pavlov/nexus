@@ -30,7 +30,7 @@ export function UsersMobileList({
   currentUserId,
   onChangePassword,
   onDelete,
-}: UsersMobileListProps) {
+}: Readonly<UsersMobileListProps>) {
   return (
     <div className="flex flex-col gap-2">
       {rows.map((u) => {
@@ -101,7 +101,7 @@ export function UsersMobileList({
   );
 }
 
-function InitialsTile({ username }: { username: string }) {
+function InitialsTile({ username }: Readonly<{ username: string }>) {
   const initials = username.slice(0, 2).toUpperCase();
   return (
     <span
@@ -121,7 +121,7 @@ function YouBadge() {
   );
 }
 
-function RoleBadge({ role }: { role: "admin" | "user" }) {
+function RoleBadge({ role }: Readonly<{ role: "admin" | "user" }>) {
   if (role === "admin") {
     return (
       <span
@@ -142,7 +142,7 @@ function RoleBadge({ role }: { role: "admin" | "user" }) {
       <span
         aria-hidden
         className="size-1.5 rounded-full bg-muted-foreground/50"
-      />
+      />{" "}
       user
     </span>
   );

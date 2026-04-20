@@ -133,92 +133,9 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		default:
 		}
 
-		doc := &result.Documents[i]
-		parentID := doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
-		docID := model.DocumentID(doc.SourceType, doc.SourceName, doc.SourceID).String()
-
-		// Chunk the document
-		textChunks := chunking.Split(doc.Content, chunking.DefaultMaxTokens, chunking.DefaultOverlapTokens)
-		if len(textChunks) == 0 {
-			textChunks = []chunking.Chunk{{Index: 0, Text: doc.Content}}
-		}
-
-		// Build model chunks
-		chunks := make([]model.Chunk, len(textChunks))
-		for j, tc := range textChunks {
-			chunks[j] = model.Chunk{
-				ID:             fmt.Sprintf("%s:%d", parentID, tc.Index),
-				ParentID:       parentID,
-				DocID:          docID,
-				ChunkIndex:     tc.Index,
-				Title:          doc.Title,
-				Content:        tc.Text,
-				SourceType:     doc.SourceType,
-				SourceName:     doc.SourceName,
-				SourceID:       doc.SourceID,
-				MimeType:       doc.MimeType,
-				Size:           doc.Size,
-				Metadata:       doc.Metadata,
-				Relations:      doc.Relations,
-				ConversationID: doc.ConversationID,
-				IMAPMessageID:  doc.IMAPMessageID,
-				Hidden:         doc.Hidden,
-				URL:            doc.URL,
-				Visibility:     doc.Visibility,
-				OwnerID:        ownerID,
-				Shared:         shared,
-				CreatedAt:      doc.CreatedAt,
-			}
-			if tc.Index == 0 {
-				chunks[j].FullContent = doc.Content
-			}
-		}
-
-		// Generate embeddings for chunks that pass the noise gate. Chunks with
-		// low alphabetic-token count get indexed for BM25 only — they don't
-		// contribute a vector to kNN search. See minEmbeddingAlphabeticTokens
-		// for the rationale (noise hubs in embedding space).
-		//
-		// Hidden documents (Telegram per-message canonical records) skip
-		// embedding entirely. They exist for relation targeting and chat-
-		// browser pagination — their content is already covered by the
-		// parent conversation window, and embedding them would re-introduce
-		// the short-message noise-hub problem windowing was built to solve.
-		embedder := p.getEmbedder()
-		if embedder != nil && !doc.Hidden && len(doc.Content) >= minEmbeddingContentLen {
-			var embedTexts []string
-			var embedIndices []int // index into chunks for each text we send
-			for j, c := range chunks {
-				if countAlphabeticTokens(c.Content) >= minEmbeddingAlphabeticTokens {
-					embedTexts = append(embedTexts, c.Content)
-					embedIndices = append(embedIndices, j)
-				}
-			}
-
-			if len(embedTexts) > 0 {
-				embeddings, err := embedder.Embed(ctx, embedTexts, embedding.InputTypeDocument)
-				if err != nil {
-					p.log.Warn("embedding failed, indexing without vectors",
-						zap.String("source_id", doc.SourceID),
-						zap.Error(err),
-					)
-				} else if len(embeddings) == len(embedTexts) {
-					for k, idx := range embedIndices {
-						chunks[idx].Embedding = embeddings[k]
-					}
-				}
-			}
-		}
-
-		// Index chunks
-		if err := p.search.IndexChunks(ctx, chunks); err != nil {
-			p.log.Error("failed to index document",
-				zap.String("source_id", doc.SourceID),
-				zap.Error(err),
-			)
+		if err := p.indexDocument(ctx, &result.Documents[i], ownerID, shared); err != nil {
 			errCount++
 		}
-
 		processed = i + 1
 		if progress != nil {
 			progress(total, processed, errCount)
@@ -256,6 +173,105 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 	return report, nil
 }
 
+// indexDocument chunks a single document, optionally embeds the chunks that
+// pass the noise gate, and indexes them in OpenSearch. Returns an error only
+// for the indexing step — embedding failures are logged and the chunks are
+// still indexed (without vectors) so BM25 coverage stays intact.
+func (p *Pipeline) indexDocument(ctx context.Context, doc *model.Document, ownerID string, shared bool) error {
+	chunks := buildDocumentChunks(doc, ownerID, shared)
+	p.populateChunkEmbeddings(ctx, doc, chunks)
+	if err := p.search.IndexChunks(ctx, chunks); err != nil {
+		p.log.Error("failed to index document",
+			zap.String("source_id", doc.SourceID),
+			zap.Error(err),
+		)
+		return err
+	}
+	return nil
+}
+
+// buildDocumentChunks splits doc.Content into chunks and fans the document's
+// metadata (title, source, visibility, ownership) down onto each one. The
+// first chunk additionally carries FullContent for highlight fallbacks.
+func buildDocumentChunks(doc *model.Document, ownerID string, shared bool) []model.Chunk {
+	parentID := doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
+	docID := model.DocumentID(doc.SourceType, doc.SourceName, doc.SourceID).String()
+
+	textChunks := chunking.Split(doc.Content, chunking.DefaultMaxTokens, chunking.DefaultOverlapTokens)
+	if len(textChunks) == 0 {
+		textChunks = []chunking.Chunk{{Index: 0, Text: doc.Content}}
+	}
+
+	chunks := make([]model.Chunk, len(textChunks))
+	for j, tc := range textChunks {
+		chunks[j] = model.Chunk{
+			ID:             fmt.Sprintf("%s:%d", parentID, tc.Index),
+			ParentID:       parentID,
+			DocID:          docID,
+			ChunkIndex:     tc.Index,
+			Title:          doc.Title,
+			Content:        tc.Text,
+			SourceType:     doc.SourceType,
+			SourceName:     doc.SourceName,
+			SourceID:       doc.SourceID,
+			MimeType:       doc.MimeType,
+			Size:           doc.Size,
+			Metadata:       doc.Metadata,
+			Relations:      doc.Relations,
+			ConversationID: doc.ConversationID,
+			IMAPMessageID:  doc.IMAPMessageID,
+			Hidden:         doc.Hidden,
+			URL:            doc.URL,
+			Visibility:     doc.Visibility,
+			OwnerID:        ownerID,
+			Shared:         shared,
+			CreatedAt:      doc.CreatedAt,
+		}
+		if tc.Index == 0 {
+			chunks[j].FullContent = doc.Content
+		}
+	}
+	return chunks
+}
+
+// populateChunkEmbeddings fills in Embedding for chunks that pass the noise
+// gate. Hidden documents (Telegram per-message canonical records) and
+// very-short content skip embedding entirely — their vectors would cluster
+// near every query, so they're BM25-only by design.
+func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Document, chunks []model.Chunk) {
+	embedder := p.getEmbedder()
+	if embedder == nil || doc.Hidden || len(doc.Content) < minEmbeddingContentLen {
+		return
+	}
+
+	var embedTexts []string
+	var embedIndices []int
+	for j, c := range chunks {
+		if countAlphabeticTokens(c.Content) >= minEmbeddingAlphabeticTokens {
+			embedTexts = append(embedTexts, c.Content)
+			embedIndices = append(embedIndices, j)
+		}
+	}
+	if len(embedTexts) == 0 {
+		return
+	}
+
+	embeddings, err := embedder.Embed(ctx, embedTexts, embedding.InputTypeDocument)
+	if err != nil {
+		p.log.Warn("embedding failed, indexing without vectors",
+			zap.String("source_id", doc.SourceID),
+			zap.Error(err),
+		)
+		return
+	}
+	if len(embeddings) != len(embedTexts) {
+		return
+	}
+	for k, idx := range embedIndices {
+		chunks[idx].Embedding = embeddings[k]
+	}
+}
+
 // reconcileDeletions diffs the indexed source_ids against the
 // connector's authoritative CurrentSourceIDs list and removes the
 // stragglers (plus their cached binaries when a BinaryStore is
@@ -284,6 +300,30 @@ func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceNam
 		return 0
 	}
 
+	stale := computeStaleSourceIDs(indexed, currentSourceIDs)
+	if len(stale) == 0 {
+		return 0
+	}
+
+	if err := p.search.DeleteBySourceIDs(ctx, sourceType, sourceName, stale); err != nil {
+		p.log.Warn("deletion sync: delete failed; skipping cache cleanup",
+			zap.String("connector", sourceName),
+			zap.Int("stale_count", len(stale)),
+			zap.Error(err))
+		return 0
+	}
+
+	p.cascadeBinaryDelete(ctx, sourceType, sourceName, stale)
+
+	p.log.Info("deletion sync: removed stale documents",
+		zap.String("connector", sourceName),
+		zap.Int("count", len(stale)))
+	return len(stale)
+}
+
+// computeStaleSourceIDs returns the source_ids present in indexed that aren't
+// in currentSourceIDs (or a colon-suffix child of one).
+func computeStaleSourceIDs(indexed, currentSourceIDs []string) []string {
 	keep := make(map[string]struct{}, len(currentSourceIDs))
 	for _, sid := range currentSourceIDs {
 		keep[sid] = struct{}{}
@@ -303,36 +343,24 @@ func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceNam
 		}
 		stale = append(stale, sid)
 	}
-	if len(stale) == 0 {
-		return 0
-	}
+	return stale
+}
 
-	if err := p.search.DeleteBySourceIDs(ctx, sourceType, sourceName, stale); err != nil {
-		p.log.Warn("deletion sync: delete failed; skipping cache cleanup",
-			zap.String("connector", sourceName),
-			zap.Int("stale_count", len(stale)),
-			zap.Error(err))
-		return 0
+// cascadeBinaryDelete best-effort removes cached blobs for stale source_ids.
+// A leftover blob is harmless (eviction picks it up); a leftover chunk has
+// already been removed in reconcileDeletions above.
+func (p *Pipeline) cascadeBinaryDelete(ctx context.Context, sourceType, sourceName string, stale []string) {
+	if p.binaryStore == nil {
+		return
 	}
-
-	// Cascade to BinaryStore — best-effort. A leftover blob is harmless
-	// (eviction picks it up); a leftover chunk shows up in search and is
-	// already gone above.
-	if p.binaryStore != nil {
-		for _, sid := range stale {
-			if err := p.binaryStore.Delete(ctx, sourceType, sourceName, sid); err != nil {
-				p.log.Debug("deletion sync: binary cache delete failed",
-					zap.String("connector", sourceName),
-					zap.String("source_id", sid),
-					zap.Error(err))
-			}
+	for _, sid := range stale {
+		if err := p.binaryStore.Delete(ctx, sourceType, sourceName, sid); err != nil {
+			p.log.Debug("deletion sync: binary cache delete failed",
+				zap.String("connector", sourceName),
+				zap.String("source_id", sid),
+				zap.Error(err))
 		}
 	}
-
-	p.log.Info("deletion sync: removed stale documents",
-		zap.String("connector", sourceName),
-		zap.Int("count", len(stale)))
-	return len(stale)
 }
 
 // isChildOfKept reports whether sid is a colon-suffix child of any

@@ -75,7 +75,7 @@ function ConnectorsPage() {
           }
         : undefined,
       sync:
-        job && job.status === "running"
+        job?.status === "running"
           ? {
               jobId: job.id,
               processed: job.docs_processed,
@@ -85,6 +85,50 @@ function ConnectorsPage() {
           : undefined,
     };
   });
+
+  let listSection: React.ReactNode;
+  if (isLoading) {
+    listSection = <ConnectorsLoading />;
+  } else if (rows.length === 0) {
+    listSection = <ConnectorsEmpty onAdd={() => setSheetOpen(true)} />;
+  } else {
+    listSection = (
+      <ul className="flex flex-col gap-3">
+        {rows.map((row) => (
+          <li key={row.id}>
+            <ConnectorCard
+              row={row}
+              onSync={(id) => void triggerSync(id)}
+              onCancel={(jobId) => void cancelSync(jobId)}
+              onResetCursor={(id) => void resetCursor(id)}
+              onDelete={(id) => {
+                const r = rows.find((x) => x.id === id);
+                if (r) setPendingDelete(r);
+              }}
+              onToggleShared={
+                user.role === "admin"
+                  ? (id, next) => {
+                      const cfg = connectors.find((c) => c.id === id);
+                      if (!cfg) return;
+                      updateConnector({
+                        id: cfg.id,
+                        type: cfg.type,
+                        name: cfg.name,
+                        config: cfg.config,
+                        enabled: cfg.enabled,
+                        schedule: cfg.schedule,
+                        shared: next,
+                      });
+                    }
+                  : undefined
+              }
+              canManage={user.role === "admin" || !row.shared}
+            />
+          </li>
+        ))}
+      </ul>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-8">
@@ -120,46 +164,7 @@ function ConnectorsPage() {
         </div>
       </header>
 
-      {isLoading ? (
-        <ConnectorsLoading />
-      ) : rows.length === 0 ? (
-        <ConnectorsEmpty onAdd={() => setSheetOpen(true)} />
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {rows.map((row) => (
-            <li key={row.id}>
-              <ConnectorCard
-                row={row}
-                onSync={(id) => void triggerSync(id)}
-                onCancel={(jobId) => void cancelSync(jobId)}
-                onResetCursor={(id) => void resetCursor(id)}
-                onDelete={(id) => {
-                  const r = rows.find((x) => x.id === id);
-                  if (r) setPendingDelete(r);
-                }}
-                onToggleShared={
-                  user.role === "admin"
-                    ? (id, next) => {
-                        const cfg = connectors.find((c) => c.id === id);
-                        if (!cfg) return;
-                        void updateConnector({
-                          id: cfg.id,
-                          type: cfg.type,
-                          name: cfg.name,
-                          config: cfg.config,
-                          enabled: cfg.enabled,
-                          schedule: cfg.schedule,
-                          shared: next,
-                        });
-                      }
-                    : undefined
-                }
-                canManage={user.role === "admin" || !row.shared}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+      {listSection}
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
         <SheetContent side="right" className="w-full p-0 sm:max-w-xl">

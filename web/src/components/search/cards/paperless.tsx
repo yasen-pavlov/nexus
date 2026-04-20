@@ -29,7 +29,7 @@ interface Props {
   onDownload?: (hit: DocumentHit) => void;
 }
 
-export function PaperlessCardBody({ hit, onDownload }: Props) {
+export function PaperlessCardBody({ hit, onDownload }: Readonly<Props>) {
   const m = hit.metadata ?? {};
   const correspondent = str(m.correspondent);
   const docType = str(m.document_type);

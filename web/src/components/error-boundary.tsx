@@ -40,7 +40,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <ErrorPage
           kind="error"
           error={this.state.error}
-          onReload={() => window.location.reload()}
+          onReload={() => globalThis.location.reload()}
         />
       );
     }

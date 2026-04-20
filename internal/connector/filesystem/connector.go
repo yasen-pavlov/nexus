@@ -78,14 +78,7 @@ func (c *Connector) Validate() error {
 }
 
 func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error) {
-	var lastSync time.Time
-	if cursor != nil {
-		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
-			lastSync, _ = time.Parse(time.RFC3339Nano, ts)
-		}
-	} else if !c.syncSince.IsZero() {
-		lastSync = c.syncSince
-	}
+	lastSync := resolveFilesystemCursor(cursor, c.syncSince)
 
 	var docs []model.Document
 	// Every matching file's source_id, regardless of the lastSync filter.
@@ -101,66 +94,13 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if d.IsDir() {
-			return nil
+		doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
+		if relPath != "" {
+			currentSourceIDs = append(currentSourceIDs, relPath)
 		}
-
-		if !c.matchesPattern(d.Name()) {
-			return nil
+		if ok {
+			docs = append(docs, doc)
 		}
-
-		info, err := d.Info()
-		if err != nil {
-			return nil // skip files we can't stat
-		}
-
-		relPathForID, _ := filepath.Rel(c.rootPath, path)
-		currentSourceIDs = append(currentSourceIDs, relPathForID)
-
-		// Incremental sync: skip files not modified since last sync
-		if !lastSync.IsZero() && info.ModTime().Before(lastSync) {
-			return nil
-		}
-
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil // skip files we can't read
-		}
-
-		relPath := relPathForID
-		contentType := detectContentType(d.Name())
-
-		// Try extraction. On failure or unsupported type, the doc is still emitted
-		// with empty content so it remains discoverable by metadata (filename, type)
-		// and previewable via the BinaryFetcher path.
-		var textContent string
-		if c.extractor != nil && c.extractor.CanExtract(contentType) {
-			extracted, err := c.extractor.Extract(ctx, contentType, raw)
-			if err == nil {
-				textContent = extracted
-			}
-		}
-
-		docs = append(docs, model.Document{
-			ID:         model.DocumentID("filesystem", c.name, relPath),
-			SourceType: "filesystem",
-			SourceName: c.name,
-			SourceID:   relPath,
-			Title:      d.Name(),
-			Content:    textContent,
-			MimeType:   contentType,
-			Size:       info.Size(),
-			Metadata: map[string]any{
-				"path":         relPath,
-				"size":         info.Size(),
-				"extension":    filepath.Ext(d.Name()),
-				"content_type": contentType,
-			},
-			URL:        "file://" + path,
-			Visibility: "private",
-			CreatedAt:  info.ModTime(),
-		})
-
 		return nil
 	})
 	if err != nil {
@@ -184,6 +124,77 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 			ItemsSynced: len(docs),
 		},
 	}, nil
+}
+
+// resolveFilesystemCursor reads the persisted last_sync_time out of the
+// cursor; falls back to the connector's syncSince cutoff on first run.
+func resolveFilesystemCursor(cursor *model.SyncCursor, syncSince time.Time) time.Time {
+	if cursor != nil {
+		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
+			t, _ := time.Parse(time.RFC3339Nano, ts)
+			return t
+		}
+		return time.Time{}
+	}
+	if !syncSince.IsZero() {
+		return syncSince
+	}
+	return time.Time{}
+}
+
+// processWalkEntry inspects a single filesystem entry during Fetch's WalkDir.
+// Returns (doc, relPath, emit). relPath is non-empty for every enumerated
+// file (regardless of whether it was re-indexed this run) so deletion sync
+// gets the authoritative set; emit is true only when a Document should be
+// indexed.
+func (c *Connector) processWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync time.Time) (model.Document, string, bool) {
+	if d.IsDir() || !c.matchesPattern(d.Name()) {
+		return model.Document{}, "", false
+	}
+	info, err := d.Info()
+	if err != nil {
+		return model.Document{}, "", false // skip files we can't stat
+	}
+	relPath, _ := filepath.Rel(c.rootPath, path)
+	// Incremental sync: skip files not modified since last sync, but still
+	// record their source_id for deletion reconciliation above.
+	if !lastSync.IsZero() && info.ModTime().Before(lastSync) {
+		return model.Document{}, relPath, false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return model.Document{}, relPath, false // skip files we can't read
+	}
+	contentType := detectContentType(d.Name())
+	textContent := ""
+	// Try extraction. On failure or unsupported type, the doc is still
+	// emitted with empty content so it remains discoverable by metadata
+	// (filename, type) and previewable via the BinaryFetcher path.
+	if c.extractor != nil && c.extractor.CanExtract(contentType) {
+		if extracted, err := c.extractor.Extract(ctx, contentType, raw); err == nil {
+			textContent = extracted
+		}
+	}
+	doc := model.Document{
+		ID:         model.DocumentID("filesystem", c.name, relPath),
+		SourceType: "filesystem",
+		SourceName: c.name,
+		SourceID:   relPath,
+		Title:      d.Name(),
+		Content:    textContent,
+		MimeType:   contentType,
+		Size:       info.Size(),
+		Metadata: map[string]any{
+			"path":         relPath,
+			"size":         info.Size(),
+			"extension":    filepath.Ext(d.Name()),
+			"content_type": contentType,
+		},
+		URL:        "file://" + path,
+		Visibility: "private",
+		CreatedAt:  info.ModTime(),
+	}
+	return doc, relPath, true
 }
 
 func (c *Connector) matchesPattern(name string) bool {

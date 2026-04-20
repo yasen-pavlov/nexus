@@ -101,17 +101,17 @@ type telegramAuthCodeRequest struct {
 func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
 	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 
@@ -216,7 +216,7 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
@@ -226,10 +226,10 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 	claims := nauth.UserFromContext(r.Context())
@@ -240,7 +240,7 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 
 	var req telegramAuthCodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 

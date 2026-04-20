@@ -35,11 +35,11 @@ function detectPreset(expr: string): Preset {
 }
 
 function parseDaily(expr: string): { hour: number; minute: number } {
-  const m = expr.match(/^(\d+) (\d+) \* \* \*$/);
+  const m = /^(\d+) (\d+) \* \* \*$/.exec(expr);
   return m ? { hour: Number(m[2]), minute: Number(m[1]) } : { hour: 9, minute: 0 };
 }
 function parseWeekly(expr: string): { hour: number; minute: number; days: number[] } {
-  const m = expr.match(/^(\d+) (\d+) \* \* ([0-6,]+)$/);
+  const m = /^(\d+) (\d+) \* \* ([0-6,]+)$/.exec(expr);
   if (!m) return { hour: 9, minute: 0, days: [1] };
   return {
     hour: Number(m[2]),
@@ -62,7 +62,7 @@ export interface ScheduleFieldProps {
  * translates the stored expression to English via cronstrue and shows
  * the next fire time via cron-parser.
  */
-export function ScheduleField({ value, onChange, className }: ScheduleFieldProps) {
+export function ScheduleField({ value, onChange, className }: Readonly<ScheduleFieldProps>) {
   const preset = detectPreset(value);
   const [customDraft, setCustomDraft] = useState(value);
 
@@ -171,10 +171,14 @@ export function ScheduleField({ value, onChange, className }: ScheduleFieldProps
 
         {preset === "custom" && (
           <div className="space-y-2">
-            <label className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+            <label
+              htmlFor="schedule-field-cron-input"
+              className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
+            >
               Cron expression · minute hour dom month dow
             </label>
             <Input
+              id="schedule-field-cron-input"
               value={customDraft}
               onChange={(e) => setCustom(e.target.value)}
               placeholder="0 */4 * * *"
@@ -207,28 +211,32 @@ export function ScheduleField({ value, onChange, className }: ScheduleFieldProps
 function HourRuler({
   hour,
   onChange,
-}: {
+}: Readonly<{
   hour: number;
   onChange: (hour: number) => void;
-}) {
+}>) {
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
-        <label className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
           Run at
-        </label>
+        </span>
         <span className="text-[13px] tabular-nums text-foreground">
           {String(hour).padStart(2, "0")}:00
         </span>
       </div>
       <div>
         <div className="flex h-10 items-end gap-[2px]">
-          {Array.from({ length: 24 }).map((_, h) => {
+          {Array.from({ length: 24 }, (_, h) => h).map((h) => {
             const active = h === hour;
             const isMajor = h % 6 === 0;
+            let barHeight: number;
+            if (active) barHeight = 32;
+            else if (isMajor) barHeight = 18;
+            else barHeight = 10;
             return (
               <button
-                key={h}
+                key={`hour-${h}`}
                 type="button"
                 onClick={() => onChange(h)}
                 aria-label={`${String(h).padStart(2, "0")}:00`}
@@ -236,7 +244,7 @@ function HourRuler({
                   "flex-1 rounded-sm transition-colors",
                   active ? "bg-primary" : "bg-border/80 hover:bg-foreground/40",
                 )}
-                style={{ height: active ? 32 : isMajor ? 18 : 10 }}
+                style={{ height: barHeight }}
               />
             );
           })}
@@ -256,10 +264,10 @@ function HourRuler({
 function DayStrip({
   selected,
   onChange,
-}: {
+}: Readonly<{
   selected: Set<number>;
   onChange: (next: Set<number>) => void;
-}) {
+}>) {
   const toggle = (d: number) => {
     const next = new Set(selected);
     if (next.has(d)) next.delete(d);
@@ -269,9 +277,9 @@ function DayStrip({
   };
   return (
     <div>
-      <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+      <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
         Days of week
-      </label>
+      </span>
       <div className="flex gap-1.5">
         {DAY_DISPLAY.map((label, idx) => {
           const cronDay = DAY_CRON[idx];

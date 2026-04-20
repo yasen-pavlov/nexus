@@ -21,7 +21,7 @@ export interface StatsMobileListProps {
  * gets a card with the connectors-page tonal spine, brass logo plate,
  * and a 2-col stat grid below the heading.
  */
-export function StatsMobileList({ rows }: StatsMobileListProps) {
+export function StatsMobileList({ rows }: Readonly<StatsMobileListProps>) {
   return (
     <div className="flex flex-col gap-2">
       {rows.map((row) => (
@@ -114,11 +114,11 @@ function Stat({
   label,
   value,
   wide = false,
-}: {
+}: Readonly<{
   label: string;
   value: React.ReactNode;
   wide?: boolean;
-}) {
+}>) {
   return (
     <div className={wide ? "col-span-2" : undefined}>
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/70">

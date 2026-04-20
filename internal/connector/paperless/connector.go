@@ -15,6 +15,10 @@ import (
 	"github.com/muty/nexus/internal/model"
 )
 
+// authTokenPrefix is the scheme used by the Paperless-ngx API for
+// token-based authentication on the Authorization header.
+const authTokenPrefix = "Token "
+
 func init() {
 	connector.Register("paperless", func() connector.Connector {
 		return &Connector{client: &http.Client{Timeout: 30 * time.Second}}
@@ -64,7 +68,7 @@ func (c *Connector) Validate() error {
 	if err != nil {
 		return fmt.Errorf("paperless: %w", err)
 	}
-	req.Header.Set("Authorization", "Token "+c.token)
+	req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -176,52 +180,56 @@ func (c *Connector) enumerateAllIDs(ctx context.Context) ([]string, error) {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+		pageIDs, next, err := c.fetchIDPage(ctx, fetchURL)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Token "+c.token)
-
-		resp, err := c.client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		body, err := func() (struct {
-			Results []struct {
-				ID int `json:"id"`
-			} `json:"results"`
-			Next *string `json:"next"`
-		}, error) {
-			defer resp.Body.Close() //nolint:errcheck // HTTP response body
-			if resp.StatusCode != http.StatusOK {
-				return struct {
-					Results []struct {
-						ID int `json:"id"`
-					} `json:"results"`
-					Next *string `json:"next"`
-				}{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
-			}
-			var page struct {
-				Results []struct {
-					ID int `json:"id"`
-				} `json:"results"`
-				Next *string `json:"next"`
-			}
-			err := json.NewDecoder(resp.Body).Decode(&page)
-			return page, err
-		}()
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range body.Results {
-			ids = append(ids, strconv.Itoa(r.ID))
-		}
-		fetchURL = ""
-		if body.Next != nil {
-			fetchURL = *body.Next
-		}
+		ids = append(ids, pageIDs...)
+		fetchURL = next
 	}
 	return ids, nil
+}
+
+// paperlessIDPage is a trimmed Paperless paginated response containing just
+// document IDs — used by enumerateAllIDs for deletion sync.
+type paperlessIDPage struct {
+	Results []struct {
+		ID int `json:"id"`
+	} `json:"results"`
+	Next *string `json:"next"`
+}
+
+// fetchIDPage retrieves a single page of document IDs and returns the IDs plus
+// the URL of the next page (empty string when done).
+func (c *Connector) fetchIDPage(ctx context.Context, pageURL string) ([]string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", authTokenPrefix+c.token)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck // HTTP response body
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	var page paperlessIDPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, "", err
+	}
+	ids := make([]string, 0, len(page.Results))
+	for _, r := range page.Results {
+		ids = append(ids, strconv.Itoa(r.ID))
+	}
+	next := ""
+	if page.Next != nil {
+		next = *page.Next
+	}
+	return ids, next, nil
 }
 
 // paperlessDoc represents a document from the Paperless API.
@@ -250,7 +258,7 @@ func (c *Connector) fetchPage(ctx context.Context, pageURL string) ([]paperlessD
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("Authorization", "Token "+c.token)
+	req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -294,7 +302,7 @@ func (c *Connector) fetchLookup(ctx context.Context, path string) (map[int]strin
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Token "+c.token)
+		req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 		resp, err := c.client.Do(req)
 		if err != nil {

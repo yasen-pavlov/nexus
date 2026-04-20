@@ -126,7 +126,7 @@ func TestResolveWindowMatch_NilCases(t *testing.T) {
 
 	t.Run("empty headline", func(t *testing.T) {
 		hit := hitWith("content", "", "c", []any{lineMeta(1, "x", "A", "", 1, "")})
-		if m := resolveWindowMatch(hit); m != nil {
+		if resolveWindowMatch(hit) != nil {
 			t.Errorf("expected nil when headline is empty")
 		}
 	})
@@ -136,7 +136,7 @@ func TestResolveWindowMatch_NilCases(t *testing.T) {
 		hit.SourceType = "telegram"
 		hit.Content = "x"
 		hit.Metadata = map[string]any{}
-		if m := resolveWindowMatch(hit); m != nil {
+		if resolveWindowMatch(hit) != nil {
 			t.Errorf("expected nil without message_lines")
 		}
 	})
@@ -144,7 +144,7 @@ func TestResolveWindowMatch_NilCases(t *testing.T) {
 	t.Run("no mark tag in headline", func(t *testing.T) {
 		lines := []any{lineMeta(1, "hello", "A", "", 1, "2026-04-08T10:00:00Z")}
 		hit := hitWith("hello", "hello", "c", lines)
-		if m := resolveWindowMatch(hit); m != nil {
+		if resolveWindowMatch(hit) != nil {
 			t.Errorf("expected nil without <mark>")
 		}
 	})
@@ -154,7 +154,7 @@ func TestResolveWindowMatch_NilCases(t *testing.T) {
 		// Highlight references a term that isn't in content — shouldn't happen in practice
 		// but verify the guard.
 		hit := hitWith("hello", "goodbye <mark>world</mark>", "c", lines)
-		if m := resolveWindowMatch(hit); m != nil {
+		if resolveWindowMatch(hit) != nil {
 			t.Errorf("expected nil when fragment doesn't appear in content")
 		}
 	})

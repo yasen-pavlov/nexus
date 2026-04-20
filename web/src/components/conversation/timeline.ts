@@ -9,6 +9,41 @@ interface BuildOptions {
   gapMinutes?: number;
 }
 
+function isSameBurst(
+  a: MessageRowModel,
+  b: MessageRowModel,
+  da: Date,
+  db: Date,
+  gapMs: number,
+): boolean {
+  return (
+    a.senderId !== null &&
+    a.senderId === b.senderId &&
+    isSameDay(da, db) &&
+    Math.abs(db.getTime() - da.getTime()) < gapMs
+  );
+}
+
+function dayMarker(d: Date): TimelineItem {
+  return {
+    kind: "day",
+    id: `day-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`,
+    date: d,
+  };
+}
+
+// 2-bit lookup from (samePrev, sameNext) to burst position.
+const POSITION: Record<string, GroupPosition> = {
+  "true|true": "mid",
+  "true|false": "last",
+  "false|true": "first",
+  "false|false": "solo",
+};
+
+function burstPosition(samePrev: boolean, sameNext: boolean): GroupPosition {
+  return POSITION[`${samePrev}|${sameNext}`];
+}
+
 export function buildTimeline(
   rows: MessageRowModel[],
   { gapMinutes = 5 }: BuildOptions = {},
@@ -17,48 +52,24 @@ export function buildTimeline(
   const gapMs = gapMinutes * 60_000;
   let lastDate: Date | null = null;
 
-  const sameBurst = (
-    a: MessageRowModel,
-    b: MessageRowModel,
-    da: Date,
-    db: Date,
-  ) =>
-    a.senderId !== null &&
-    a.senderId === b.senderId &&
-    isSameDay(da, db) &&
-    Math.abs(db.getTime() - da.getTime()) < gapMs;
-
   for (let i = 0; i < rows.length; i++) {
-    const r = rows[i]!;
+    const r = rows[i];
     const d = new Date(r.createdAt);
 
-    if (!lastDate || !isSameDay(d, lastDate)) {
-      items.push({
-        kind: "day",
-        id: `day-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`,
-        date: d,
-      });
-    }
+    if (!lastDate || !isSameDay(d, lastDate)) items.push(dayMarker(d));
     lastDate = d;
 
     const prev = rows[i - 1];
     const next = rows[i + 1];
-    const prevDate = prev ? new Date(prev.createdAt) : null;
-    const nextDate = next ? new Date(next.createdAt) : null;
+    const samePrev =
+      !!prev && isSameBurst(prev, r, new Date(prev.createdAt), d, gapMs);
+    const sameNext =
+      !!next && isSameBurst(r, next, d, new Date(next.createdAt), gapMs);
 
-    const samePrev = !!prev && !!prevDate && sameBurst(prev, r, prevDate, d);
-    const sameNext = !!next && !!nextDate && sameBurst(r, next, d, nextDate);
-
-    const position: GroupPosition =
-      samePrev && sameNext
-        ? "mid"
-        : samePrev
-          ? "last"
-          : sameNext
-            ? "first"
-            : "solo";
-
-    items.push({ kind: "message", model: { ...r, position } });
+    items.push({
+      kind: "message",
+      model: { ...r, position: burstPosition(samePrev, sameNext) },
+    });
   }
 
   return items;

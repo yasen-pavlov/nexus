@@ -26,7 +26,7 @@ function ConversationRoute() {
   // search URL). Falls back to the index when the conversation route
   // was opened as the session's entry point (deep link, reload).
   const onBack = () => {
-    if (window.history.length > 1) {
+    if (globalThis.history.length > 1) {
       router.history.back();
       return;
     }

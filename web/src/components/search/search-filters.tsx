@@ -41,7 +41,7 @@ function activeDateLabel(params: SearchParams): string {
   return `${from} → ${to}`;
 }
 
-export function SearchFilters({ params, facets }: Props) {
+export function SearchFilters({ params, facets }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const [dateOpen, setDateOpen] = useState(false);
 
@@ -76,13 +76,20 @@ export function SearchFilters({ params, facets }: Props) {
     if (key === "any") {
       update({ date_from: undefined, date_to: undefined });
     } else {
-      const days =
-        key === "24h" ? 1 : key === "7d" ? 7 : key === "30d" ? 30 : 90;
+      const DAYS_BY_PRESET: Record<Exclude<DatePresetKey, "any">, number> = {
+        "24h": 1,
+        "7d": 7,
+        "30d": 30,
+        "90d": 90,
+        ytd: 90,
+      };
+      const days = DAYS_BY_PRESET[key] ?? 90;
+      const dateFrom =
+        key === "ytd"
+          ? `${new Date().getFullYear()}-01-01`
+          : isoDaysAgo(days);
       update({
-        date_from:
-          key === "ytd"
-            ? `${new Date().getFullYear()}-01-01`
-            : isoDaysAgo(days),
+        date_from: dateFrom,
         date_to: undefined,
       });
     }

@@ -17,8 +17,7 @@ type AnyNavigate = (opts: {
   params?: Record<string, string>;
   search?:
     | SearchParams
-    | { anchor_id?: number; anchor_ts?: string }
-    | undefined;
+    | { anchor_id?: number; anchor_ts?: string };
   replace?: boolean;
 }) => void;
 
@@ -26,7 +25,7 @@ interface Props {
   params: SearchParams;
 }
 
-export function SearchResults({ params }: Props) {
+export function SearchResults({ params }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const query = params.q?.trim() ?? "";
   const filters = paramsToFilters(params);
@@ -55,21 +54,23 @@ export function SearchResults({ params }: Props) {
     // matching message inside a window, jump to that message. Falls
     // back to the window's connector-emitted anchor (first message),
     // then to the hit's own created_at for timestamp.
-    const anchorID =
-      typeof hit.match_message_id === "number"
-        ? hit.match_message_id
-        : typeof hit.metadata?.anchor_message_id === "number"
-          ? hit.metadata.anchor_message_id
-          : typeof hit.metadata?.message_id === "number"
-            ? hit.metadata.message_id
-            : undefined;
+    let anchorID: number | undefined;
+    if (typeof hit.match_message_id === "number") {
+      anchorID = hit.match_message_id;
+    } else if (typeof hit.metadata?.anchor_message_id === "number") {
+      anchorID = hit.metadata.anchor_message_id;
+    } else if (typeof hit.metadata?.message_id === "number") {
+      anchorID = hit.metadata.message_id;
+    }
 
-    const anchorTs =
-      typeof hit.match_created_at === "string"
-        ? hit.match_created_at
-        : typeof hit.metadata?.anchor_created_at === "string"
-          ? hit.metadata.anchor_created_at
-          : hit.created_at;
+    let anchorTs: string | undefined;
+    if (typeof hit.match_created_at === "string") {
+      anchorTs = hit.match_created_at;
+    } else if (typeof hit.metadata?.anchor_created_at === "string") {
+      anchorTs = hit.metadata.anchor_created_at;
+    } else {
+      anchorTs = hit.created_at;
+    }
 
     navigate({
       to: "/conversations/$sourceType/$conversationId",
@@ -146,7 +147,7 @@ export function SearchResults({ params }: Props) {
 
       <div className="text-[12px] text-muted-foreground">
         <span className="tabular-nums text-foreground">{total}</span>
-        <span className="ml-1">result{total !== 1 ? "s" : ""} for</span>{" "}
+        <span className="ml-1">result{total === 1 ? "" : "s"} for</span>{" "}
         <span className="text-foreground">&ldquo;{query}&rdquo;</span>
       </div>
 
@@ -167,7 +168,9 @@ export function SearchResults({ params }: Props) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void fetchNextPage()}
+            onClick={() => {
+              fetchNextPage();
+            }}
             disabled={isFetchingNextPage}
           >
             {isFetchingNextPage ? (

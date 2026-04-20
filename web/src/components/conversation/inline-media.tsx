@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { FileWarning, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,7 +9,7 @@ interface InlineImageProps {
   filename: string;
 }
 
-export function InlineImage({ id, filename }: InlineImageProps) {
+export function InlineImage({ id, filename }: Readonly<InlineImageProps>) {
   const { data, isLoading, isError } = useDocumentBlob(id);
   const [open, setOpen] = useState(false);
 
@@ -58,7 +58,7 @@ interface InlineVideoProps {
 // when the component actually becomes visible — videos can be tens of
 // megabytes and the window can hold dozens of messages, so eager
 // fetching every video would blow through bandwidth and memory.
-export function InlineVideo({ id, filename }: InlineVideoProps) {
+export function InlineVideo({ id, filename }: Readonly<InlineVideoProps>) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
@@ -81,38 +81,43 @@ export function InlineVideo({ id, filename }: InlineVideoProps) {
 
   const { data, isLoading, isError } = useDocumentBlob(id, visible);
 
+  let body: ReactNode;
+  if (!visible || isLoading) {
+    body = <MediaPlaceholder label={filename} />;
+  } else if (isError || !data) {
+    body = <MediaError label={filename} />;
+  } else {
+    body = (
+      <>
+        <video
+          src={data}
+          controls
+          preload="metadata"
+          className="block max-h-[360px] max-w-full"
+        >
+          <track kind="captions" />
+        </video>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Expand video"
+          className={cn(
+            "absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground backdrop-blur-sm",
+            "hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          )}
+        >
+          Expand
+        </button>
+      </>
+    );
+  }
+
   return (
     <div
       ref={wrapperRef}
       className="relative w-fit max-w-full overflow-hidden rounded-md"
     >
-      {!visible || isLoading ? (
-        <MediaPlaceholder label={filename} />
-      ) : isError || !data ? (
-        <MediaError label={filename} />
-      ) : (
-        <>
-          <video
-            src={data}
-            controls
-            preload="metadata"
-            className="block max-h-[360px] max-w-full"
-          >
-            <track kind="captions" />
-          </video>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            aria-label="Expand video"
-            className={cn(
-              "absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground backdrop-blur-sm",
-              "hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-            )}
-          >
-            Expand
-          </button>
-        </>
-      )}
+      {body}
       {open && data && (
         <Lightbox onClose={() => setOpen(false)} filename={filename}>
           <video
@@ -148,12 +153,12 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") handleClose();
     };
-    window.addEventListener("keydown", onKey);
+    globalThis.addEventListener("keydown", onKey);
     // Prevent body scroll while the lightbox is open.
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
+      globalThis.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
   }, [handleClose]);
@@ -163,9 +168,21 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
       role="dialog"
       aria-modal="true"
       aria-label={filename}
-      onClick={handleClose}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
     >
+      {/*
+        Backdrop dismiss. A full-bleed button sits behind the content so a
+        click anywhere outside the media closes the lightbox. Escape key
+        is handled by the effect above, so keyboard users already have a
+        dismiss affordance — the button is effectively pointer-only but
+        satisfies the jsx-a11y rule for interactive elements.
+      */}
+      <button
+        type="button"
+        aria-label={`Close ${filename}`}
+        onClick={handleClose}
+        className="absolute inset-0 size-full cursor-default bg-transparent"
+      />
       <button
         type="button"
         onClick={handleClose}
@@ -174,13 +191,13 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
       >
         <X className="size-4" aria-hidden />
       </button>
-      <div onClick={(e) => e.stopPropagation()}>{children}</div>
+      <div className="relative">{children}</div>
     </div>,
     document.body,
   );
 }
 
-function MediaPlaceholder({ label }: { label: string }) {
+function MediaPlaceholder({ label }: Readonly<{ label: string }>) {
   return (
     <div className="flex h-40 w-72 items-center justify-center gap-2 text-[12px] text-muted-foreground">
       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -189,7 +206,7 @@ function MediaPlaceholder({ label }: { label: string }) {
   );
 }
 
-function MediaError({ label }: { label: string }) {
+function MediaError({ label }: Readonly<{ label: string }>) {
   return (
     <div className="flex h-32 w-64 items-center justify-center gap-2 text-[12px] italic text-muted-foreground/80">
       <FileWarning className="size-3.5" aria-hidden />

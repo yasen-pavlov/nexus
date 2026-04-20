@@ -30,7 +30,7 @@ export function DeleteConnectorDialog({
   connectorName,
   connectorType,
   onConfirm,
-}: DeleteConnectorDialogProps) {
+}: Readonly<DeleteConnectorDialogProps>) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const armed = typed === connectorName;

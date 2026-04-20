@@ -24,7 +24,7 @@ const DEFAULTS: {
 } = {
   halfLife: { telegram: 14, imap: 30, filesystem: 90, paperless: 180 },
   floor: { telegram: 0.65, imap: 0.75, filesystem: 0.85, paperless: 0.9 },
-  trust: { telegram: 0.92, imap: 0.92, filesystem: 1.0, paperless: 1.05 },
+  trust: { telegram: 0.92, imap: 0.92, filesystem: 1, paperless: 1.05 },
 };
 
 // Presets per source — "Fresh" tilts toward recent-docs-win, "Archive"
@@ -36,7 +36,7 @@ const PRESETS: Record<string, Record<string, SourceKnobs>> = {
   telegram: {
     Balanced: { halfLife: 14, floor: 0.65, trust: 0.92 },
     Fresh: { halfLife: 3, floor: 0.4, trust: 0.92 },
-    Archive: { halfLife: 60, floor: 0.9, trust: 1.0 },
+    Archive: { halfLife: 60, floor: 0.9, trust: 1 },
   },
   imap: {
     Balanced: { halfLife: 30, floor: 0.75, trust: 0.92 },
@@ -44,13 +44,13 @@ const PRESETS: Record<string, Record<string, SourceKnobs>> = {
     Archive: { halfLife: 180, floor: 0.95, trust: 1.05 },
   },
   filesystem: {
-    Balanced: { halfLife: 90, floor: 0.85, trust: 1.0 },
-    Fresh: { halfLife: 14, floor: 0.6, trust: 1.0 },
+    Balanced: { halfLife: 90, floor: 0.85, trust: 1 },
+    Fresh: { halfLife: 14, floor: 0.6, trust: 1 },
     Archive: { halfLife: 365, floor: 0.95, trust: 1.1 },
   },
   paperless: {
     Balanced: { halfLife: 180, floor: 0.9, trust: 1.05 },
-    Fresh: { halfLife: 30, floor: 0.7, trust: 1.0 },
+    Fresh: { halfLife: 30, floor: 0.7, trust: 1 },
     Archive: { halfLife: 365, floor: 0.98, trust: 1.15 },
   },
 };
@@ -100,7 +100,7 @@ function rankingFingerprint(s: RankingSettings): string {
   ].join("|");
 }
 
-function RankingFormInner({ ctx }: { ctx: UseRankingSettings }) {
+function RankingFormInner({ ctx }: Readonly<{ ctx: UseRankingSettings }>) {
   const { data, update } = ctx;
   const saved = data!;
   const [form, setForm] = useState<RankingSettings>(saved);
@@ -255,12 +255,12 @@ function SignalsCard({
   metadataEnabled,
   onTrustChange,
   onMetadataChange,
-}: {
+}: Readonly<{
   trustEnabled: boolean;
   metadataEnabled: boolean;
   onTrustChange: (v: boolean) => void;
   onMetadataChange: (v: boolean) => void;
-}) {
+}>) {
   return (
     <div className="rounded-md border border-border/70 bg-background/40 p-4">
       <div className="mb-3">
@@ -295,12 +295,12 @@ function ToggleRow({
   description,
   active,
   onChange,
-}: {
+}: Readonly<{
   label: string;
   description: string;
   active: boolean;
   onChange: (v: boolean) => void;
-}) {
+}>) {
   return (
     <button
       type="button"
@@ -358,7 +358,7 @@ function SourceCard({
   dirtyFromDefaults,
   onChange,
   onReset,
-}: SourceCardProps) {
+}: Readonly<SourceCardProps>) {
   const presets = useMemo(() => PRESETS[sourceType] ?? {}, [sourceType]);
   const activePreset = useMemo(() => {
     for (const [name, p] of Object.entries(presets)) {
@@ -493,7 +493,7 @@ function SliderRow({
   disabled,
   hint,
   onChange,
-}: {
+}: Readonly<{
   label: string;
   suffix: string;
   value: number;
@@ -503,7 +503,7 @@ function SliderRow({
   disabled?: boolean;
   hint?: string;
   onChange: (v: number) => void;
-}) {
+}>) {
   return (
     <div className={cn("flex flex-col gap-1.5", disabled && "opacity-60")}>
       <div className="flex items-baseline justify-between gap-3">
@@ -532,7 +532,7 @@ function SliderRow({
 // Decay curve visualization
 // ---------------------------------------------------------------------------
 
-function DecayCurve({ halfLife, floor }: { halfLife: number; floor: number }) {
+function DecayCurve({ halfLife, floor }: Readonly<{ halfLife: number; floor: number }>) {
   // Outer canvas is generous: left padding gives the Y-axis labels their
   // own gutter (otherwise "100" overlaps the curve at the top-left),
   // bottom padding gives the X-axis labels room below the axis line.
@@ -730,12 +730,15 @@ function plainLanguage(knobs: SourceKnobs, trustDisabled: boolean): string {
   const halfTxt = halfLifeLabel(knobs.halfLife);
   const floorPct = Math.round(knobs.floor * 100);
   const trustTxt = trustLabel(knobs.trust);
-  const trustPhrase = trustDisabled
-    ? "Trust disabled globally."
-    : trustTxt === "neutral"
-      ? "Neutral rerank weight."
-      : trustTxt.startsWith("+")
-        ? `Boosted ${trustTxt} at the rerank stage.`
-        : `Penalized ${trustTxt.replace("-", "")} at the rerank stage.`;
+  let trustPhrase: string;
+  if (trustDisabled) {
+    trustPhrase = "Trust disabled globally.";
+  } else if (trustTxt === "neutral") {
+    trustPhrase = "Neutral rerank weight.";
+  } else if (trustTxt.startsWith("+")) {
+    trustPhrase = `Boosted ${trustTxt} at the rerank stage.`;
+  } else {
+    trustPhrase = `Penalized ${trustTxt.replace("-", "")} at the rerank stage.`;
+  }
   return `Half-relevance after ${halfTxt}, never dropping below ${floorPct}%. ${trustPhrase}`;
 }

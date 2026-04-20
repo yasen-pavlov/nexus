@@ -107,13 +107,13 @@ func TestBuildSearchQuery_AlwaysExcludesHidden(t *testing.T) {
 	// of whether filter clauses are also present.
 	match := map[string]any{"match_all": map[string]any{}}
 	q := buildSearchQuery(match, nil)
-	bool_, ok := q["bool"].(map[string]any)
+	boolClause, ok := q["bool"].(map[string]any)
 	if !ok {
 		t.Fatal("expected bool wrapper even with no filters")
 	}
-	mustNot, ok := bool_["must_not"].([]map[string]any)
+	mustNot, ok := boolClause["must_not"].([]map[string]any)
 	if !ok || len(mustNot) == 0 {
-		t.Fatalf("expected must_not to exclude hidden docs, got %v", bool_)
+		t.Fatalf("expected must_not to exclude hidden docs, got %v", boolClause)
 	}
 	term, ok := mustNot[0]["term"].(map[string]any)
 	if !ok || term["hidden"] != true {

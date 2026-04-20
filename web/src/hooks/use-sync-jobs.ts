@@ -37,6 +37,20 @@ function reducer(state: JobsState, action: Action): JobsState {
 const INITIAL: JobsState = { byId: new Map() };
 
 /**
+ * Cancel a running sync by job id. Hoisted outside the hook because it
+ * doesn't close over any hook state (the terminal SSE frame updates the
+ * reducer, so no optimistic dispatch is needed here).
+ */
+async function cancelSync(jobId: string): Promise<void> {
+  try {
+    await fetchAPI(`/api/sync/jobs/${jobId}/cancel`, { method: "POST" });
+    // Terminal frame will arrive via SSE; no optimistic UI needed.
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : "Failed to cancel");
+  }
+}
+
+/**
  * Polling floor (ms) for `/api/sync`. The multiplexed SSE covers the
  * fast path; the poll catches missed frames after reconnects + picks up
  * scheduler-initiated jobs the client hasn't seen yet. 15s is the Plan
@@ -156,15 +170,6 @@ export function useSyncJobs(): UseSyncJobsResult {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to start sync");
       return null;
-    }
-  }
-
-  async function cancelSync(jobId: string): Promise<void> {
-    try {
-      await fetchAPI(`/api/sync/jobs/${jobId}/cancel`, { method: "POST" });
-      // Terminal frame will arrive via SSE; no optimistic UI needed.
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to cancel");
     }
   }
 

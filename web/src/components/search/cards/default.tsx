@@ -7,7 +7,7 @@ function isScalar(v: unknown): v is string | number | boolean {
   );
 }
 
-export function DefaultCardBody({ hit }: { hit: DocumentHit }) {
+export function DefaultCardBody({ hit }: Readonly<{ hit: DocumentHit }>) {
   const entries = Object.entries(hit.metadata ?? {}).filter(
     (e): e is [string, string | number | boolean] =>
       isScalar(e[1]) && String(e[1]).length > 0,

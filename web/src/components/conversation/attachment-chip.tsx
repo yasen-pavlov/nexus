@@ -19,7 +19,7 @@ interface ChipProps {
   onDownload: () => void;
 }
 
-export function AttachmentChip({ filename, size, onDownload }: ChipProps) {
+export function AttachmentChip({ filename, size, onDownload }: Readonly<ChipProps>) {
   const sizeLabel = formatBytes(size);
   return (
     <button
@@ -42,6 +42,6 @@ interface RowProps {
   children: ReactNode;
 }
 
-export function AttachmentChipRow({ children }: RowProps) {
+export function AttachmentChipRow({ children }: Readonly<RowProps>) {
   return <div className="mt-2 flex flex-wrap gap-1.5">{children}</div>;
 }

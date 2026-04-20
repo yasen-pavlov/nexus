@@ -75,6 +75,6 @@ export function useLogout() {
     clearToken();
     queryClient.setQueryData(authKeys.me(), null);
     queryClient.clear();
-    void navigate({ to: "/login" });
+    navigate({ to: "/login" });
   };
 }

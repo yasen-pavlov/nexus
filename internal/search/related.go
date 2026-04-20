@@ -12,6 +12,47 @@ import (
 	"github.com/muty/nexus/internal/model"
 )
 
+// targetSourceIDField is the keyword field on nested relation docs that
+// holds the source-level pointer (IMAP Message-ID, Telegram
+// chatID:msgID:msg, etc.).
+const targetSourceIDField = "relations.target_source_id"
+
+// incomingEdgeDistinctParents holds the cardinality aggregation that
+// counts distinct parent documents referencing a target via `parent_id`.
+type incomingEdgeDistinctParents struct {
+	Value int `json:"value"`
+}
+
+// incomingEdgeParents is the `reverse_nested` sub-aggregation that climbs
+// from a relation document back to its parent and counts distinct parents.
+type incomingEdgeParents struct {
+	DistinctParents incomingEdgeDistinctParents `json:"distinct_parents"`
+}
+
+// incomingEdgeBucket is one bucket in the terms aggregation keyed by
+// target_source_id, with the parents sub-aggregation attached.
+type incomingEdgeBucket struct {
+	Key     string              `json:"key"`
+	Parents incomingEdgeParents `json:"parents"`
+}
+
+// incomingEdgeByTarget wraps the terms aggregation buckets.
+type incomingEdgeByTarget struct {
+	Buckets []incomingEdgeBucket `json:"buckets"`
+}
+
+// incomingEdgeRelations wraps the `by_target` aggregation under the outer
+// `relations` nested aggregation.
+type incomingEdgeRelations struct {
+	ByTarget incomingEdgeByTarget `json:"by_target"`
+}
+
+// incomingEdgeAggs is the top-level JSON shape parsed out of
+// resp.Aggregations for CountIncomingEdges.
+type incomingEdgeAggs struct {
+	Relations incomingEdgeRelations `json:"relations"`
+}
+
 // ConversationMessagesOptions parameterizes GetConversationMessages.
 // Before and After bound the created_at range; Limit caps the returned
 // slice (callers enforce their own upper bound).
@@ -132,7 +173,7 @@ func (c *Client) FindChunksReferencing(ctx context.Context, targetIDs, targetSou
 		shoulds = append(shoulds, map[string]any{"terms": map[string]any{"relations.target_id": targetIDs}})
 	}
 	if len(targetSourceIDs) > 0 {
-		shoulds = append(shoulds, map[string]any{"terms": map[string]any{"relations.target_source_id": targetSourceIDs}})
+		shoulds = append(shoulds, map[string]any{"terms": map[string]any{targetSourceIDField: targetSourceIDs}})
 	}
 	query := map[string]any{
 		"size": 100,
@@ -185,7 +226,7 @@ func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []strin
 				"path": "relations",
 				"query": map[string]any{
 					"terms": map[string]any{
-						"relations.target_source_id": targetSourceIDs,
+						targetSourceIDField: targetSourceIDs,
 					},
 				},
 			},
@@ -196,7 +237,7 @@ func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []strin
 				"aggs": map[string]any{
 					"by_target": map[string]any{
 						"terms": map[string]any{
-							"field":   "relations.target_source_id",
+							"field":   targetSourceIDField,
 							"include": targetSourceIDs,
 							"size":    len(targetSourceIDs),
 						},
@@ -235,20 +276,7 @@ func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []strin
 	if err != nil {
 		return counts, nil
 	}
-	var parsed struct {
-		Relations struct {
-			ByTarget struct {
-				Buckets []struct {
-					Key     string `json:"key"`
-					Parents struct {
-						DistinctParents struct {
-							Value int `json:"value"`
-						} `json:"distinct_parents"`
-					} `json:"parents"`
-				} `json:"buckets"`
-			} `json:"by_target"`
-		} `json:"relations"`
-	}
+	var parsed incomingEdgeAggs
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return counts, nil
 	}

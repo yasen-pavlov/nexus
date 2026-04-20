@@ -37,8 +37,19 @@ export interface HealthResponse {
 // cleanly. We restore them here. Regen should catch the rest; fix the
 // backend annotations when swaggo v2 lands.
 
+// The `& {}` trick keeps literal autocomplete for known relation kinds
+// while still accepting arbitrary strings for forward-compat with new
+// relation types the backend may introduce. Without it TS collapses the
+// union to `string` and we lose the autocomplete; Sonar also flags the
+// naive `"literal" | string` form as S6571.
+type AnyString = string & {};
 export interface Relation {
-  type: "attachment_of" | "reply_to" | "member_of_thread" | "member_of_window" | string;
+  type:
+    | "attachment_of"
+    | "reply_to"
+    | "member_of_thread"
+    | "member_of_window"
+    | AnyString;
   target_source_id?: string;
   target_id?: string;
 }

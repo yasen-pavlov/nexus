@@ -27,7 +27,7 @@ function EmptyState({
   title,
   description,
   children,
-}: EmptyStateProps) {
+}: Readonly<EmptyStateProps>) {
   return (
     <div className="mx-auto flex max-w-md flex-col items-center px-4 py-14 text-center">
       <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -77,7 +77,7 @@ interface WelcomeStateProps {
   onPickExample?: (q: string) => void;
 }
 
-export function WelcomeState({ onPickExample }: WelcomeStateProps) {
+export function WelcomeState({ onPickExample }: Readonly<WelcomeStateProps>) {
   const interactive = typeof onPickExample === "function";
   return (
     <EmptyState
@@ -90,7 +90,7 @@ export function WelcomeState({ onPickExample }: WelcomeStateProps) {
           <button
             key={q}
             type="button"
-            onClick={interactive ? () => onPickExample!(q) : undefined}
+            onClick={interactive ? () => onPickExample?.(q) : undefined}
             disabled={!interactive}
             className={cn(
               "h-7 rounded-full border border-border bg-card px-3 text-[12.5px] text-foreground/90 transition-colors",
@@ -107,7 +107,7 @@ export function WelcomeState({ onPickExample }: WelcomeStateProps) {
   );
 }
 
-export function NoResultsState({ query }: { query: string }) {
+export function NoResultsState({ query }: Readonly<{ query: string }>) {
   return (
     <EmptyState
       icon={SearchX}

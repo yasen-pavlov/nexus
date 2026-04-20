@@ -42,6 +42,17 @@ function StatsPage() {
   const { data, isPending, error } = useSystemStats();
   const isMobile = useIsMobile();
 
+  let perSourceContent: React.ReactNode;
+  if (isPending) {
+    perSourceContent = <PerSourceSkeleton />;
+  } else if (!data || data.per_source.length === 0) {
+    perSourceContent = <PerSourceEmpty />;
+  } else if (isMobile) {
+    perSourceContent = <StatsMobileList rows={data.per_source} />;
+  } else {
+    perSourceContent = <PerSourceTable rows={data.per_source} />;
+  }
+
   return (
     <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
       <header className="mb-8">
@@ -67,15 +78,7 @@ function StatsPage() {
             icon={Activity}
             description="Document counts, cache footprint, and recency per connector instance."
           >
-            {isPending ? (
-              <PerSourceSkeleton />
-            ) : !data || data.per_source.length === 0 ? (
-              <PerSourceEmpty />
-            ) : isMobile ? (
-              <StatsMobileList rows={data.per_source} />
-            ) : (
-              <PerSourceTable rows={data.per_source} />
-            )}
+            {perSourceContent}
           </SettingsSection>
 
           <SettingsSection
@@ -104,10 +107,10 @@ function StatsPage() {
 function KpiStrip({
   data,
   isPending,
-}: {
+}: Readonly<{
   data?: AdminStats;
   isPending: boolean;
-}) {
+}>) {
   if (isPending) {
     return (
       <div className="grid gap-3 sm:grid-cols-3">
@@ -137,6 +140,13 @@ function KpiStrip({
 
   const userLabel = `${formatCount(stats.users_count)} user${stats.users_count === 1 ? "" : "s"}`;
 
+  const sourceCount = stats.per_source.length;
+  const sourceSuffix = sourceCount === 1 ? "" : "s";
+  const sourcesCaption =
+    sourceCount > 0
+      ? `${formatBytes(totalCacheBytes)} across ${sourceCount} source${sourceSuffix}`
+      : "No sources yet";
+
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <KpiPlaque
@@ -157,11 +167,7 @@ function KpiStrip({
             {stats.per_source.length}
           </span>
         }
-        caption={
-          stats.per_source.length > 0
-            ? `${formatBytes(totalCacheBytes)} across ${stats.per_source.length} source${stats.per_source.length === 1 ? "" : "s"}`
-            : "No sources yet"
-        }
+        caption={sourcesCaption}
       />
       <KpiPlaque
         eyebrow="Latest activity"
@@ -191,12 +197,12 @@ function KpiPlaque({
   icon: Icon,
   value,
   caption,
-}: {
+}: Readonly<{
   eyebrow: string;
   icon: typeof Activity;
   value: React.ReactNode;
   caption: string;
-}) {
+}>) {
   return (
     <div className="relative overflow-hidden rounded-lg border border-border bg-card p-5">
       <Icon
@@ -229,7 +235,7 @@ function KpiPlaque({
 
 const columnHelper = createColumnHelper<AdminPerSourceStats>();
 
-function PerSourceTable({ rows }: { rows: AdminPerSourceStats[] }) {
+function PerSourceTable({ rows }: Readonly<{ rows: AdminPerSourceStats[] }>) {
   const columns = useMemo(
     () => [
       columnHelper.accessor("source_name", {
@@ -423,7 +429,7 @@ function PerSourceEmpty() {
 // Engine panel
 // ---------------------------------------------------------------------------
 
-function EnginePanel({ stats }: { stats?: AdminStats }) {
+function EnginePanel({ stats }: Readonly<{ stats?: AdminStats }>) {
   if (!stats) return null;
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -456,7 +462,7 @@ function EngineCard({
   provider,
   model,
   dimension,
-}: {
+}: Readonly<{
   title: string;
   icon: typeof Brain;
   kind: "embeddings" | "rerank";
@@ -464,7 +470,7 @@ function EngineCard({
   provider: string;
   model: string;
   dimension?: number;
-}) {
+}>) {
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5">
       <header className="flex items-center gap-3">
@@ -527,7 +533,7 @@ function EngineCard({
   );
 }
 
-function StatusPill({ enabled }: { enabled: boolean }) {
+function StatusPill({ enabled }: Readonly<{ enabled: boolean }>) {
   return (
     <span
       className={cn(
@@ -562,7 +568,7 @@ function EnginePanelSkeleton() {
 // Error
 // ---------------------------------------------------------------------------
 
-function ErrorPlaque({ message }: { message: string }) {
+function ErrorPlaque({ message }: Readonly<{ message: string }>) {
   return (
     <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-[13px]">
       <AlertCircle

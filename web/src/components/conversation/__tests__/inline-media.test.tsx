@@ -97,14 +97,18 @@ describe("InlineImage", () => {
     await screen.findByAltText("photo.jpg");
     await user.click(screen.getAllByAltText("photo.jpg")[0]!);
 
-    const dialog = await screen.findByRole("dialog");
+    await screen.findByRole("dialog");
     // Clicking the lightbox image (inner) should NOT close.
     const bigImg = screen.getAllByAltText("photo.jpg")[1]!;
     await user.click(bigImg);
     expect(screen.queryByRole("dialog")).toBeInTheDocument();
 
-    // Clicking the backdrop (dialog element itself) closes.
-    await user.click(dialog);
+    // Clicking the backdrop (the full-bleed "Close <filename>" button)
+    // closes. The close button layered behind the content replaced the
+    // former dismiss-on-outer-click div so the rule against interactive
+    // handlers on non-interactive elements is satisfied.
+    const backdrop = screen.getByRole("button", { name: "Close photo.jpg" });
+    await user.click(backdrop);
     await waitFor(() => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });

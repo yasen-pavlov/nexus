@@ -36,7 +36,7 @@ export function ChangePasswordSheet({
   userId,
   label,
   onDone,
-}: ChangePasswordSheetProps) {
+}: Readonly<ChangePasswordSheetProps>) {
   const { changePassword } = useUsers();
   const [showPassword, setShowPassword] = useState(false);
   const form = useForm<Values>({
