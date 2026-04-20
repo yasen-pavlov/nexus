@@ -19,7 +19,14 @@ const mcr = MCR({
   name: "Nexus Combined Coverage",
   inputDir: [path.join(root, ".v8-coverage/unit/raw")],
   outputDir: path.join(root, "coverage/combined"),
-  reports: ["v8", "v8-json", "console-summary", "console-details", "html"],
+  reports: [
+    "v8",
+    "v8-json",
+    "console-summary",
+    "console-details",
+    "html",
+    "lcovonly",
+  ],
   entryFilter: {
     "**/node_modules/**": false,
     "**/src/test/**": false,
