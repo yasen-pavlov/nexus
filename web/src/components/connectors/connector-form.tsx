@@ -135,7 +135,7 @@ export function ConnectorForm({
     // cast narrows the resolver's TS signature to ours.
     resolver: zodResolver(formSchema) as Resolver<ConnectorFormValues>,
     defaultValues:
-      (initial as ConnectorFormValues | undefined) ??
+      initial ??
       ({
         type: "filesystem",
         name: "",

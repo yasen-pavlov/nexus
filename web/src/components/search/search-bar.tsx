@@ -51,8 +51,8 @@ export function SearchBar({ params }: Props) {
       el.focus();
       el.select();
     };
-    window.addEventListener(FOCUS_SEARCH_EVENT, onFocus);
-    return () => window.removeEventListener(FOCUS_SEARCH_EVENT, onFocus);
+    globalThis.addEventListener(FOCUS_SEARCH_EVENT, onFocus);
+    return () => globalThis.removeEventListener(FOCUS_SEARCH_EVENT, onFocus);
   }, []);
 
   // Debounced commit to URL (search mode only).
@@ -60,13 +60,13 @@ export function SearchBar({ params }: Props) {
     if (mode !== "search") return;
     const next = value.trim();
     if (next === (params.q ?? "")) return;
-    const t = window.setTimeout(() => {
+    const t = globalThis.setTimeout(() => {
       navigate({
         search: { ...params, q: next || undefined },
         replace: true,
       });
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(t);
+    return () => globalThis.clearTimeout(t);
   }, [value, params, navigate, mode]);
 
   const submitAsk = () => {

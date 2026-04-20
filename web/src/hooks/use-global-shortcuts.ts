@@ -47,12 +47,12 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
 
   useEffect(() => {
     let chordPending = false;
-    let chordTimer: number | null = null;
+    let chordTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cancelChord = () => {
       chordPending = false;
       if (chordTimer !== null) {
-        window.clearTimeout(chordTimer);
+        globalThis.clearTimeout(chordTimer);
         chordTimer = null;
       }
     };
@@ -115,15 +115,14 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
       if (e.key === "g" || e.key === "G") {
         e.preventDefault();
         chordPending = true;
-        chordTimer = window.setTimeout(cancelChord, CHORD_TIMEOUT_MS);
-        return;
+        chordTimer = globalThis.setTimeout(cancelChord, CHORD_TIMEOUT_MS);
       }
     };
 
-    window.addEventListener("keydown", onKeyDown);
+    globalThis.addEventListener("keydown", onKeyDown);
     return () => {
       cancelChord();
-      window.removeEventListener("keydown", onKeyDown);
+      globalThis.removeEventListener("keydown", onKeyDown);
     };
   }, []);
 }
@@ -133,5 +132,5 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
 export const FOCUS_SEARCH_EVENT = "nexus:focus-search";
 
 export function dispatchFocusSearch() {
-  window.dispatchEvent(new CustomEvent(FOCUS_SEARCH_EVENT));
+  globalThis.dispatchEvent(new CustomEvent(FOCUS_SEARCH_EVENT));
 }

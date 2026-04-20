@@ -184,7 +184,7 @@ interface ReplyResolution {
 
 function buildReplyResolution(m: Document, ctx: MapperContext): ReplyResolution {
   const rel = (m.relations ?? []).find((r) => r.type === "reply_to");
-  if (!rel || !rel.target_source_id) return {};
+  if (!rel?.target_source_id) return {};
 
   const target = ctx.bySourceID.get(rel.target_source_id);
   if (target) {
@@ -257,13 +257,13 @@ function senderDisplayName(m: Document): string | null {
 }
 
 function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
+  const one = s.replaceAll(/\s+/g, " ").trim();
   if (one.length <= n) return one;
   return one.slice(0, n - 1).trimEnd() + "…";
 }
 
 function scrollToSourceID(sourceID: string) {
-  const id = sourceID.replace(/[^\w-]/g, "\\$&");
+  const id = sourceID.replaceAll(/[^\w-]/g, String.raw`\$&`);
   const el = document.querySelector<HTMLElement>(`#msg-${id}`);
   if (!el) return;
   el.scrollIntoView({ block: "center", behavior: "smooth" });

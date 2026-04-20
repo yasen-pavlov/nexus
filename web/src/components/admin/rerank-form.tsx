@@ -176,9 +176,7 @@ function RerankFormInner({ ctx }: { ctx: UseRerankSettings }) {
             label="API key"
             hint={`Paste your ${providerLabel(form.provider)} API key. Stored encrypted; only the last four characters show after saving. Leave blank to reuse the embedding key when the provider matches.`}
           >
-            {form.api_key &&
-            form.api_key.startsWith("****") &&
-            !replacingKey ? (
+            {form.api_key?.startsWith("****") && !replacingKey ? (
               <div className="flex items-center gap-2">
                 <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-background px-3 font-mono text-[13px] text-muted-foreground">
                   <span aria-hidden className="select-none tracking-[0.3em]">

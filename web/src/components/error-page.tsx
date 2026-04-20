@@ -51,7 +51,7 @@ export function ErrorPage({ kind, error, onReload }: ErrorPageProps) {
 
   const handleReload = () => {
     if (onReload) onReload();
-    else window.location.reload();
+    else globalThis.location.reload();
   };
 
   return (

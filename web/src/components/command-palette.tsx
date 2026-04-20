@@ -96,8 +96,8 @@ export function CommandPalette({
   // root by default — defer one tick so our focus call wins.
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(id);
+    const id = globalThis.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => globalThis.clearTimeout(id);
   }, [open]);
 
   const grouped = useMemo(() => groupItems(items, query), [items, query]);
@@ -155,7 +155,6 @@ export function CommandPalette({
         item.onSelect();
         handleOpenChange(false);
       }
-      return;
     }
   };
 

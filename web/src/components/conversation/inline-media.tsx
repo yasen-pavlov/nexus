@@ -148,12 +148,12 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") handleClose();
     };
-    window.addEventListener("keydown", onKey);
+    globalThis.addEventListener("keydown", onKey);
     // Prevent body scroll while the lightbox is open.
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
+      globalThis.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
   }, [handleClose]);

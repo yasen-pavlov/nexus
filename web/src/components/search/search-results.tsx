@@ -146,7 +146,7 @@ export function SearchResults({ params }: Props) {
 
       <div className="text-[12px] text-muted-foreground">
         <span className="tabular-nums text-foreground">{total}</span>
-        <span className="ml-1">result{total !== 1 ? "s" : ""} for</span>{" "}
+        <span className="ml-1">result{total === 1 ? "" : "s"} for</span>{" "}
         <span className="text-foreground">&ldquo;{query}&rdquo;</span>
       </div>
 

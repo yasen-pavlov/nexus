@@ -40,7 +40,7 @@ function readMessageLines(hit: DocumentHit): MessageLine[] | null {
 }
 
 function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
+  const one = s.replaceAll(/\s+/g, " ").trim();
   if (one.length <= n) return one;
   return one.slice(0, n - 1).trimEnd() + "…";
 }
@@ -78,9 +78,9 @@ function MatchCard({ hit, onOpenChat }: Props) {
 
   const senderName = hit.match_sender_name || "Unknown";
   const seed =
-    hit.match_sender_id !== undefined
-      ? String(hit.match_sender_id)
-      : senderName;
+    hit.match_sender_id === undefined
+      ? senderName
+      : String(hit.match_sender_id);
   // Always try the avatar fetch when we know the sender and have a
   // telegram self-identity (which owns the avatar cache). The backend
   // 404s when there's no cached photo, which SenderAvatar gracefully
@@ -88,9 +88,9 @@ function MatchCard({ hit, onOpenChat }: Props) {
   // may be absent on corner-case line entries (e.g. sync ordering)
   // while the photo is still cached.
   const avatarConnectorID =
-    hit.match_sender_id !== undefined ? self?.connector_id ?? null : null;
+    hit.match_sender_id === undefined ? null : self?.connector_id ?? null;
   const avatarExternalID =
-    hit.match_sender_id !== undefined ? String(hit.match_sender_id) : null;
+    hit.match_sender_id === undefined ? null : String(hit.match_sender_id);
 
   const chatName = str(hit.metadata?.chat_name) ?? hit.title ?? "Telegram chat";
   const messageCount = num(hit.metadata?.message_count);
@@ -195,8 +195,8 @@ function SemanticCard({
   lines: MessageLine[];
   onOpenChat?: (hit: DocumentHit) => void;
 }) {
-  const first = lines[0]!;
-  const last = lines[lines.length - 1]!;
+  const first = lines[0];
+  const last = lines.at(-1)!;
   const chatName = str(hit.metadata?.chat_name) ?? hit.title ?? "Telegram chat";
   const messageCount = num(hit.metadata?.message_count) ?? lines.length;
 
@@ -268,7 +268,7 @@ function MiniLine({ line }: { line: MessageLine }) {
     String(line.sender_id) === self.external_id;
 
   const seed =
-    line.sender_id !== undefined ? String(line.sender_id) : line.sender_name || "anon";
+    line.sender_id === undefined ? line.sender_name || "anon" : String(line.sender_id);
   const avatarConnectorID = line.sender_avatar_key ? self?.connector_id : null;
   const avatarExternalID =
     line.sender_avatar_key && line.sender_id !== undefined

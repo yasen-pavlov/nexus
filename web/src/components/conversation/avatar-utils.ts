@@ -10,14 +10,14 @@ const AVATAR_HUES = [
 function hashSeed(s: string): number {
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
+    h ^= s.codePointAt(i) ?? 0;
     h = Math.imul(h, 16777619);
   }
-  return Math.abs(h | 0);
+  return Math.abs(Math.trunc(h));
 }
 
 export function hueFor(seed: string): string {
-  return AVATAR_HUES[hashSeed(seed) % AVATAR_HUES.length]!;
+  return AVATAR_HUES[hashSeed(seed) % AVATAR_HUES.length];
 }
 
 export function initialsFor(
@@ -26,10 +26,10 @@ export function initialsFor(
 ): string {
   const n = (name ?? "").trim();
   if (!n) {
-    const f = fallbackSeed.replace(/\s+/g, "");
+    const f = fallbackSeed.replaceAll(/\s+/g, "");
     return (f || "?").slice(0, 2).toUpperCase();
   }
   const parts = n.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts.at(-1)![0]).toUpperCase();
 }

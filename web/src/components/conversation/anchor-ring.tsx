@@ -27,8 +27,8 @@ export function AnchorRing({ active, children, className }: Props) {
 
   useEffect(() => {
     if (!active) return;
-    const t = window.setTimeout(() => setPhase("settled"), 1800);
-    return () => window.clearTimeout(t);
+    const t = globalThis.setTimeout(() => setPhase("settled"), 1800);
+    return () => globalThis.clearTimeout(t);
   }, [active]);
 
   useEffect(() => {
@@ -36,7 +36,7 @@ export function AnchorRing({ active, children, className }: Props) {
     const scroller = ref.current?.closest<HTMLElement>(
       "[data-conversation-scroll]",
     );
-    const target: HTMLElement | Window = scroller ?? window;
+    const target: HTMLElement | Window = scroller ?? globalThis.window;
     const handler = () => setScrolled(true);
     target.addEventListener("scroll", handler, { passive: true });
     return () => target.removeEventListener("scroll", handler);

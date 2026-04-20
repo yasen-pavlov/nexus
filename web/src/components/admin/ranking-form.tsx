@@ -24,7 +24,7 @@ const DEFAULTS: {
 } = {
   halfLife: { telegram: 14, imap: 30, filesystem: 90, paperless: 180 },
   floor: { telegram: 0.65, imap: 0.75, filesystem: 0.85, paperless: 0.9 },
-  trust: { telegram: 0.92, imap: 0.92, filesystem: 1.0, paperless: 1.05 },
+  trust: { telegram: 0.92, imap: 0.92, filesystem: 1, paperless: 1.05 },
 };
 
 // Presets per source — "Fresh" tilts toward recent-docs-win, "Archive"
@@ -36,7 +36,7 @@ const PRESETS: Record<string, Record<string, SourceKnobs>> = {
   telegram: {
     Balanced: { halfLife: 14, floor: 0.65, trust: 0.92 },
     Fresh: { halfLife: 3, floor: 0.4, trust: 0.92 },
-    Archive: { halfLife: 60, floor: 0.9, trust: 1.0 },
+    Archive: { halfLife: 60, floor: 0.9, trust: 1 },
   },
   imap: {
     Balanced: { halfLife: 30, floor: 0.75, trust: 0.92 },
@@ -44,13 +44,13 @@ const PRESETS: Record<string, Record<string, SourceKnobs>> = {
     Archive: { halfLife: 180, floor: 0.95, trust: 1.05 },
   },
   filesystem: {
-    Balanced: { halfLife: 90, floor: 0.85, trust: 1.0 },
-    Fresh: { halfLife: 14, floor: 0.6, trust: 1.0 },
+    Balanced: { halfLife: 90, floor: 0.85, trust: 1 },
+    Fresh: { halfLife: 14, floor: 0.6, trust: 1 },
     Archive: { halfLife: 365, floor: 0.95, trust: 1.1 },
   },
   paperless: {
     Balanced: { halfLife: 180, floor: 0.9, trust: 1.05 },
-    Fresh: { halfLife: 30, floor: 0.7, trust: 1.0 },
+    Fresh: { halfLife: 30, floor: 0.7, trust: 1 },
     Archive: { halfLife: 365, floor: 0.98, trust: 1.15 },
   },
 };

@@ -92,7 +92,7 @@ export function AppShell({ user, children }: AppShellProps) {
         void navigate({ to: "/" });
       }
       // Defer one tick so the SearchBar mounts before we fire the event.
-      window.setTimeout(dispatchFocusSearch, 0);
+      globalThis.setTimeout(dispatchFocusSearch, 0);
     },
     onChord: (key: ChordKey) => {
       switch (key) {
@@ -166,43 +166,45 @@ export function AppShell({ user, children }: AppShellProps) {
 
     // --- Actions ---
     const isDark = theme === "dark";
-    items.push({
-      id: "action-toggle-theme",
-      group: "Actions",
-      label: isDark ? "Switch to light theme" : "Switch to dark theme",
-      hint: "Light · Dark · System lives in your account menu",
-      icon: (
-        <PaletteIcon>
-          {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-        </PaletteIcon>
-      ),
-      onSelect: () => setTheme(isDark ? "light" : "dark"),
-    });
-    items.push({
-      id: "action-cheat-sheet",
-      group: "Actions",
-      label: "Show keyboard shortcuts",
-      hint: "All bindings, in one dialog",
-      icon: (
-        <PaletteIcon>
-          <Search className="size-4" />
-        </PaletteIcon>
-      ),
-      keyboardHint: "?",
-      onSelect: () => setCheatSheetOpen(true),
-    });
-    items.push({
-      id: "action-sign-out",
-      group: "Actions",
-      label: "Sign out",
-      hint: "Clears your session on this browser",
-      icon: (
-        <PaletteIcon tone="muted">
-          <LogOut className="size-4" />
-        </PaletteIcon>
-      ),
-      onSelect: () => logout(),
-    });
+    items.push(
+      {
+        id: "action-toggle-theme",
+        group: "Actions",
+        label: isDark ? "Switch to light theme" : "Switch to dark theme",
+        hint: "Light · Dark · System lives in your account menu",
+        icon: (
+          <PaletteIcon>
+            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </PaletteIcon>
+        ),
+        onSelect: () => setTheme(isDark ? "light" : "dark"),
+      },
+      {
+        id: "action-cheat-sheet",
+        group: "Actions",
+        label: "Show keyboard shortcuts",
+        hint: "All bindings, in one dialog",
+        icon: (
+          <PaletteIcon>
+            <Search className="size-4" />
+          </PaletteIcon>
+        ),
+        keyboardHint: "?",
+        onSelect: () => setCheatSheetOpen(true),
+      },
+      {
+        id: "action-sign-out",
+        group: "Actions",
+        label: "Sign out",
+        hint: "Clears your session on this browser",
+        icon: (
+          <PaletteIcon tone="muted">
+            <LogOut className="size-4" />
+          </PaletteIcon>
+        ),
+        onSelect: () => logout(),
+      },
+    );
 
     return items;
   }, [connectors, isAdmin, logout, navigate, setTheme, theme]);
@@ -309,7 +311,7 @@ function pageItem(
   onSelect: () => void,
 ): PaletteItem {
   return {
-    id: `page-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`,
+    id: `page-${label.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`,
     group: "Pages",
     label,
     hint,

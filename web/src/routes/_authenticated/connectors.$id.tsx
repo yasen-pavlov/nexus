@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -29,7 +29,6 @@ import { useSyncJobs } from "@/hooks/use-sync-jobs";
 import { useTelegramAuth } from "@/hooks/use-telegram-auth";
 import { useIdentities } from "@/hooks/use-identities";
 import { fetchAuthedBlob } from "@/lib/api-client";
-import { useEffect } from "react";
 
 export const Route = createFileRoute("/_authenticated/connectors/$id")({
   component: ConnectorDetailPage,

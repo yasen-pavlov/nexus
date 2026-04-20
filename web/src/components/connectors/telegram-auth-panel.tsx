@@ -101,7 +101,7 @@ export function TelegramAuthPanel({
               <Input
                 id="tg-code"
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                onChange={(e) => setCode(e.target.value.replaceAll(/\D/g, ""))}
                 inputMode="numeric"
                 maxLength={6}
                 placeholder="12345"

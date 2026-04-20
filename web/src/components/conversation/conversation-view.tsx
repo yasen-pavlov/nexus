@@ -217,5 +217,5 @@ function EmptyState() {
 }
 
 function cssSafeId(id: string): string {
-  return id.replace(/([^\w-])/g, "\\$1");
+  return id.replaceAll(/([^\w-])/g, String.raw`\$1`);
 }

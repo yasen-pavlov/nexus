@@ -29,7 +29,7 @@ export function buildTimeline(
     Math.abs(db.getTime() - da.getTime()) < gapMs;
 
   for (let i = 0; i < rows.length; i++) {
-    const r = rows[i]!;
+    const r = rows[i];
     const d = new Date(r.createdAt);
 
     if (!lastDate || !isSameDay(d, lastDate)) {

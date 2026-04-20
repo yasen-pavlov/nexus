@@ -178,7 +178,7 @@ function groupedBubbleRadius(position: GroupPosition): string {
 }
 
 function truncate(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
+  const one = s.replaceAll(/\s+/g, " ").trim();
   if (one.length <= n) return one;
   return one.slice(0, n - 1).trimEnd() + "…";
 }

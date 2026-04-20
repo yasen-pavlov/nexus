@@ -90,7 +90,7 @@ export function WelcomeState({ onPickExample }: WelcomeStateProps) {
           <button
             key={q}
             type="button"
-            onClick={interactive ? () => onPickExample!(q) : undefined}
+            onClick={interactive ? () => onPickExample?.(q) : undefined}
             disabled={!interactive}
             className={cn(
               "h-7 rounded-full border border-border bg-card px-3 text-[12.5px] text-foreground/90 transition-colors",

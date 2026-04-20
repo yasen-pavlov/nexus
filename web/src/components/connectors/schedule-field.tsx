@@ -35,11 +35,11 @@ function detectPreset(expr: string): Preset {
 }
 
 function parseDaily(expr: string): { hour: number; minute: number } {
-  const m = expr.match(/^(\d+) (\d+) \* \* \*$/);
+  const m = /^(\d+) (\d+) \* \* \*$/.exec(expr);
   return m ? { hour: Number(m[2]), minute: Number(m[1]) } : { hour: 9, minute: 0 };
 }
 function parseWeekly(expr: string): { hour: number; minute: number; days: number[] } {
-  const m = expr.match(/^(\d+) (\d+) \* \* ([0-6,]+)$/);
+  const m = /^(\d+) (\d+) \* \* ([0-6,]+)$/.exec(expr);
   if (!m) return { hour: 9, minute: 0, days: [1] };
   return {
     hour: Number(m[2]),

@@ -75,7 +75,7 @@ function ConnectorsPage() {
           }
         : undefined,
       sync:
-        job && job.status === "running"
+        job?.status === "running"
           ? {
               jobId: job.id,
               processed: job.docs_processed,
