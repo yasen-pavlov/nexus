@@ -37,7 +37,6 @@ function groupBy<T>(items: T[], key: (t: T) => string): Map<string, T[]> {
 
 interface Props {
   docID: string;
-  count: number;
   onNavigate: (doc: DocumentHit) => void;
 }
 
@@ -86,9 +85,9 @@ export function RelatedFooter({ docID, onNavigate }: Readonly<Props>) {
       {hasOutgoing && (
         <Section title="Points to">
           <ul className="flex flex-col gap-1">
-            {data.outgoing.map((edge, i) => (
+            {data.outgoing.map((edge) => (
               <OutgoingRow
-                key={`o-${i}`}
+                key={`o-${edge.relation.type}-${edge.relation.target_id ?? edge.relation.target_source_id ?? ""}`}
                 edge={edge}
                 onNavigate={onNavigate}
               />

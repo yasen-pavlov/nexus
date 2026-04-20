@@ -429,7 +429,7 @@ function RoleBadge({ role }: Readonly<{ role: "admin" | "user" }>) {
       <span
         aria-hidden
         className="size-1.5 rounded-full bg-muted-foreground/50"
-      />
+      />{" "}
       user
     </span>
   );

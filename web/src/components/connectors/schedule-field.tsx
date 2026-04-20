@@ -171,10 +171,14 @@ export function ScheduleField({ value, onChange, className }: Readonly<ScheduleF
 
         {preset === "custom" && (
           <div className="space-y-2">
-            <label className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+            <label
+              htmlFor="schedule-field-cron-input"
+              className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80"
+            >
               Cron expression · minute hour dom month dow
             </label>
             <Input
+              id="schedule-field-cron-input"
               value={customDraft}
               onChange={(e) => setCustom(e.target.value)}
               placeholder="0 */4 * * *"
@@ -214,16 +218,16 @@ function HourRuler({
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
-        <label className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
           Run at
-        </label>
+        </span>
         <span className="text-[13px] tabular-nums text-foreground">
           {String(hour).padStart(2, "0")}:00
         </span>
       </div>
       <div>
         <div className="flex h-10 items-end gap-[2px]">
-          {Array.from({ length: 24 }).map((_, h) => {
+          {Array.from({ length: 24 }, (_, h) => h).map((h) => {
             const active = h === hour;
             const isMajor = h % 6 === 0;
             let barHeight: number;
@@ -232,7 +236,7 @@ function HourRuler({
             else barHeight = 10;
             return (
               <button
-                key={h}
+                key={`hour-${h}`}
                 type="button"
                 onClick={() => onChange(h)}
                 aria-label={`${String(h).padStart(2, "0")}:00`}
@@ -273,9 +277,9 @@ function DayStrip({
   };
   return (
     <div>
-      <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+      <span className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
         Days of week
-      </label>
+      </span>
       <div className="flex gap-1.5">
         {DAY_DISPLAY.map((label, idx) => {
           const cronDay = DAY_CRON[idx];

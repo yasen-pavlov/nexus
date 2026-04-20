@@ -29,7 +29,7 @@ export function TelegramFields({ mode }: Readonly<{ mode: "create" | "edit" }>) 
           >
             my.telegram.org
           </a>
-          .
+          {"."}
         </p>
         <p>
           Authentication happens after you save the connector — you&apos;ll get a code in your

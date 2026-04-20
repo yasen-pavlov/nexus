@@ -143,7 +143,6 @@ export function ResultCard({
         <div className="border-t border-border/70 bg-muted/30 px-4 py-3">
           <RelatedFooter
             docID={hit.id}
-            count={relatedCount}
             onNavigate={onNavigateRelated}
           />
         </div>

@@ -8,7 +8,7 @@ describe("RelatedFooter", () => {
   it("fetches on mount and renders grouped incoming edges", async () => {
     const onNavigate = vi.fn();
     renderWithRouter(
-      <RelatedFooter docID="d-email-1" count={1} onNavigate={onNavigate} />,
+      <RelatedFooter docID="d-email-1" onNavigate={onNavigate} />,
     );
 
     // Default MSW handler returns one attachment_of incoming edge pointing
@@ -55,7 +55,7 @@ describe("RelatedFooter", () => {
       ),
     );
     renderWithRouter(
-      <RelatedFooter docID="d-reply" count={1} onNavigate={() => {}} />,
+      <RelatedFooter docID="d-reply" onNavigate={() => {}} />,
     );
 
     await waitFor(() => {
@@ -86,7 +86,7 @@ describe("RelatedFooter", () => {
       ),
     );
     renderWithRouter(
-      <RelatedFooter docID="d-email-2" count={1} onNavigate={() => {}} />,
+      <RelatedFooter docID="d-email-2" onNavigate={() => {}} />,
     );
 
     await waitFor(() => {

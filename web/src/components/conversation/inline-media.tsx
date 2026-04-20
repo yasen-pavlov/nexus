@@ -168,9 +168,21 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
       role="dialog"
       aria-modal="true"
       aria-label={filename}
-      onClick={handleClose}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
     >
+      {/*
+        Backdrop dismiss. A full-bleed button sits behind the content so a
+        click anywhere outside the media closes the lightbox. Escape key
+        is handled by the effect above, so keyboard users already have a
+        dismiss affordance — the button is effectively pointer-only but
+        satisfies the jsx-a11y rule for interactive elements.
+      */}
+      <button
+        type="button"
+        aria-label={`Close ${filename}`}
+        onClick={handleClose}
+        className="absolute inset-0 size-full cursor-default bg-transparent"
+      />
       <button
         type="button"
         onClick={handleClose}
@@ -179,7 +191,7 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
       >
         <X className="size-4" aria-hidden />
       </button>
-      <div onClick={(e) => e.stopPropagation()}>{children}</div>
+      <div className="relative">{children}</div>
     </div>,
     document.body,
   );

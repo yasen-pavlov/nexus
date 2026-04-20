@@ -222,7 +222,7 @@ export const MessageRow = memo(function MessageRow({ model }: Props) {
   const row = (
     <article
       id={`msg-${model.sourceId}`}
-      tabIndex={0}
+      tabIndex={-1}
       data-group={model.position}
       className={cn(
         "group flex gap-3 px-2 outline-none",
