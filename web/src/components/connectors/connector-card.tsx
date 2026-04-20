@@ -69,11 +69,10 @@ export function ConnectorCard({
   onToggleShared,
   canManage,
 }: Readonly<ConnectorCardProps>) {
-  const scheduleLabel = row.schedule
-    ? safeCronstrue(row.schedule)
-    : row.enabled
-      ? "Manual trigger"
-      : "Disabled";
+  let scheduleLabel: string;
+  if (row.schedule) scheduleLabel = safeCronstrue(row.schedule);
+  else if (row.enabled) scheduleLabel = "Manual trigger";
+  else scheduleLabel = "Disabled";
 
   const running = row.status === "running";
 

@@ -54,7 +54,7 @@ function LoginFormInner({ isRegister }: Readonly<{ isRegister: boolean }>) {
   const onSubmit = (values: FormValues) => {
     mutation.mutate(values, {
       onSuccess: () => {
-        void navigate({ to: "/" });
+        navigate({ to: "/" });
       },
     });
   };
@@ -156,11 +156,7 @@ function LoginFormInner({ isRegister }: Readonly<{ isRegister: boolean }>) {
           disabled={mutation.isPending}
           className="mt-1 h-11 w-full text-[14px] font-medium"
         >
-          {mutation.isPending
-            ? "Please wait…"
-            : isRegister
-              ? "Create admin account"
-              : "Sign in"}
+          {submitLabel(mutation.isPending, isRegister)}
         </Button>
       </form>
 
@@ -171,4 +167,9 @@ function LoginFormInner({ isRegister }: Readonly<{ isRegister: boolean }>) {
       </p>
     </div>
   );
+}
+
+function submitLabel(isPending: boolean, isRegister: boolean): string {
+  if (isPending) return "Please wait…";
+  return isRegister ? "Create admin account" : "Sign in";
 }

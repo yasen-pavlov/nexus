@@ -42,6 +42,17 @@ function StatsPage() {
   const { data, isPending, error } = useSystemStats();
   const isMobile = useIsMobile();
 
+  let perSourceContent: React.ReactNode;
+  if (isPending) {
+    perSourceContent = <PerSourceSkeleton />;
+  } else if (!data || data.per_source.length === 0) {
+    perSourceContent = <PerSourceEmpty />;
+  } else if (isMobile) {
+    perSourceContent = <StatsMobileList rows={data.per_source} />;
+  } else {
+    perSourceContent = <PerSourceTable rows={data.per_source} />;
+  }
+
   return (
     <div className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
       <header className="mb-8">
@@ -67,15 +78,7 @@ function StatsPage() {
             icon={Activity}
             description="Document counts, cache footprint, and recency per connector instance."
           >
-            {isPending ? (
-              <PerSourceSkeleton />
-            ) : !data || data.per_source.length === 0 ? (
-              <PerSourceEmpty />
-            ) : isMobile ? (
-              <StatsMobileList rows={data.per_source} />
-            ) : (
-              <PerSourceTable rows={data.per_source} />
-            )}
+            {perSourceContent}
           </SettingsSection>
 
           <SettingsSection
@@ -137,6 +140,13 @@ function KpiStrip({
 
   const userLabel = `${formatCount(stats.users_count)} user${stats.users_count === 1 ? "" : "s"}`;
 
+  const sourceCount = stats.per_source.length;
+  const sourceSuffix = sourceCount === 1 ? "" : "s";
+  const sourcesCaption =
+    sourceCount > 0
+      ? `${formatBytes(totalCacheBytes)} across ${sourceCount} source${sourceSuffix}`
+      : "No sources yet";
+
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       <KpiPlaque
@@ -157,11 +167,7 @@ function KpiStrip({
             {stats.per_source.length}
           </span>
         }
-        caption={
-          stats.per_source.length > 0
-            ? `${formatBytes(totalCacheBytes)} across ${stats.per_source.length} source${stats.per_source.length === 1 ? "" : "s"}`
-            : "No sources yet"
-        }
+        caption={sourcesCaption}
       />
       <KpiPlaque
         eyebrow="Latest activity"

@@ -123,10 +123,10 @@ export function ConversationPage({
       hasNewer={hasNewer}
       anchorSourceId={anchorSourceId}
       onOlderIntersect={() => {
-        void fetchOlder();
+        fetchOlder();
       }}
       onNewerIntersect={() => {
-        void fetchNewer();
+        fetchNewer();
       }}
       onBack={onBack}
     />

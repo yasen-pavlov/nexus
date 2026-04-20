@@ -68,6 +68,44 @@ function UsersPage() {
   const rows = data ?? [];
   const self = rows.find((u) => u.id === currentUser.id);
 
+  const handleChangePassword = (u: AdminUserRow) => {
+    const label =
+      u.id === currentUser.id
+        ? "your password"
+        : `${u.username}'s password`;
+    setPasswordTarget({ userId: u.id, label });
+  };
+
+  let rosterContent: React.ReactNode;
+  if (isPending) {
+    rosterContent = (
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-12 w-full" />
+      </div>
+    );
+  } else if (rows.length === 0) {
+    rosterContent = <EmptyRoster onNew={() => setNewOpen(true)} />;
+  } else if (isMobile) {
+    rosterContent = (
+      <UsersMobileList
+        rows={rows}
+        currentUserId={currentUser.id}
+        onChangePassword={handleChangePassword}
+        onDelete={(u) => setDeleteTarget(u)}
+      />
+    );
+  } else {
+    rosterContent = (
+      <UsersTable
+        rows={rows}
+        currentUserId={currentUser.id}
+        onChangePassword={handleChangePassword}
+        onDelete={(u) => setDeleteTarget(u)}
+      />
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-4xl flex-1 px-6 py-8">
       <header className="mb-8">
@@ -100,44 +138,7 @@ function UsersPage() {
             </Button>
           }
         >
-          {isPending ? (
-            <div className="flex flex-col gap-2">
-              <Skeleton className="h-12 w-full" />
-              <Skeleton className="h-12 w-full" />
-            </div>
-          ) : rows.length === 0 ? (
-            <EmptyRoster onNew={() => setNewOpen(true)} />
-          ) : isMobile ? (
-            <UsersMobileList
-              rows={rows}
-              currentUserId={currentUser.id}
-              onChangePassword={(u) =>
-                setPasswordTarget({
-                  userId: u.id,
-                  label:
-                    u.id === currentUser.id
-                      ? "your password"
-                      : `${u.username}'s password`,
-                })
-              }
-              onDelete={(u) => setDeleteTarget(u)}
-            />
-          ) : (
-            <UsersTable
-              rows={rows}
-              currentUserId={currentUser.id}
-              onChangePassword={(u) =>
-                setPasswordTarget({
-                  userId: u.id,
-                  label:
-                    u.id === currentUser.id
-                      ? "your password"
-                      : `${u.username}'s password`,
-                })
-              }
-              onDelete={(u) => setDeleteTarget(u)}
-            />
-          )}
+          {rosterContent}
         </SettingsSection>
 
         {self && (

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { FileWarning, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -81,38 +81,43 @@ export function InlineVideo({ id, filename }: Readonly<InlineVideoProps>) {
 
   const { data, isLoading, isError } = useDocumentBlob(id, visible);
 
+  let body: ReactNode;
+  if (!visible || isLoading) {
+    body = <MediaPlaceholder label={filename} />;
+  } else if (isError || !data) {
+    body = <MediaError label={filename} />;
+  } else {
+    body = (
+      <>
+        <video
+          src={data}
+          controls
+          preload="metadata"
+          className="block max-h-[360px] max-w-full"
+        >
+          <track kind="captions" />
+        </video>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Expand video"
+          className={cn(
+            "absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground backdrop-blur-sm",
+            "hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          )}
+        >
+          Expand
+        </button>
+      </>
+    );
+  }
+
   return (
     <div
       ref={wrapperRef}
       className="relative w-fit max-w-full overflow-hidden rounded-md"
     >
-      {!visible || isLoading ? (
-        <MediaPlaceholder label={filename} />
-      ) : isError || !data ? (
-        <MediaError label={filename} />
-      ) : (
-        <>
-          <video
-            src={data}
-            controls
-            preload="metadata"
-            className="block max-h-[360px] max-w-full"
-          >
-            <track kind="captions" />
-          </video>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            aria-label="Expand video"
-            className={cn(
-              "absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-background/80 px-2 py-1 text-[11px] font-medium text-foreground backdrop-blur-sm",
-              "hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-            )}
-          >
-            Expand
-          </button>
-        </>
-      )}
+      {body}
       {open && data && (
         <Lightbox onClose={() => setOpen(false)} filename={filename}>
           <video

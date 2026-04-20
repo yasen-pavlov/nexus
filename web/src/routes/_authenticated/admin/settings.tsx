@@ -72,6 +72,13 @@ function providerLabel(value: EmbeddingProvider): string {
   return EMBEDDING_PROVIDERS.find((p) => p.value === value)?.label ?? value;
 }
 
+// Provider-specific API key placeholder for the replace-key input.
+function apiKeyPlaceholder(provider: EmbeddingProvider): string {
+  if (provider === "openai") return "sk-...";
+  if (provider === "voyage") return "pa-...";
+  return "paste your key";
+}
+
 // ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------
@@ -536,13 +543,7 @@ function EmbeddingsFormInner({ ctx }: Readonly<{ ctx: UseEmbeddingSettings }>) {
                   onChange={(e) =>
                     setForm((f) => ({ ...f, api_key: e.target.value }))
                   }
-                  placeholder={
-                    form.provider === "openai"
-                      ? "sk-..."
-                      : form.provider === "voyage"
-                        ? "pa-..."
-                        : "paste your key"
-                  }
+                  placeholder={apiKeyPlaceholder(form.provider)}
                   className="h-10 flex-1 font-mono text-[13px]"
                   autoFocus={replacingKey}
                 />

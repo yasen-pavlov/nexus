@@ -49,14 +49,11 @@ export function buildTimeline(
     const samePrev = !!prev && !!prevDate && sameBurst(prev, r, prevDate, d);
     const sameNext = !!next && !!nextDate && sameBurst(r, next, d, nextDate);
 
-    const position: GroupPosition =
-      samePrev && sameNext
-        ? "mid"
-        : samePrev
-          ? "last"
-          : sameNext
-            ? "first"
-            : "solo";
+    let position: GroupPosition;
+    if (samePrev && sameNext) position = "mid";
+    else if (samePrev) position = "last";
+    else if (sameNext) position = "first";
+    else position = "solo";
 
     items.push({ kind: "message", model: { ...r, position } });
   }

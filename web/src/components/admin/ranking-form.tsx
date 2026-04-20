@@ -730,12 +730,15 @@ function plainLanguage(knobs: SourceKnobs, trustDisabled: boolean): string {
   const halfTxt = halfLifeLabel(knobs.halfLife);
   const floorPct = Math.round(knobs.floor * 100);
   const trustTxt = trustLabel(knobs.trust);
-  const trustPhrase = trustDisabled
-    ? "Trust disabled globally."
-    : trustTxt === "neutral"
-      ? "Neutral rerank weight."
-      : trustTxt.startsWith("+")
-        ? `Boosted ${trustTxt} at the rerank stage.`
-        : `Penalized ${trustTxt.replace("-", "")} at the rerank stage.`;
+  let trustPhrase: string;
+  if (trustDisabled) {
+    trustPhrase = "Trust disabled globally.";
+  } else if (trustTxt === "neutral") {
+    trustPhrase = "Neutral rerank weight.";
+  } else if (trustTxt.startsWith("+")) {
+    trustPhrase = `Boosted ${trustTxt} at the rerank stage.`;
+  } else {
+    trustPhrase = `Penalized ${trustTxt.replace("-", "")} at the rerank stage.`;
+  }
   return `Half-relevance after ${halfTxt}, never dropping below ${floorPct}%. ${trustPhrase}`;
 }

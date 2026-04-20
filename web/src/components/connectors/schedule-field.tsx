@@ -226,6 +226,10 @@ function HourRuler({
           {Array.from({ length: 24 }).map((_, h) => {
             const active = h === hour;
             const isMajor = h % 6 === 0;
+            let barHeight: number;
+            if (active) barHeight = 32;
+            else if (isMajor) barHeight = 18;
+            else barHeight = 10;
             return (
               <button
                 key={h}
@@ -236,7 +240,7 @@ function HourRuler({
                   "flex-1 rounded-sm transition-colors",
                   active ? "bg-primary" : "bg-border/80 hover:bg-foreground/40",
                 )}
-                style={{ height: active ? 32 : isMajor ? 18 : 10 }}
+                style={{ height: barHeight }}
               />
             );
           })}

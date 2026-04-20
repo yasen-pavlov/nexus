@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { ArrowUpRight, Link2 } from "lucide-react";
 import type { DocumentHit } from "@/lib/api-types";
@@ -48,6 +48,26 @@ export function ResultCard({
     hit.source_type === "telegram" &&
     (!!hit.match_source_id ||
       Array.isArray(hit.metadata?.message_lines));
+
+  let snippet: ReactNode = null;
+  if (hit.headline) {
+    snippet = (
+      <p
+        className={cn(
+          "line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground",
+          "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
+          "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
+        )}
+        dangerouslySetInnerHTML={{ __html: hit.headline }}
+      />
+    );
+  } else if (hit.content) {
+    snippet = (
+      <p className="line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground">
+        {hit.content}
+      </p>
+    );
+  }
 
   return (
     <article
@@ -108,20 +128,7 @@ export function ResultCard({
               <span className="line-clamp-2">{titleText}</span>
             </h3>
 
-            {hit.headline ? (
-              <p
-                className={cn(
-                  "line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground",
-                  "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
-                  "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
-                )}
-                dangerouslySetInnerHTML={{ __html: hit.headline }}
-              />
-            ) : hit.content ? (
-              <p className="line-clamp-2 text-[13.5px] leading-[1.55] text-muted-foreground">
-                {hit.content}
-              </p>
-            ) : null}
+            {snippet}
           </>
         )}
 

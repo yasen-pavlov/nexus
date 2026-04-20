@@ -55,21 +55,23 @@ export function SearchResults({ params }: Readonly<Props>) {
     // matching message inside a window, jump to that message. Falls
     // back to the window's connector-emitted anchor (first message),
     // then to the hit's own created_at for timestamp.
-    const anchorID =
-      typeof hit.match_message_id === "number"
-        ? hit.match_message_id
-        : typeof hit.metadata?.anchor_message_id === "number"
-          ? hit.metadata.anchor_message_id
-          : typeof hit.metadata?.message_id === "number"
-            ? hit.metadata.message_id
-            : undefined;
+    let anchorID: number | undefined;
+    if (typeof hit.match_message_id === "number") {
+      anchorID = hit.match_message_id;
+    } else if (typeof hit.metadata?.anchor_message_id === "number") {
+      anchorID = hit.metadata.anchor_message_id;
+    } else if (typeof hit.metadata?.message_id === "number") {
+      anchorID = hit.metadata.message_id;
+    }
 
-    const anchorTs =
-      typeof hit.match_created_at === "string"
-        ? hit.match_created_at
-        : typeof hit.metadata?.anchor_created_at === "string"
-          ? hit.metadata.anchor_created_at
-          : hit.created_at;
+    let anchorTs: string | undefined;
+    if (typeof hit.match_created_at === "string") {
+      anchorTs = hit.match_created_at;
+    } else if (typeof hit.metadata?.anchor_created_at === "string") {
+      anchorTs = hit.metadata.anchor_created_at;
+    } else {
+      anchorTs = hit.created_at;
+    }
 
     navigate({
       to: "/conversations/$sourceType/$conversationId",
@@ -167,7 +169,9 @@ export function SearchResults({ params }: Readonly<Props>) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void fetchNextPage()}
+            onClick={() => {
+              fetchNextPage();
+            }}
             disabled={isFetchingNextPage}
           >
             {isFetchingNextPage ? (

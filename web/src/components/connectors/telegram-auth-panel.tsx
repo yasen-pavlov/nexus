@@ -158,6 +158,10 @@ function Step({
   active?: boolean;
   done?: boolean;
 }>) {
+  let badgeClass: string;
+  if (done) badgeClass = "border-transparent bg-primary text-primary-foreground";
+  else if (active) badgeClass = "border-primary text-primary";
+  else badgeClass = "border-border text-muted-foreground";
   return (
     <li
       className={cn(
@@ -169,11 +173,7 @@ function Step({
       <span
         className={cn(
           "inline-flex h-5 w-5 items-center justify-center rounded-full border",
-          done
-            ? "border-transparent bg-primary text-primary-foreground"
-            : active
-              ? "border-primary text-primary"
-              : "border-border text-muted-foreground",
+          badgeClass,
         )}
       >
         {n}

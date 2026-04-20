@@ -89,7 +89,7 @@ export function AppShell({ user, children }: Readonly<AppShellProps>) {
       // If we're not on the search page, jump there first; either way the
       // SearchBar's window listener picks the focus call up after mount.
       if (currentPath !== "/") {
-        void navigate({ to: "/" });
+        navigate({ to: "/" });
       }
       // Defer one tick so the SearchBar mounts before we fire the event.
       globalThis.setTimeout(dispatchFocusSearch, 0);
@@ -97,13 +97,13 @@ export function AppShell({ user, children }: Readonly<AppShellProps>) {
     onChord: (key: ChordKey) => {
       switch (key) {
         case "s":
-          void navigate({ to: "/" });
+          navigate({ to: "/" });
           return;
         case "c":
-          void navigate({ to: "/connectors" });
+          navigate({ to: "/connectors" });
           return;
         case "a":
-          if (isAdmin) void navigate({ to: "/admin/settings" });
+          if (isAdmin) navigate({ to: "/admin/settings" });
           return;
       }
     },
