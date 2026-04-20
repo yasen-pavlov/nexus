@@ -1,0 +1,58 @@
+version: 2
+
+# Weekly cadence — enough to stay current without a constant stream of PRs.
+# Minor/patch updates are grouped per ecosystem so the dashboard has one PR
+# per ecosystem per week instead of ~15; major bumps stay separate so they
+# get individual review.
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(go)"
+
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(web)"
+    # We already run `npm ci --legacy-peer-deps` in Docker + CI — this
+    # mirrors that so Dependabot's resolve doesn't stumble on the
+    # typescript peer-dep quirk.
+    versioning-strategy: increase
+
+  # Dependabot's docker ecosystem scans all Dockerfile* files in the given
+  # directory automatically, so one entry covers both Dockerfile and
+  # Dockerfile.tika at the repo root.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps(ci)"
