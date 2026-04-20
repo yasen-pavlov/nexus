@@ -44,7 +44,7 @@ const COPY: Record<
  * copy diverges. Lives inside the main scroll area — does NOT fill
  * the viewport itself.
  */
-export function ErrorPage({ kind, error, onReload }: ErrorPageProps) {
+export function ErrorPage({ kind, error, onReload }: Readonly<ErrorPageProps>) {
   const copy = COPY[kind];
   const Icon = kind === "404" ? Compass : OctagonAlert;
   const accentVar = kind === "error" ? "--destructive" : "--primary";
@@ -127,7 +127,7 @@ export function ErrorPage({ kind, error, onReload }: ErrorPageProps) {
   );
 }
 
-function TechnicalDetails({ error }: { error: Error }) {
+function TechnicalDetails({ error }: Readonly<{ error: Error }>) {
   const [open, setOpen] = useState(false);
   const stack = error.stack ?? error.message ?? String(error);
 

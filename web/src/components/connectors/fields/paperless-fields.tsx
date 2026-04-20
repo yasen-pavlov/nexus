@@ -6,7 +6,7 @@ import { FieldError, SecretInput } from "../form-primitives";
 
 type ConfigErrors = { url?: RHFFieldError; token?: RHFFieldError } | undefined;
 
-export function PaperlessFields({ mode }: { mode: "create" | "edit" }) {
+export function PaperlessFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
   const { register, formState } = useFormContext();
   const errors = (formState.errors as FieldErrors).config as ConfigErrors;
 

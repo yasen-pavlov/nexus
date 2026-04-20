@@ -111,7 +111,7 @@ export function SyncWindowField() {
   );
 }
 
-function PresetButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function PresetButton({ children, onClick }: Readonly<{ children: React.ReactNode; onClick: () => void }>) {
   return (
     <Button
       type="button"

@@ -75,7 +75,7 @@ const ConnectedSenderAvatar = memo(function ConnectedSenderAvatar({
 // LazyReplyQuote fetches the reply target lazily when the quoted
 // message isn't loaded in the current window. Returns the resolved
 // state to ReplyQuote; the pure ReplyQuote handles visual states.
-function LazyReplyQuote({ target }: { target: PendingReplyTarget }) {
+function LazyReplyQuote({ target }: Readonly<{ target: PendingReplyTarget }>) {
   const { data, isLoading, isError } = useDocumentBySource(
     target.sourceType,
     target.sourceId,
@@ -115,7 +115,7 @@ function readSenderName(d: {
 // any remaining files (PDFs, documents, etc.) click-to-download.
 // Renders inside the message bubble so media sits flush with the
 // caption/body text instead of trailing in a separate container.
-function AttachmentRow({ attachments }: { attachments: AttachmentModel[] }) {
+function AttachmentRow({ attachments }: Readonly<{ attachments: AttachmentModel[] }>) {
   const inline: AttachmentModel[] = [];
   const files: AttachmentModel[] = [];
   for (const att of attachments) {

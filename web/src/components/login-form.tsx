@@ -36,7 +36,7 @@ export function LoginForm() {
   );
 }
 
-function LoginFormInner({ isRegister }: { isRegister: boolean }) {
+function LoginFormInner({ isRegister }: Readonly<{ isRegister: boolean }>) {
   const navigate = useNavigate();
   const loginMutation = useLogin();
   const registerMutation = useRegister();

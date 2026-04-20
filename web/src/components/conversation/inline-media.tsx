@@ -9,7 +9,7 @@ interface InlineImageProps {
   filename: string;
 }
 
-export function InlineImage({ id, filename }: InlineImageProps) {
+export function InlineImage({ id, filename }: Readonly<InlineImageProps>) {
   const { data, isLoading, isError } = useDocumentBlob(id);
   const [open, setOpen] = useState(false);
 
@@ -58,7 +58,7 @@ interface InlineVideoProps {
 // when the component actually becomes visible — videos can be tens of
 // megabytes and the window can hold dozens of messages, so eager
 // fetching every video would blow through bandwidth and memory.
-export function InlineVideo({ id, filename }: InlineVideoProps) {
+export function InlineVideo({ id, filename }: Readonly<InlineVideoProps>) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
@@ -180,7 +180,7 @@ function Lightbox({ filename, onClose, children }: LightboxProps) {
   );
 }
 
-function MediaPlaceholder({ label }: { label: string }) {
+function MediaPlaceholder({ label }: Readonly<{ label: string }>) {
   return (
     <div className="flex h-40 w-72 items-center justify-center gap-2 text-[12px] text-muted-foreground">
       <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -189,7 +189,7 @@ function MediaPlaceholder({ label }: { label: string }) {
   );
 }
 
-function MediaError({ label }: { label: string }) {
+function MediaError({ label }: Readonly<{ label: string }>) {
   return (
     <div className="flex h-32 w-64 items-center justify-center gap-2 text-[12px] italic text-muted-foreground/80">
       <FileWarning className="size-3.5" aria-hidden />

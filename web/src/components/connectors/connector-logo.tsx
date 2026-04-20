@@ -13,7 +13,7 @@ const SOURCE_VAR: Record<string, string> = {
   filesystem: "--source-filesystem",
 };
 
-function BrandSVG({ path, title, className }: { path: string; title: string; className?: string }) {
+function BrandSVG({ path, title, className }: Readonly<{ path: string; title: string; className?: string }>) {
   return (
     <svg viewBox="0 0 24 24" role="img" aria-label={title} className={className} fill="currentColor">
       <path d={path} />
@@ -21,7 +21,7 @@ function BrandSVG({ path, title, className }: { path: string; title: string; cla
   );
 }
 
-function LucideMark({ Icon, className }: { Icon: LucideIcon; className?: string }) {
+function LucideMark({ Icon, className }: Readonly<{ Icon: LucideIcon; className?: string }>) {
   return <Icon className={className} strokeWidth={1.6} />;
 }
 
@@ -33,7 +33,7 @@ export interface ConnectorLogoProps {
   className?: string;
 }
 
-export function ConnectorLogo({ type, size = "md", quiet = false, className }: ConnectorLogoProps) {
+export function ConnectorLogo({ type, size = "md", quiet = false, className }: Readonly<ConnectorLogoProps>) {
   const dim = PLATE_SIZE[size];
   const hueVar = SOURCE_VAR[type] ?? "--source-default";
   const plateOpacity = quiet ? 10 : 14;

@@ -104,10 +104,10 @@ function StatsPage() {
 function KpiStrip({
   data,
   isPending,
-}: {
+}: Readonly<{
   data?: AdminStats;
   isPending: boolean;
-}) {
+}>) {
   if (isPending) {
     return (
       <div className="grid gap-3 sm:grid-cols-3">
@@ -191,12 +191,12 @@ function KpiPlaque({
   icon: Icon,
   value,
   caption,
-}: {
+}: Readonly<{
   eyebrow: string;
   icon: typeof Activity;
   value: React.ReactNode;
   caption: string;
-}) {
+}>) {
   return (
     <div className="relative overflow-hidden rounded-lg border border-border bg-card p-5">
       <Icon
@@ -229,7 +229,7 @@ function KpiPlaque({
 
 const columnHelper = createColumnHelper<AdminPerSourceStats>();
 
-function PerSourceTable({ rows }: { rows: AdminPerSourceStats[] }) {
+function PerSourceTable({ rows }: Readonly<{ rows: AdminPerSourceStats[] }>) {
   const columns = useMemo(
     () => [
       columnHelper.accessor("source_name", {
@@ -423,7 +423,7 @@ function PerSourceEmpty() {
 // Engine panel
 // ---------------------------------------------------------------------------
 
-function EnginePanel({ stats }: { stats?: AdminStats }) {
+function EnginePanel({ stats }: Readonly<{ stats?: AdminStats }>) {
   if (!stats) return null;
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -456,7 +456,7 @@ function EngineCard({
   provider,
   model,
   dimension,
-}: {
+}: Readonly<{
   title: string;
   icon: typeof Brain;
   kind: "embeddings" | "rerank";
@@ -464,7 +464,7 @@ function EngineCard({
   provider: string;
   model: string;
   dimension?: number;
-}) {
+}>) {
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-border bg-card p-5">
       <header className="flex items-center gap-3">
@@ -527,7 +527,7 @@ function EngineCard({
   );
 }
 
-function StatusPill({ enabled }: { enabled: boolean }) {
+function StatusPill({ enabled }: Readonly<{ enabled: boolean }>) {
   return (
     <span
       className={cn(
@@ -562,7 +562,7 @@ function EnginePanelSkeleton() {
 // Error
 // ---------------------------------------------------------------------------
 
-function ErrorPlaque({ message }: { message: string }) {
+function ErrorPlaque({ message }: Readonly<{ message: string }>) {
   return (
     <div className="flex items-start gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-[13px]">
       <AlertCircle

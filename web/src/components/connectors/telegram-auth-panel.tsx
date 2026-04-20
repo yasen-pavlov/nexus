@@ -28,7 +28,7 @@ export function TelegramAuthPanel({
   status,
   error,
   needs2FA,
-}: TelegramAuthPanelProps) {
+}: Readonly<TelegramAuthPanelProps>) {
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
 
@@ -152,12 +152,12 @@ function Step({
   label,
   active,
   done,
-}: {
+}: Readonly<{
   n: number;
   label: string;
   active?: boolean;
   done?: boolean;
-}) {
+}>) {
   return (
     <li
       className={cn(

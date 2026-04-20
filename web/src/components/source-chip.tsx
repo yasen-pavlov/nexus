@@ -29,7 +29,7 @@ export function SourceChip({
   variant = "default",
   active,
   className,
-}: Props) {
+}: Readonly<Props>) {
   const meta = sourceMetaFor(type);
   const Icon = meta.icon;
   const displayLabel = label ?? meta.label;

@@ -100,7 +100,7 @@ function rankingFingerprint(s: RankingSettings): string {
   ].join("|");
 }
 
-function RankingFormInner({ ctx }: { ctx: UseRankingSettings }) {
+function RankingFormInner({ ctx }: Readonly<{ ctx: UseRankingSettings }>) {
   const { data, update } = ctx;
   const saved = data!;
   const [form, setForm] = useState<RankingSettings>(saved);
@@ -255,12 +255,12 @@ function SignalsCard({
   metadataEnabled,
   onTrustChange,
   onMetadataChange,
-}: {
+}: Readonly<{
   trustEnabled: boolean;
   metadataEnabled: boolean;
   onTrustChange: (v: boolean) => void;
   onMetadataChange: (v: boolean) => void;
-}) {
+}>) {
   return (
     <div className="rounded-md border border-border/70 bg-background/40 p-4">
       <div className="mb-3">
@@ -295,12 +295,12 @@ function ToggleRow({
   description,
   active,
   onChange,
-}: {
+}: Readonly<{
   label: string;
   description: string;
   active: boolean;
   onChange: (v: boolean) => void;
-}) {
+}>) {
   return (
     <button
       type="button"
@@ -358,7 +358,7 @@ function SourceCard({
   dirtyFromDefaults,
   onChange,
   onReset,
-}: SourceCardProps) {
+}: Readonly<SourceCardProps>) {
   const presets = useMemo(() => PRESETS[sourceType] ?? {}, [sourceType]);
   const activePreset = useMemo(() => {
     for (const [name, p] of Object.entries(presets)) {
@@ -493,7 +493,7 @@ function SliderRow({
   disabled,
   hint,
   onChange,
-}: {
+}: Readonly<{
   label: string;
   suffix: string;
   value: number;
@@ -503,7 +503,7 @@ function SliderRow({
   disabled?: boolean;
   hint?: string;
   onChange: (v: number) => void;
-}) {
+}>) {
   return (
     <div className={cn("flex flex-col gap-1.5", disabled && "opacity-60")}>
       <div className="flex items-baseline justify-between gap-3">
@@ -532,7 +532,7 @@ function SliderRow({
 // Decay curve visualization
 // ---------------------------------------------------------------------------
 
-function DecayCurve({ halfLife, floor }: { halfLife: number; floor: number }) {
+function DecayCurve({ halfLife, floor }: Readonly<{ halfLife: number; floor: number }>) {
   // Outer canvas is generous: left padding gives the Y-axis labels their
   // own gutter (otherwise "100" overlaps the curve at the top-left),
   // bottom padding gives the X-axis labels room below the axis line.

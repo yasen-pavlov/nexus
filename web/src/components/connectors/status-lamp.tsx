@@ -27,11 +27,11 @@ export function StatusLamp({
   status,
   size = 8,
   className,
-}: {
+}: Readonly<{
   status: ConnectorStatus;
   size?: number;
   className?: string;
-}) {
+}>) {
   return (
     <span
       role="status"
@@ -55,11 +55,11 @@ export function StatusChip({
   status,
   hint,
   className,
-}: {
+}: Readonly<{
   status: ConnectorStatus;
   hint?: string;
   className?: string;
-}) {
+}>) {
   return (
     <span
       className={cn(

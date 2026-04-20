@@ -257,7 +257,7 @@ function UsersTable({
   currentUserId,
   onChangePassword,
   onDelete,
-}: UsersTableProps) {
+}: Readonly<UsersTableProps>) {
   const columns = useMemo(
     () => [
       columnHelper.accessor("username", {
@@ -387,7 +387,7 @@ function UsersTable({
 
 // --- Primitives -------------------------------------------------------------
 
-function InitialsTile({ username }: { username: string }) {
+function InitialsTile({ username }: Readonly<{ username: string }>) {
   const initials = username.slice(0, 2).toUpperCase();
   return (
     <span
@@ -407,7 +407,7 @@ function YouBadge() {
   );
 }
 
-function RoleBadge({ role }: { role: "admin" | "user" }) {
+function RoleBadge({ role }: Readonly<{ role: "admin" | "user" }>) {
   if (role === "admin") {
     return (
       <span
@@ -434,7 +434,7 @@ function RoleBadge({ role }: { role: "admin" | "user" }) {
   );
 }
 
-function EmptyRoster({ onNew }: { onNew: () => void }) {
+function EmptyRoster({ onNew }: Readonly<{ onNew: () => void }>) {
   return (
     <div className="flex flex-col items-center gap-3 py-10 text-center">
       <div className="flex size-11 items-center justify-center rounded-xl bg-primary/15 text-primary">
@@ -474,12 +474,12 @@ function NewUserSheet({
   onOpenChange,
   onCreate,
   isPending,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (v: boolean) => void;
   onCreate: (values: NewUserValues) => Promise<void>;
   isPending: boolean;
-}) {
+}>) {
   const [showPassword, setShowPassword] = useState(false);
   const form = useForm<NewUserValues>({
     resolver: zodResolver(newUserSchema),
@@ -613,10 +613,10 @@ function NewUserSheet({
 function RoleField({
   control,
   onChange,
-}: {
+}: Readonly<{
   control: Control<NewUserValues>;
   onChange: (v: "user" | "admin") => void;
-}) {
+}>) {
   const value = useWatch({ control, name: "role" });
   return <RolePicker value={value} onChange={onChange} />;
 }
@@ -624,10 +624,10 @@ function RoleField({
 function RolePicker({
   value,
   onChange,
-}: {
+}: Readonly<{
   value: "user" | "admin";
   onChange: (v: "user" | "admin") => void;
-}) {
+}>) {
   const opts: {
     value: "user" | "admin";
     label: string;
@@ -670,7 +670,7 @@ function RolePicker({
   );
 }
 
-function FieldError({ message }: { message?: string }) {
+function FieldError({ message }: Readonly<{ message?: string }>) {
   if (!message) return null;
   return (
     <p className="text-[12px] leading-[1.5] text-destructive">{message}</p>

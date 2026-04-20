@@ -11,7 +11,7 @@ function strArr(v: unknown): string[] {
     : [];
 }
 
-export function EmailCardBody({ hit }: { hit: DocumentHit }) {
+export function EmailCardBody({ hit }: Readonly<{ hit: DocumentHit }>) {
   const m = hit.metadata ?? {};
   const from = str(m.from);
   const to = str(m.to);

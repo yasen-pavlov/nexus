@@ -127,7 +127,7 @@ export function ConnectorForm({
   onCancel,
   submitLabel,
   isAdmin,
-}: ConnectorFormProps) {
+}: Readonly<ConnectorFormProps>) {
   const methods = useForm<ConnectorFormValues>({
     // Cast: zodResolver's inferred shape for a discriminated-union is a
     // FieldValues union that TS can't collapse to the value type. The

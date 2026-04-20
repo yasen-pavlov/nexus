@@ -26,7 +26,7 @@ interface Props {
   params: SearchParams;
 }
 
-export function SearchResults({ params }: Props) {
+export function SearchResults({ params }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const query = params.q?.trim() ?? "";
   const filters = paramsToFilters(params);

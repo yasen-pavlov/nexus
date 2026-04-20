@@ -32,7 +32,7 @@ export function ConversationPage({
   anchorId,
   anchorTs,
   onBack,
-}: Props) {
+}: Readonly<Props>) {
   const {
     messages,
     isLoadingInitial,

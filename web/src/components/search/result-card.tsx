@@ -32,7 +32,7 @@ export function ResultCard({
   onOpenChat,
   onDownload,
   onNavigateRelated,
-}: Props) {
+}: Readonly<Props>) {
   const [relatedOpen, setRelatedOpen] = useState(false);
   const titleText = hit.title || hit.source_id;
   const hasExternal = hit.url && !hit.url.startsWith("file://");
@@ -149,11 +149,11 @@ function CardBody({
   hit,
   onOpenChat,
   onDownload,
-}: {
+}: Readonly<{
   hit: DocumentHit;
   onOpenChat: (hit: DocumentHit) => void;
   onDownload: (hit: DocumentHit) => void;
-}) {
+}>) {
   switch (hit.source_type) {
     case "imap":
       return <EmailCardBody hit={hit} />;

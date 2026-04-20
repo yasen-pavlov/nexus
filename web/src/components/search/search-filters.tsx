@@ -41,7 +41,7 @@ function activeDateLabel(params: SearchParams): string {
   return `${from} → ${to}`;
 }
 
-export function SearchFilters({ params, facets }: Props) {
+export function SearchFilters({ params, facets }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const [dateOpen, setDateOpen] = useState(false);
 

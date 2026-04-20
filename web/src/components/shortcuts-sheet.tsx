@@ -54,7 +54,7 @@ const SECTIONS: Section[] = [
  * for the cheat-sheet metaphor — small, centered, designed to be glanced
  * at and dismissed with the same key that opened it.
  */
-export function ShortcutsSheet({ open, onOpenChange }: ShortcutsSheetProps) {
+export function ShortcutsSheet({ open, onOpenChange }: Readonly<ShortcutsSheetProps>) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[440px]">
@@ -128,10 +128,10 @@ export function ShortcutsSheet({ open, onOpenChange }: ShortcutsSheetProps) {
 function KbdChip({
   keyLabel,
   inline = false,
-}: {
+}: Readonly<{
   keyLabel: string;
   inline?: boolean;
-}) {
+}>) {
   return (
     <kbd
       className={cn(

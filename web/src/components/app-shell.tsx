@@ -67,7 +67,7 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
-export function AppShell({ user, children }: AppShellProps) {
+export function AppShell({ user, children }: Readonly<AppShellProps>) {
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const isAdmin = user.role === "admin";
@@ -340,7 +340,7 @@ function connectorHint(type: string): string {
   }
 }
 
-function NavRow({ item, active }: { item: NavItem; active: boolean }) {
+function NavRow({ item, active }: Readonly<{ item: NavItem; active: boolean }>) {
   const Icon = item.icon;
   return (
     <SidebarMenuItem>
@@ -374,7 +374,7 @@ function NavRow({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
-function UserCard({ user }: { user: User }) {
+function UserCard({ user }: Readonly<{ user: User }>) {
   const [open, setOpen] = useState(false);
   const { theme, setTheme } = useTheme();
   const logout = useLogout();
@@ -503,12 +503,12 @@ function ThemeRow({
   icon: Icon,
   active,
   onClick,
-}: {
+}: Readonly<{
   label: string;
   icon: typeof Sun;
   active: boolean;
   onClick: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"

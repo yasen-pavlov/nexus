@@ -12,7 +12,7 @@ type ConfigErrors =
     }
   | undefined;
 
-export function TelegramFields({ mode }: { mode: "create" | "edit" }) {
+export function TelegramFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
   const { register, formState } = useFormContext();
   const errors = (formState.errors as FieldErrors).config as ConfigErrors;
 

@@ -50,7 +50,7 @@ interface Props {
   onOpenChat?: (hit: DocumentHit) => void;
 }
 
-export function TelegramCardBody({ hit, onOpenChat }: Props) {
+export function TelegramCardBody({ hit, onOpenChat }: Readonly<Props>) {
   const matchSourceID = hit.match_source_id;
   const messageLines = readMessageLines(hit);
 
@@ -68,7 +68,7 @@ export function TelegramCardBody({ hit, onOpenChat }: Props) {
 // MatchCard renders a pinpoint message — avatar + sender + timestamp +
 // highlighted snippet — mirroring the MessageRow chrome used in the
 // conversation view. "Open in chat" jumps straight to that message.
-function MatchCard({ hit, onOpenChat }: Props) {
+function MatchCard({ hit, onOpenChat }: Readonly<Props>) {
   const { bySourceType } = useIdentities();
   const self = bySourceType.get("telegram");
   const isSelf =
@@ -190,11 +190,11 @@ function SemanticCard({
   hit,
   lines,
   onOpenChat,
-}: {
+}: Readonly<{
   hit: DocumentHit;
   lines: MessageLine[];
   onOpenChat?: (hit: DocumentHit) => void;
-}) {
+}>) {
   const first = lines[0];
   const last = lines.at(-1)!;
   const chatName = str(hit.metadata?.chat_name) ?? hit.title ?? "Telegram chat";
@@ -259,7 +259,7 @@ function SemanticCard({
   );
 }
 
-function MiniLine({ line }: { line: MessageLine }) {
+function MiniLine({ line }: Readonly<{ line: MessageLine }>) {
   const { bySourceType } = useIdentities();
   const self = bySourceType.get("telegram");
   const isSelf =
@@ -314,13 +314,13 @@ function ConnectedAvatar({
   senderName,
   seed,
   size = 28,
-}: {
+}: Readonly<{
   connectorId: string | null | undefined;
   externalId: string | null | undefined;
   senderName: string;
   seed: string;
   size?: number;
-}) {
+}>) {
   const { data } = useAvatarBlob(connectorId, externalId);
   return (
     <SenderAvatar
@@ -335,7 +335,7 @@ function ConnectedAvatar({
 // LegacyTail is the pre-reindex fallback: a compact row with chat
 // name + "Open in chat". Matches the card body shipped before this
 // change so legacy-indexed docs don't regress.
-function LegacyTail({ hit, onOpenChat }: Props) {
+function LegacyTail({ hit, onOpenChat }: Readonly<Props>) {
   const chatName = str(hit.metadata?.chat_name);
   const messageCount = num(hit.metadata?.message_count);
   const canOpen = !!hit.conversation_id && !!onOpenChat;

@@ -23,7 +23,7 @@ type Mode = "search" | "ask";
  * not wired yet). The Ask affordance telegraphs the conversational future
  * without requiring it to ship today.
  */
-export function SearchBar({ params }: Props) {
+export function SearchBar({ params }: Readonly<Props>) {
   const navigate = useNavigate() as unknown as AnyNavigate;
   const [value, setValue] = useState(params.q ?? "");
   const [mode, setMode] = useState<Mode>("search");
@@ -157,10 +157,10 @@ export function SearchBar({ params }: Props) {
 function ModeToggle({
   mode,
   onChange,
-}: {
+}: Readonly<{
   mode: Mode;
   onChange: (m: Mode) => void;
-}) {
+}>) {
   return (
     <div className="inline-flex h-7 w-fit items-center rounded-full border border-border bg-card p-0.5 text-xs">
       <ModeButton
@@ -184,12 +184,12 @@ function ModeButton({
   icon: Icon,
   active,
   onClick,
-}: {
+}: Readonly<{
   label: string;
   icon: typeof Search;
   active: boolean;
   onClick: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"

@@ -17,7 +17,7 @@ export interface AccountPageProps {
  * actions (change password, sign out). No backend writes for username
  * by design — this is a homelab tool with a single-digit user count.
  */
-export function AccountPage({ user }: AccountPageProps) {
+export function AccountPage({ user }: Readonly<AccountPageProps>) {
   const [pwOpen, setPwOpen] = useState(false);
   const logout = useLogout();
   const initials = user.username.slice(0, 2).toUpperCase();
@@ -118,12 +118,12 @@ function ActionRow({
   label,
   hint,
   action,
-}: {
+}: Readonly<{
   icon: React.ReactNode;
   label: string;
   hint: string;
   action: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="flex items-center gap-3 border-t border-border/40 px-5 py-3.5 first:border-t-0">
       <span
@@ -141,7 +141,7 @@ function ActionRow({
   );
 }
 
-function RoleBadge({ role }: { role: "admin" | "user" }) {
+function RoleBadge({ role }: Readonly<{ role: "admin" | "user" }>) {
   if (role === "admin") {
     return (
       <span

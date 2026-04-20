@@ -368,7 +368,7 @@ function embeddingFingerprint(s: EmbeddingSettings | null): string {
   return `${s.provider}|${s.model}|${s.api_key}|${s.ollama_url}`;
 }
 
-function EmbeddingsFormInner({ ctx }: { ctx: UseEmbeddingSettings }) {
+function EmbeddingsFormInner({ ctx }: Readonly<{ ctx: UseEmbeddingSettings }>) {
   const { data, update } = ctx;
   const saved: EmbeddingSettings = data ?? {
     provider: "",
@@ -676,11 +676,11 @@ function Field({
   label,
   hint,
   children,
-}: {
+}: Readonly<{
   label: string;
   hint?: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="text-[13px] font-medium">{label}</Label>
@@ -707,7 +707,7 @@ interface ModelComboboxProps {
 // Parents should `key={provider}` this component so external value resets
 // (e.g. provider change in the outer form) remount the combobox instead of
 // needing a useEffect(setQuery(value)) sync.
-function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
+function ModelCombobox({ value, onChange, options }: Readonly<ModelComboboxProps>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const [highlighted, setHighlighted] = useState(0);
@@ -876,10 +876,10 @@ function ModelCombobox({ value, onChange, options }: ModelComboboxProps) {
 function MobileSectionsBar({
   active,
   onJump,
-}: {
+}: Readonly<{
   active: string;
   onJump: (id: string) => void;
-}) {
+}>) {
   const [open, setOpen] = useState(false);
   const activeItem = NAV.find((n) => n.id === active) ?? NAV[0];
   const ActiveIcon = activeItem.icon;

@@ -35,7 +35,7 @@ export function ConversationView({
   onOlderIntersect,
   onNewerIntersect,
   onBack,
-}: Props) {
+}: Readonly<Props>) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const olderRef = useRef<HTMLDivElement>(null);
   const newerRef = useRef<HTMLDivElement>(null);

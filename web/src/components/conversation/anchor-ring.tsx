@@ -7,7 +7,7 @@ interface Props {
   className?: string;
 }
 
-export function AnchorRing({ active, children, className }: Props) {
+export function AnchorRing({ active, children, className }: Readonly<Props>) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [phase, setPhase] = useState<"intro" | "settled">(
     active ? "intro" : "settled",

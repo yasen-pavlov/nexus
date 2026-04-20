@@ -12,11 +12,11 @@ export function FormSection({
   label,
   description,
   children,
-}: {
+}: Readonly<{
   label: string;
   description?: string;
   children: ReactNode;
-}) {
+}>) {
   return (
     <section className="space-y-3">
       <header>
@@ -32,7 +32,7 @@ export function FormSection({
   );
 }
 
-export function FieldError({ message }: { message?: string }) {
+export function FieldError({ message }: Readonly<{ message?: string }>) {
   if (!message) return null;
   return <p className="text-[12px] text-destructive">{message}</p>;
 }
@@ -42,12 +42,12 @@ export function ToggleRow({
   hint,
   checked,
   onCheckedChange,
-}: {
+}: Readonly<{
   label: string;
   hint?: string;
   checked: boolean;
   onCheckedChange: (v: boolean) => void;
-}) {
+}>) {
   return (
     <label className="flex cursor-pointer items-start justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3 hover:bg-card-hover">
       <div>

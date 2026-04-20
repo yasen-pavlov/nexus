@@ -58,7 +58,7 @@ function rerankFingerprint(s: RerankSettings | null): string {
   return `${s.provider}|${s.model}|${s.api_key}|${s.min_score}`;
 }
 
-function RerankFormInner({ ctx }: { ctx: UseRerankSettings }) {
+function RerankFormInner({ ctx }: Readonly<{ ctx: UseRerankSettings }>) {
   const { data, update } = ctx;
   const saved: RerankSettings = data ?? {
     provider: "",
@@ -263,11 +263,11 @@ function Field({
   label,
   hint,
   children,
-}: {
+}: Readonly<{
   label: string;
   hint?: string;
   children: React.ReactNode;
-}) {
+}>) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="text-[13px] font-medium">{label}</Label>
@@ -294,11 +294,11 @@ function ModelCombobox({
   value,
   onChange,
   options,
-}: {
+}: Readonly<{
   value: string;
   onChange: (v: string) => void;
   options: ModelOption[];
-}) {
+}>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState(value);
   const [highlighted, setHighlighted] = useState(0);

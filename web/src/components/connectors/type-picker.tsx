@@ -24,11 +24,11 @@ export function ConnectorTypePicker({
   value,
   onChange,
   disabled,
-}: {
+}: Readonly<{
   value: ConnectorTypeKey | null;
   onChange: (v: ConnectorTypeKey) => void;
   disabled?: boolean;
-}) {
+}>) {
   return (
     <fieldset
       className="grid grid-cols-2 gap-3"

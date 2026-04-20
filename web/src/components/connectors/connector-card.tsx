@@ -68,7 +68,7 @@ export function ConnectorCard({
   onDelete,
   onToggleShared,
   canManage,
-}: ConnectorCardProps) {
+}: Readonly<ConnectorCardProps>) {
   const scheduleLabel = row.schedule
     ? safeCronstrue(row.schedule)
     : row.enabled
@@ -226,9 +226,9 @@ export function ConnectorCard({
 
 function IdentityInline({
   identity,
-}: {
+}: Readonly<{
   identity: NonNullable<ConnectorRow["identity"]>;
-}) {
+}>) {
   // Only subscribe to the avatar endpoint when the backend says there's
   // one cached — otherwise useAvatarBlob stays disabled and we skip a
   // guaranteed-404.

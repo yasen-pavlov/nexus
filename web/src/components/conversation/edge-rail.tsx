@@ -2,7 +2,7 @@ interface Props {
   label?: string;
 }
 
-export function EdgeRail({ label = "Beginning of conversation" }: Props) {
+export function EdgeRail({ label = "Beginning of conversation" }: Readonly<Props>) {
   return (
     <div className="flex items-center gap-3 py-6" aria-hidden={false}>
       <div className="h-px flex-1 bg-border/60" aria-hidden />

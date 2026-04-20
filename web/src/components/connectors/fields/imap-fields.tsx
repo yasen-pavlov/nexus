@@ -14,7 +14,7 @@ type ConfigErrors =
     }
   | undefined;
 
-export function ImapFields({ mode }: { mode: "create" | "edit" }) {
+export function ImapFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
   const { register, formState } = useFormContext();
   const errors = (formState.errors as FieldErrors).config as ConfigErrors;
 

@@ -4,7 +4,7 @@ interface Props {
   date: Date;
 }
 
-export function DayDivider({ date }: Props) {
+export function DayDivider({ date }: Readonly<Props>) {
   return (
     <div
       role="separator"

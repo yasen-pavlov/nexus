@@ -62,7 +62,7 @@ export interface ScheduleFieldProps {
  * translates the stored expression to English via cronstrue and shows
  * the next fire time via cron-parser.
  */
-export function ScheduleField({ value, onChange, className }: ScheduleFieldProps) {
+export function ScheduleField({ value, onChange, className }: Readonly<ScheduleFieldProps>) {
   const preset = detectPreset(value);
   const [customDraft, setCustomDraft] = useState(value);
 
@@ -207,10 +207,10 @@ export function ScheduleField({ value, onChange, className }: ScheduleFieldProps
 function HourRuler({
   hour,
   onChange,
-}: {
+}: Readonly<{
   hour: number;
   onChange: (hour: number) => void;
-}) {
+}>) {
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
@@ -256,10 +256,10 @@ function HourRuler({
 function DayStrip({
   selected,
   onChange,
-}: {
+}: Readonly<{
   selected: Set<number>;
   onChange: (next: Set<number>) => void;
-}) {
+}>) {
   const toggle = (d: number) => {
     const next = new Set(selected);
     if (next.has(d)) next.delete(d);
