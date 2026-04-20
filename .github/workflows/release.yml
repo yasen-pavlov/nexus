@@ -29,10 +29,16 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # Serialize the cross-compile. The hosted runner has ~7 GB of RAM;
+      # Go's toolchain for Nexus weighs in at ~1.5 GB peak per target, and
+      # goreleaser's default parallelism (GOMAXPROCS, 4 on this runner)
+      # runs four targets simultaneously, which reliably OOMs now that the
+      # codebase has grown. `--parallelism 1` costs us a few extra minutes
+      # but keeps the release deterministic.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --clean
+          args: release --clean --parallelism 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
