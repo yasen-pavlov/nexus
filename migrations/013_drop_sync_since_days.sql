@@ -20,14 +20,14 @@ SET config = jsonb_set(
   '{sync_since}',
   to_jsonb(
     to_char(
-      CURRENT_DATE - ((config->>'sync_since_days')::int) * interval '1 day',
+      current_date - ((config ->> 'sync_since_days')::int) * interval '1 day',
       'YYYY-MM-DD'
     )
   ),
   true
 )
 WHERE config ? 'sync_since_days'
-  AND (config->>'sync_since_days') ~ '^[0-9]+$'
+  AND (config ->> 'sync_since_days') ~ '^[0-9]+$'
   AND NOT (config ? 'sync_since');
 
 -- Drop the key from any remaining rows — either they already had a

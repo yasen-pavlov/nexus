@@ -13,16 +13,16 @@
 -- No retention logic yet — the table is expected to grow. A sweeper can be
 -- added later once we have real data on growth rates.
 CREATE TABLE sync_runs (
-    id               UUID PRIMARY KEY,
-    connector_id     UUID NOT NULL REFERENCES connector_configs(id) ON DELETE CASCADE,
-    status           TEXT NOT NULL, -- 'running' | 'completed' | 'failed' | 'canceled'
-    docs_total       INT NOT NULL DEFAULT 0,
-    docs_processed   INT NOT NULL DEFAULT 0,
-    docs_deleted     INT NOT NULL DEFAULT 0,
-    errors           INT NOT NULL DEFAULT 0,
-    error_message    TEXT NOT NULL DEFAULT '',
-    started_at       TIMESTAMPTZ NOT NULL,
-    completed_at     TIMESTAMPTZ
+    id UUID PRIMARY KEY,
+    connector_id UUID NOT NULL REFERENCES connector_configs (id) ON DELETE CASCADE,
+    status TEXT NOT NULL, -- 'running' | 'completed' | 'failed' | 'canceled'
+    docs_total INT NOT NULL DEFAULT 0,
+    docs_processed INT NOT NULL DEFAULT 0,
+    docs_deleted INT NOT NULL DEFAULT 0,
+    errors INT NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ
 );
 
 -- Activity timeline query: "most recent runs for this connector".

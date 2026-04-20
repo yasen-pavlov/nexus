@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration lint coverage build swagger dev dev-db up down logs help
+.PHONY: test test-unit test-integration lint lint-sql coverage build swagger dev dev-db up down logs help
 
 help:
 	@echo "Nexus — common targets:"
@@ -8,6 +8,7 @@ help:
 	@echo "  make dev-db       Start just the deps (db/opensearch/tika)"
 	@echo "  make test         Run all tests (unit + integration)"
 	@echo "  make lint         Run golangci-lint"
+	@echo "  make lint-sql     Run sqlfluff on every migration"
 	@echo "  make coverage     Run integration tests with coverage report"
 	@echo "  make build        Build binary to bin/nexus"
 
@@ -27,6 +28,15 @@ test-integration:
 
 lint:
 	golangci-lint run ./...
+
+# Run sqlfluff across every migration file (postgres dialect, config in
+# `.sqlfluff`). Enforces cosmetic + structural rules; CI runs the same
+# command so local and CI verdicts match exactly.
+#
+# Requires sqlfluff — install via `pipx install sqlfluff`. Auto-fixable
+# findings can be resolved with `sqlfluff fix migrations/`.
+lint-sql:
+	sqlfluff lint migrations/
 
 # Total-coverage floor. Override on the command line with `make coverage
 # COVERAGE_FLOOR=95` to demand more.

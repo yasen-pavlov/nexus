@@ -8,13 +8,13 @@
 -- everywhere else in the system, so DeleteBySource mirrors the existing
 -- pattern in internal/search/search.go.
 CREATE TABLE binary_store_entries (
-    source_type      TEXT NOT NULL,
-    source_name      TEXT NOT NULL,
-    source_id        TEXT NOT NULL,
-    file_path        TEXT NOT NULL,
-    size             BIGINT NOT NULL DEFAULT 0,
-    stored_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source_type TEXT NOT NULL,
+    source_name TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    size BIGINT NOT NULL DEFAULT 0,
+    stored_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_accessed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (source_type, source_name, source_id)
 );
 
