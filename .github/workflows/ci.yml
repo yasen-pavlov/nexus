@@ -9,6 +9,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Principle of least privilege: CI only needs to read the repo (for
+# checkout + reading code under test). Nothing here writes to GitHub.
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Backend (Go)
