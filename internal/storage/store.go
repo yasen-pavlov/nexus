@@ -82,37 +82,36 @@ func ResolveCacheConfig(sourceType string, cfg map[string]any) CacheConfig {
 		}
 	}
 
-	switch v := cfg["cache_max_age_days"].(type) {
-	case float64:
-		if v >= 0 {
-			out.MaxAge = time.Duration(v) * 24 * time.Hour
-		}
-	case int:
-		if v >= 0 {
-			out.MaxAge = time.Duration(v) * 24 * time.Hour
-		}
-	case int64:
-		if v >= 0 {
-			out.MaxAge = time.Duration(v) * 24 * time.Hour
-		}
+	if days, ok := nonNegativeInt64(cfg["cache_max_age_days"]); ok {
+		out.MaxAge = time.Duration(days) * 24 * time.Hour
 	}
-
-	switch v := cfg["cache_max_size_bytes"].(type) {
-	case float64:
-		if v >= 0 {
-			out.MaxSize = int64(v)
-		}
-	case int:
-		if v >= 0 {
-			out.MaxSize = int64(v)
-		}
-	case int64:
-		if v >= 0 {
-			out.MaxSize = v
-		}
+	if size, ok := nonNegativeInt64(cfg["cache_max_size_bytes"]); ok {
+		out.MaxSize = size
 	}
 
 	return out
+}
+
+// nonNegativeInt64 accepts the numeric JSON shapes (float64 / int / int64)
+// that can appear in a decoded JSONB config blob and returns the value as
+// int64 only when it is ≥ 0. Returns false for unknown types or negatives so
+// the caller keeps its default.
+func nonNegativeInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n >= 0 {
+			return int64(n), true
+		}
+	case int:
+		if n >= 0 {
+			return int64(n), true
+		}
+	case int64:
+		if n >= 0 {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // StoreDB is the subset of internal/store methods the BinaryStore needs.

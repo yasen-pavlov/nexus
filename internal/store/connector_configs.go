@@ -192,70 +192,91 @@ func (s *Store) UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) er
 	return nil
 }
 
+// rawConnectorConfig is the minimal shape EncryptExistingConfigs loads from
+// connector_configs before deciding which rows still hold plaintext secrets.
+type rawConnectorConfig struct {
+	id       uuid.UUID
+	connType string
+	config   map[string]any
+}
+
 // EncryptExistingConfigs encrypts any sensitive config fields that are still stored as plaintext.
 func (s *Store) EncryptExistingConfigs(ctx context.Context) (int, error) {
 	if s.encryptionKey == nil {
 		return 0, nil
 	}
 
-	query := `SELECT id, type, config FROM connector_configs`
-	rows, err := s.pool.Query(ctx, query)
+	toEncrypt, err := s.loadPlaintextConfigs(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("store: list configs for encryption: %w", err)
+		return 0, err
+	}
+
+	for _, rc := range toEncrypt {
+		if err := s.rewriteEncryptedConfig(ctx, rc); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(toEncrypt), nil
+}
+
+// loadPlaintextConfigs returns the subset of connector_configs rows whose
+// SensitiveFields still include at least one non-empty, not-yet-encrypted
+// string — i.e. rows that need EncryptConfig applied.
+func (s *Store) loadPlaintextConfigs(ctx context.Context) ([]rawConnectorConfig, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, type, config FROM connector_configs`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list configs for encryption: %w", err)
 	}
 	defer rows.Close()
 
-	type rawConfig struct {
-		id       uuid.UUID
-		connType string
-		config   map[string]any
-	}
-	var toEncrypt []rawConfig
-
+	var toEncrypt []rawConnectorConfig
 	for rows.Next() {
 		var id uuid.UUID
 		var connType string
 		var configJSON []byte
 		if err := rows.Scan(&id, &connType, &configJSON); err != nil {
-			return 0, fmt.Errorf("store: scan config for encryption: %w", err)
+			return nil, fmt.Errorf("store: scan config for encryption: %w", err)
 		}
 		var config map[string]any
 		if err := json.Unmarshal(configJSON, &config); err != nil {
-			return 0, fmt.Errorf("store: unmarshal config for encryption: %w", err)
+			return nil, fmt.Errorf("store: unmarshal config for encryption: %w", err)
 		}
-
-		fields := crypto.SensitiveFields[connType]
-		needsEncrypt := false
-		for _, field := range fields {
-			if val, ok := config[field].(string); ok && val != "" && !crypto.IsEncrypted(val) {
-				needsEncrypt = true
-				break
-			}
-		}
-		if needsEncrypt {
-			toEncrypt = append(toEncrypt, rawConfig{id: id, connType: connType, config: config})
+		if needsEncryption(connType, config) {
+			toEncrypt = append(toEncrypt, rawConnectorConfig{id: id, connType: connType, config: config})
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("store: rows error: %w", err)
+		return nil, fmt.Errorf("store: rows error: %w", err)
 	}
+	return toEncrypt, nil
+}
 
-	for _, rc := range toEncrypt {
-		encrypted, err := crypto.EncryptConfig(s.encryptionKey, rc.connType, rc.config)
-		if err != nil {
-			return 0, fmt.Errorf("store: encrypt config %s: %w", rc.id, err)
-		}
-		configJSON, err := json.Marshal(encrypted)
-		if err != nil {
-			return 0, fmt.Errorf("store: marshal encrypted config: %w", err)
-		}
-		_, err = s.pool.Exec(ctx, `UPDATE connector_configs SET config = $1 WHERE id = $2`, configJSON, rc.id)
-		if err != nil {
-			return 0, fmt.Errorf("store: update encrypted config %s: %w", rc.id, err)
+// needsEncryption reports whether any of the SensitiveFields for this
+// connector type still hold a plaintext (non-empty, unwrapped) string.
+func needsEncryption(connType string, config map[string]any) bool {
+	for _, field := range crypto.SensitiveFields[connType] {
+		if val, ok := config[field].(string); ok && val != "" && !crypto.IsEncrypted(val) {
+			return true
 		}
 	}
+	return false
+}
 
-	return len(toEncrypt), nil
+// rewriteEncryptedConfig encrypts a single row's config and writes it back.
+func (s *Store) rewriteEncryptedConfig(ctx context.Context, rc rawConnectorConfig) error {
+	encrypted, err := crypto.EncryptConfig(s.encryptionKey, rc.connType, rc.config)
+	if err != nil {
+		return fmt.Errorf("store: encrypt config %s: %w", rc.id, err)
+	}
+	configJSON, err := json.Marshal(encrypted)
+	if err != nil {
+		return fmt.Errorf("store: marshal encrypted config: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE connector_configs SET config = $1 WHERE id = $2`, configJSON, rc.id); err != nil {
+		return fmt.Errorf("store: update encrypted config %s: %w", rc.id, err)
+	}
+	return nil
 }
 
 func (s *Store) DeleteConnectorConfig(ctx context.Context, id uuid.UUID) error {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -308,15 +309,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.cm.Update(r.Context(), cfg); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, errConnectorNotFound)
-			return
-		}
-		if errors.Is(err, store.ErrDuplicateName) {
-			writeError(w, http.StatusConflict, "connector name already exists")
-			return
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeConnectorUpdateError(w, err)
 		return
 	}
 
@@ -324,20 +317,40 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	// in OpenSearch — otherwise old chunks keep their stale shared/owner_id and
 	// the visibility change has no effect until the next full re-sync.
 	if existing.Shared != cfg.Shared {
-		ownerID := ""
-		if cfg.UserID != nil {
-			ownerID = cfg.UserID.String()
-		}
-		if err := h.search.UpdateOwnershipBySource(r.Context(), cfg.Type, cfg.Name, ownerID, cfg.Shared); err != nil {
-			h.log.Warn("failed to propagate ownership change to search index",
-				zap.String("connector", cfg.Name),
-				zap.Error(err),
-			)
-		}
+		h.propagateOwnershipChange(r.Context(), cfg)
 	}
 
 	cfg.Config = crypto.MaskConfig(cfg.Type, cfg.Config)
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// writeConnectorUpdateError translates ConnectorManager.Update errors into the
+// right HTTP status / message pair.
+func writeConnectorUpdateError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, errConnectorNotFound)
+	case errors.Is(err, store.ErrDuplicateName):
+		writeError(w, http.StatusConflict, "connector name already exists")
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+// propagateOwnershipChange mirrors a (shared / user_id) flip into OpenSearch
+// so chunks already indexed pick up the new visibility without a re-sync.
+// Best-effort — a failure is logged and the update still returns 200.
+func (h *handler) propagateOwnershipChange(ctx context.Context, cfg *model.ConnectorConfig) {
+	ownerID := ""
+	if cfg.UserID != nil {
+		ownerID = cfg.UserID.String()
+	}
+	if err := h.search.UpdateOwnershipBySource(ctx, cfg.Type, cfg.Name, ownerID, cfg.Shared); err != nil {
+		h.log.Warn("failed to propagate ownership change to search index",
+			zap.String("connector", cfg.Name),
+			zap.Error(err),
+		)
+	}
 }
 
 // DeleteConnector godoc

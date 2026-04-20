@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/muty/nexus/internal/search"
 	"go.uber.org/zap"
 )
 
@@ -63,20 +65,11 @@ func (h *handler) GetAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheBySource := map[string]int64{}
-	cacheCountBySource := map[string]int64{}
-	if h.binaryStore != nil {
-		cacheStats, err := h.binaryStore.Stats(ctx)
-		if err != nil {
-			h.log.Error("admin stats: binary stats", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to load cache stats")
-			return
-		}
-		for _, s := range cacheStats {
-			k := s.SourceType + "/" + s.SourceName
-			cacheBySource[k] = s.TotalSize
-			cacheCountBySource[k] = s.Count
-		}
+	cacheBySource, cacheCountBySource, err := h.loadCacheBySource(ctx)
+	if err != nil {
+		h.log.Error("admin stats: binary stats", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to load cache stats")
+		return
 	}
 
 	usersCount, err := h.store.CountUsers(ctx)
@@ -86,6 +79,52 @@ func (h *handler) GetAdminStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	perSource, totalDocs := buildPerSourceStats(aggs, cacheBySource, cacheCountBySource)
+	sortPerSourceStats(perSource)
+
+	resp := AdminStats{
+		TotalDocuments: totalDocs,
+		TotalChunks:    totalChunks,
+		UsersCount:     usersCount,
+		PerSource:      perSource,
+		Embedding: AdminEngineStats{
+			Enabled:   h.em.Get() != nil,
+			Provider:  h.em.Provider(),
+			Model:     h.em.Model(),
+			Dimension: h.em.Dimension(),
+		},
+		Rerank: AdminEngineStats{
+			Enabled:  h.rm.Get() != nil,
+			Provider: h.rm.Provider(),
+			Model:    h.rm.Model(),
+		},
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// loadCacheBySource fetches binary cache stats keyed by "sourceType/sourceName".
+// Returns empty maps when the binary store isn't configured.
+func (h *handler) loadCacheBySource(ctx context.Context) (map[string]int64, map[string]int64, error) {
+	cacheBySource := map[string]int64{}
+	cacheCountBySource := map[string]int64{}
+	if h.binaryStore == nil {
+		return cacheBySource, cacheCountBySource, nil
+	}
+	cacheStats, err := h.binaryStore.Stats(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, s := range cacheStats {
+		k := s.SourceType + "/" + s.SourceName
+		cacheBySource[k] = s.TotalSize
+		cacheCountBySource[k] = s.Count
+	}
+	return cacheBySource, cacheCountBySource, nil
+}
+
+// buildPerSourceStats converts OpenSearch aggregates into AdminPerSourceStats
+// rows and returns the running total document count.
+func buildPerSourceStats(aggs []search.SourceAggregate, cacheBytes, cacheCount map[string]int64) ([]AdminPerSourceStats, int64) {
 	perSource := make([]AdminPerSourceStats, 0, len(aggs))
 	var totalDocs int64
 	for _, a := range aggs {
@@ -106,17 +145,19 @@ func (h *handler) GetAdminStats(w http.ResponseWriter, r *http.Request) {
 			ChunkCount:      a.DocCount,
 			LatestIndexedAt: latest,
 			FirstIndexedAt:  first,
-			CacheCount:      cacheCountBySource[k],
-			CacheBytes:      cacheBySource[k],
+			CacheCount:      cacheCount[k],
+			CacheBytes:      cacheBytes[k],
 		})
 		totalDocs += a.DistinctCount
 	}
+	return perSource, totalDocs
+}
 
-	// Stable, UI-friendly ordering: most recently indexed first, tiebreak by
-	// source_type + source_name so equal-timestamps don't shuffle between
-	// requests.
-	sort.SliceStable(perSource, func(i, j int) bool {
-		li, lj := perSource[i].LatestIndexedAt, perSource[j].LatestIndexedAt
+// sortPerSourceStats orders rows most-recent-first with a source-type/name
+// tiebreaker so equal timestamps don't shuffle between requests.
+func sortPerSourceStats(rows []AdminPerSourceStats) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		li, lj := rows[i].LatestIndexedAt, rows[j].LatestIndexedAt
 		switch {
 		case li != nil && lj != nil && !li.Equal(*lj):
 			return li.After(*lj)
@@ -125,28 +166,9 @@ func (h *handler) GetAdminStats(w http.ResponseWriter, r *http.Request) {
 		case li == nil && lj != nil:
 			return false
 		}
-		if perSource[i].SourceType != perSource[j].SourceType {
-			return perSource[i].SourceType < perSource[j].SourceType
+		if rows[i].SourceType != rows[j].SourceType {
+			return rows[i].SourceType < rows[j].SourceType
 		}
-		return perSource[i].SourceName < perSource[j].SourceName
+		return rows[i].SourceName < rows[j].SourceName
 	})
-
-	resp := AdminStats{
-		TotalDocuments: totalDocs,
-		TotalChunks:    totalChunks,
-		UsersCount:     usersCount,
-		PerSource:      perSource,
-		Embedding: AdminEngineStats{
-			Enabled:   h.em.Get() != nil,
-			Provider:  h.em.Provider(),
-			Model:     h.em.Model(),
-			Dimension: h.em.Dimension(),
-		},
-		Rerank: AdminEngineStats{
-			Enabled:  h.rm.Get() != nil,
-			Provider: h.rm.Provider(),
-			Model:    h.rm.Model(),
-		},
-	}
-	writeJSON(w, http.StatusOK, resp)
 }

@@ -59,28 +59,7 @@ func calcMetadataBonus(doc *model.DocumentHit, terms []string) float64 {
 		return 0
 	}
 
-	// Collect all metadata text to match against
-	var metaText strings.Builder
-	for _, field := range fields {
-		val := doc.Metadata[field]
-		if val == nil {
-			continue
-		}
-		switch v := val.(type) {
-		case string:
-			metaText.WriteString(strings.ToLower(v))
-			metaText.WriteByte(' ')
-		case []any:
-			for _, item := range v {
-				if s, ok := item.(string); ok {
-					metaText.WriteString(strings.ToLower(s))
-					metaText.WriteByte(' ')
-				}
-			}
-		}
-	}
-
-	combined := metaText.String()
+	combined := collectMetadataText(doc.Metadata, fields)
 	if combined == "" {
 		return 0
 	}
@@ -99,6 +78,35 @@ func calcMetadataBonus(doc *model.DocumentHit, terms []string) float64 {
 
 	// Bonus proportional to fraction of terms matched
 	return metadataBonus * float64(matched) / float64(len(terms))
+}
+
+// collectMetadataText flattens the named metadata fields into a single
+// space-separated lowercase string suitable for substring matching. Supports
+// string and []any shapes (strings inside the slice); other shapes are
+// silently ignored.
+func collectMetadataText(metadata map[string]any, fields []string) string {
+	var sb strings.Builder
+	for _, field := range fields {
+		appendMetadataValue(&sb, metadata[field])
+	}
+	return sb.String()
+}
+
+// appendMetadataValue writes the lowercase, space-padded form of val to sb for
+// recognised scalar/slice shapes, skipping unknown types.
+func appendMetadataValue(sb *strings.Builder, val any) {
+	switch v := val.(type) {
+	case string:
+		sb.WriteString(strings.ToLower(v))
+		sb.WriteByte(' ')
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				sb.WriteString(strings.ToLower(s))
+				sb.WriteByte(' ')
+			}
+		}
+	}
 }
 
 // tokenize splits a query into lowercase terms, stripping punctuation.

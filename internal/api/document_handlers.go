@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -154,23 +155,12 @@ func (h *handler) GetRelatedDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chunk, err := h.search.GetChunkByDocID(r.Context(), id.String())
-	if err != nil {
-		if errors.Is(err, search.ErrNotFound) {
-			writeError(w, http.StatusNotFound, errDocumentNotFound)
-			return
-		}
-		h.log.Error("get chunk by doc id failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, errLookupDocument)
+	chunk, ok := h.loadReadableChunk(w, r, id)
+	if !ok {
 		return
 	}
 
 	claims := auth.UserFromContext(r.Context())
-	if !canReadDocument(claims, chunk.OwnerID, chunk.Shared) {
-		writeError(w, http.StatusNotFound, errDocumentNotFound)
-		return
-	}
-
 	out := relatedResponse{Outgoing: []relatedEdge{}, Incoming: []relatedEdge{}}
 
 	// Outgoing: resolve each declared relation. Every edge appears in the
@@ -208,6 +198,27 @@ func (h *handler) GetRelatedDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+// loadReadableChunk fetches a chunk by doc UUID and enforces the caller's
+// visibility — writing the correct HTTP error on failure. Returns ok=false
+// when the caller should abort further handler work.
+func (h *handler) loadReadableChunk(w http.ResponseWriter, r *http.Request, id uuid.UUID) (*model.Chunk, bool) {
+	chunk, err := h.search.GetChunkByDocID(r.Context(), id.String())
+	if err != nil {
+		if errors.Is(err, search.ErrNotFound) {
+			writeError(w, http.StatusNotFound, errDocumentNotFound)
+			return nil, false
+		}
+		h.log.Error("get chunk by doc id failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, errLookupDocument)
+		return nil, false
+	}
+	if !canReadDocument(auth.UserFromContext(r.Context()), chunk.OwnerID, chunk.Shared) {
+		writeError(w, http.StatusNotFound, errDocumentNotFound)
+		return nil, false
+	}
+	return chunk, true
 }
 
 // resolveRelationTarget expands a single outgoing Relation into the
@@ -318,57 +329,83 @@ func (h *handler) GetConversationMessages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	q := r.URL.Query()
-	limit := defaultConversationLimit
-	if s := q.Get("limit"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n <= 0 {
-			writeError(w, http.StatusBadRequest, "invalid 'limit' (expected positive integer)")
-			return
-		}
-		if n > maxConversationLimit {
-			n = maxConversationLimit
-		}
-		limit = n
-	}
-
-	var beforeTS, afterTS, aroundTS time.Time
-	var err error
-	if s := q.Get("before"); s != "" {
-		beforeTS, err = time.Parse(time.RFC3339, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'before' timestamp (expected RFC3339)")
-			return
-		}
-	}
-	if s := q.Get("after"); s != "" {
-		afterTS, err = time.Parse(time.RFC3339, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'after' timestamp (expected RFC3339)")
-			return
-		}
-	}
-	if s := q.Get("around"); s != "" {
-		aroundTS, err = time.Parse(time.RFC3339, s)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid 'around' timestamp (expected RFC3339)")
-			return
-		}
-		if !beforeTS.IsZero() || !afterTS.IsZero() {
-			writeError(w, http.StatusBadRequest, "'around' cannot be combined with 'before' or 'after'")
-			return
-		}
+	params, ok := parseConversationQuery(w, r.URL.Query())
+	if !ok {
+		return
 	}
 
 	claims := auth.UserFromContext(r.Context())
-	if !aroundTS.IsZero() {
-		resp := h.buildAroundResponse(r.Context(), sourceType, conversationID, aroundTS, limit, claims)
+	if !params.around.IsZero() {
+		resp := h.buildAroundResponse(r.Context(), sourceType, conversationID, params.around, params.limit, claims)
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	resp := h.buildDirectionalResponse(r.Context(), sourceType, conversationID, beforeTS, afterTS, limit, claims)
+	resp := h.buildDirectionalResponse(r.Context(), sourceType, conversationID, params.before, params.after, params.limit, claims)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// conversationQuery captures the parsed and validated query-string inputs for
+// GetConversationMessages.
+type conversationQuery struct {
+	limit                 int
+	before, after, around time.Time
+}
+
+// parseConversationQuery validates ?limit, ?before, ?after, ?around and
+// writes a 400 directly to w if anything is malformed. Returns ok=false when
+// the handler should abort.
+func parseConversationQuery(w http.ResponseWriter, q url.Values) (conversationQuery, bool) {
+	out := conversationQuery{limit: defaultConversationLimit}
+
+	if s := q.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid 'limit' (expected positive integer)")
+			return conversationQuery{}, false
+		}
+		if n > maxConversationLimit {
+			n = maxConversationLimit
+		}
+		out.limit = n
+	}
+
+	if ts, ok := parseOptionalRFC3339(w, q.Get("before"), "before"); !ok {
+		return conversationQuery{}, false
+	} else {
+		out.before = ts
+	}
+	if ts, ok := parseOptionalRFC3339(w, q.Get("after"), "after"); !ok {
+		return conversationQuery{}, false
+	} else {
+		out.after = ts
+	}
+	if ts, ok := parseOptionalRFC3339(w, q.Get("around"), "around"); !ok {
+		return conversationQuery{}, false
+	} else {
+		out.around = ts
+	}
+
+	if !out.around.IsZero() && (!out.before.IsZero() || !out.after.IsZero()) {
+		writeError(w, http.StatusBadRequest, "'around' cannot be combined with 'before' or 'after'")
+		return conversationQuery{}, false
+	}
+	return out, true
+}
+
+// parseOptionalRFC3339 parses an optional RFC3339 query string. An empty input
+// returns (zero, true); a malformed one writes a 400 with a field-specific
+// message and returns (zero, false).
+func parseOptionalRFC3339(w http.ResponseWriter, s, field string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, true
+	}
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid '"+field+"' timestamp (expected RFC3339)")
+		return time.Time{}, false
+	}
+	return ts, true
 }
 
 // buildDirectionalResponse handles the single-direction tail / before /

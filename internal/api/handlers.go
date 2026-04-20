@@ -97,59 +97,17 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "query parameter 'q' is required")
 		return
 	}
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 20
-	}
-	// Cap at maxSearchLimit so an attacker can't request millions of
-	// results in a single call. Mirrors the maxConversationLimit pattern
-	// in document_handlers.go.
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > maxSearchOffset {
-		offset = maxSearchOffset
-	}
-
-	req := model.SearchRequest{
-		Query:       query,
-		Limit:       limit,
-		Offset:      offset,
-		Sources:     parseCSV(r.URL.Query().Get("sources")),
-		SourceNames: parseCSV(r.URL.Query().Get("source_names")),
-		DateFrom:    r.URL.Query().Get("date_from"),
-		DateTo:      r.URL.Query().Get("date_to"),
-		OwnerID:     auth.UserIDFromContext(r.Context()).String(),
-	}
+	req := buildSearchRequest(r, query)
 
 	// Stage 1: retrieve candidates. Hybrid (BM25 + kNN) when embedder is
 	// available, otherwise BM25 only. The retrieve stage returns the FULL
 	// deduped candidate pool — pagination happens at the end of this pipeline,
 	// not here, so the reranker sees the full pool.
-	var result *model.SearchResult
-	embedder := h.em.Get()
-	if embedder != nil {
-		embeddings, err := embedder.Embed(r.Context(), []string{query}, embedding.InputTypeQuery)
-		if err == nil && len(embeddings) > 0 {
-			result, err = h.search.HybridSearch(r.Context(), req, embeddings[0])
-			if err != nil {
-				h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
-			}
-		}
-	}
-	if result == nil {
-		var err error
-		result, err = h.search.Search(r.Context(), req)
-		if err != nil {
-			h.log.Error("search failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "search failed")
-			return
-		}
+	result, err := h.retrieveCandidates(r.Context(), query, req)
+	if err != nil {
+		h.log.Error("search failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "search failed")
+		return
 	}
 
 	// Stage 2: optional explain — capture the raw retrieval score before
@@ -180,33 +138,8 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	// snapshot that's safe to read without further locking.
 	rankCfg := h.rankingConfig()
 
-	// Stage 3b: source trust weights. Adjusts reranker scores by a
-	// per-source multiplier so archived documents (Paperless) get a slight
-	// boost and inbox/chat noise (IMAP, Telegram) gets a slight penalty.
-	// Applied before the rerank floor so borderline inbox noise drops
-	// below the threshold while genuinely relevant emails survive.
-	if rerankerActive && rankCfg.SourceTrustEnabled {
-		for i := range result.Documents {
-			w, ok := rankCfg.SourceTrustWeight[result.Documents[i].SourceType]
-			if !ok {
-				w = 1.0
-			}
-			result.Documents[i].Rank *= w
-		}
-	}
-
-	// Stage 4: rerank floor. Drop docs below the relevance threshold. Only
-	// fires when a reranker actually ran — without one, Rank is the raw RRF
-	// score which isn't a meaningful relevance number to threshold against.
-	if rerankerActive {
-		filtered := result.Documents[:0]
-		for _, hit := range result.Documents {
-			if hit.Rank >= rankCfg.RerankerMinScore {
-				filtered = append(filtered, hit)
-			}
-		}
-		result.Documents = filtered
-	}
+	applySourceTrustWeights(result, rankCfg, rerankerActive)
+	applyRerankerFloor(result, rankCfg, rerankerActive)
 
 	// Stage 5: recency decay — boost recent documents, source-specific half-lives.
 	search.ApplyRecencyDecay(result, rankCfg)
@@ -224,8 +157,101 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	// hit has no highlight (semantic-only) or isn't a telegram window.
 	applyWindowMatches(result)
 
-	// Stage 7: pagination. TotalCount reflects the post-filter total so callers
-	// know how many results are available across pages.
+	paginateSearchResult(result, req)
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// buildSearchRequest parses and clamps the query-string pagination + filter
+// parameters into a model.SearchRequest. Invalid inputs fall back to safe
+// defaults — full validation would reject too much legitimate traffic.
+func buildSearchRequest(r *http.Request, query string) model.SearchRequest {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+	// Cap at maxSearchLimit so an attacker can't request millions of
+	// results in a single call. Mirrors the maxConversationLimit pattern
+	// in document_handlers.go.
+	if limit > maxSearchLimit {
+		limit = maxSearchLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxSearchOffset {
+		offset = maxSearchOffset
+	}
+	return model.SearchRequest{
+		Query:       query,
+		Limit:       limit,
+		Offset:      offset,
+		Sources:     parseCSV(r.URL.Query().Get("sources")),
+		SourceNames: parseCSV(r.URL.Query().Get("source_names")),
+		DateFrom:    r.URL.Query().Get("date_from"),
+		DateTo:      r.URL.Query().Get("date_to"),
+		OwnerID:     auth.UserIDFromContext(r.Context()).String(),
+	}
+}
+
+// retrieveCandidates fetches the candidate pool, preferring HybridSearch when
+// an embedder is configured and the query successfully embeds. Falls back to
+// BM25-only on any embed / hybrid error so a degraded embedding path never
+// turns into a user-visible failure.
+func (h *handler) retrieveCandidates(ctx context.Context, query string, req model.SearchRequest) (*model.SearchResult, error) {
+	var result *model.SearchResult
+	if embedder := h.em.Get(); embedder != nil {
+		embeddings, err := embedder.Embed(ctx, []string{query}, embedding.InputTypeQuery)
+		if err == nil && len(embeddings) > 0 {
+			result, err = h.search.HybridSearch(ctx, req, embeddings[0])
+			if err != nil {
+				h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
+				result = nil
+			}
+		}
+	}
+	if result != nil {
+		return result, nil
+	}
+	return h.search.Search(ctx, req)
+}
+
+// applySourceTrustWeights multiplies each hit's Rank by its per-source trust
+// weight (defaulting to 1.0). No-op when no reranker ran or the feature is
+// disabled — without a reranker, Rank is raw RRF which isn't meaningful to
+// weight.
+func applySourceTrustWeights(result *model.SearchResult, rankCfg search.RankingConfig, rerankerActive bool) {
+	if !rerankerActive || !rankCfg.SourceTrustEnabled {
+		return
+	}
+	for i := range result.Documents {
+		w, ok := rankCfg.SourceTrustWeight[result.Documents[i].SourceType]
+		if !ok {
+			w = 1.0
+		}
+		result.Documents[i].Rank *= w
+	}
+}
+
+// applyRerankerFloor drops hits whose reranked score falls below the
+// configured floor. No-op when no reranker ran.
+func applyRerankerFloor(result *model.SearchResult, rankCfg search.RankingConfig, rerankerActive bool) {
+	if !rerankerActive {
+		return
+	}
+	filtered := result.Documents[:0]
+	for _, hit := range result.Documents {
+		if hit.Rank >= rankCfg.RerankerMinScore {
+			filtered = append(filtered, hit)
+		}
+	}
+	result.Documents = filtered
+}
+
+// paginateSearchResult records the post-filter total onto TotalCount, then
+// slices Documents down to the requested offset/limit page.
+func paginateSearchResult(result *model.SearchResult, req model.SearchRequest) {
 	result.TotalCount = len(result.Documents)
 	if req.Offset > 0 && req.Offset < len(result.Documents) {
 		result.Documents = result.Documents[req.Offset:]
@@ -235,8 +261,6 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	if len(result.Documents) > req.Limit {
 		result.Documents = result.Documents[:req.Limit]
 	}
-
-	writeJSON(w, http.StatusOK, result)
 }
 
 // TriggerSync godoc
@@ -468,37 +492,52 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 		if !canModifyConnector(claims, &cfg) {
 			continue // user cannot trigger sync on this connector
 		}
-		connName := entry.Conn.Name()
-		ownerID := ""
-		if entry.Config.UserID != nil {
-			ownerID = entry.Config.UserID.String()
-		}
-		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
-		if err != nil {
-			if errors.Is(err, ErrAlreadyRunning) {
-				continue // silently skip connectors already syncing
-			}
-			h.log.Error("sync all: start failed", zap.String("connector", connName), zap.Error(err))
+		job := h.startBatchSyncJob(connID, entry, "sync all")
+		if job == nil {
 			continue
 		}
 		snapshot := *job
 		jobs = append(jobs, &snapshot)
-
-		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			progress := func(total, processed, errors int) {
-				h.syncJobs.Update(jobID, total, processed, errors)
-			}
-			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
-			if report != nil {
-				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
-			}
-			h.syncJobs.Complete(jobID, err)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				h.log.Error("sync all: connector failed", zap.String("connector", n), zap.Error(err))
-			}
-		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
 	}
 	writeJSON(w, http.StatusAccepted, jobs)
+}
+
+// startBatchSyncJob starts a sync job for a connector as part of a batch
+// operation (SyncAll/TriggerReindex), logs failures with the given prefix and
+// skips already-running connectors. Returns the started job, or nil if the
+// connector couldn't be started.
+func (h *handler) startBatchSyncJob(connID uuid.UUID, entry ConnectorWithConfig, logPrefix string) *SyncJob {
+	connName := entry.Conn.Name()
+	ownerID := ""
+	if entry.Config.UserID != nil {
+		ownerID = entry.Config.UserID.String()
+	}
+	job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
+	if err != nil {
+		if errors.Is(err, ErrAlreadyRunning) {
+			return nil // silently skip connectors already syncing
+		}
+		h.log.Error(logPrefix+": start failed", zap.String("connector", connName), zap.Error(err))
+		return nil
+	}
+	go h.runBatchSyncJob(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID, logPrefix)
+	return job
+}
+
+// runBatchSyncJob drives a single connector sync inside the pipeline and
+// records progress/completion on the syncJobs registry.
+func (h *handler) runBatchSyncJob(cid uuid.UUID, ctx context.Context, name string, c connector.Connector, ownerID string, shared bool, jobID string, logPrefix string) {
+	progress := func(total, processed, errCount int) {
+		h.syncJobs.Update(jobID, total, processed, errCount)
+	}
+	report, err := h.pipeline.RunWithProgress(ctx, cid, c, ownerID, shared, progress)
+	if report != nil {
+		h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
+	}
+	h.syncJobs.Complete(jobID, err)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		h.log.Error(logPrefix+": connector failed", zap.String("connector", name), zap.Error(err))
+	}
 }
 
 // TriggerReindex godoc
@@ -530,33 +569,9 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 	// 3. Sync all connectors
 	var count int
 	for connID, entry := range h.cm.All() {
-		connName := entry.Conn.Name()
-		ownerID := ""
-		if entry.Config.UserID != nil {
-			ownerID = entry.Config.UserID.String()
+		if job := h.startBatchSyncJob(connID, entry, "reindex"); job != nil {
+			count++
 		}
-		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
-		if err != nil {
-			if errors.Is(err, ErrAlreadyRunning) {
-				continue
-			}
-			h.log.Error("reindex: start failed", zap.String("connector", connName), zap.Error(err))
-			continue
-		}
-		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			progress := func(total, processed, errors int) {
-				h.syncJobs.Update(jobID, total, processed, errors)
-			}
-			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
-			if report != nil {
-				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
-			}
-			h.syncJobs.Complete(jobID, err)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				h.log.Error("reindex: connector failed", zap.String("connector", n), zap.Error(err))
-			}
-		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
-		count++
 	}
 
 	h.log.Info("reindex started", zap.Int("dimension", dim), zap.Int("connectors", count))

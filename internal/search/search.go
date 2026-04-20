@@ -314,17 +314,8 @@ func (c *Client) CheckMappingCurrent(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("search: parse mapping: %w", err)
 	}
 
-	for _, field := range []string{"title", "content"} {
-		f, ok := parsed.Properties[field]
-		if !ok {
-			return false, nil
-		}
-		for _, l := range c.languages {
-			sub, ok := f.Fields[l.Name]
-			if !ok || sub.Analyzer != l.OpenSearchAnalyzer {
-				return false, nil
-			}
-		}
+	if !c.hasExpectedLanguageSubfields(parsed.Properties) {
+		return false, nil
 	}
 	// New top-level fields introduced for the document-relations work —
 	// missing them means the index predates the feature and should be
@@ -335,6 +326,32 @@ func (c *Client) CheckMappingCurrent(ctx context.Context) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// hasExpectedLanguageSubfields reports whether title/content expose the
+// per-language sub-fields (e.g. `content.bulgarian`) with the current
+// analyzers. Used as a drift check before serving search.
+func (c *Client) hasExpectedLanguageSubfields(props map[string]struct {
+	Type     string `json:"type"`
+	Analyzer string `json:"analyzer"`
+	Fields   map[string]struct {
+		Type     string `json:"type"`
+		Analyzer string `json:"analyzer"`
+	} `json:"fields"`
+}) bool {
+	for _, field := range []string{"title", "content"} {
+		f, ok := props[field]
+		if !ok {
+			return false
+		}
+		for _, l := range c.languages {
+			sub, ok := f.Fields[l.Name]
+			if !ok || sub.Analyzer != l.OpenSearchAnalyzer {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Search performs a BM25 full-text search (no vector search).
@@ -471,56 +488,9 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 		if err := json.Unmarshal(raw, &chunk); err != nil {
 			continue
 		}
-
-		// Highlights can appear on the plain content field or on any
-		// of the language-analyzed sub-fields (content.bulgarian,
-		// content.english, …) depending on which analyzer matched.
-		// Prefer plain content when available, otherwise take the
-		// first non-empty sub-field fragment.
-		headline := ""
-		if contentHL, ok := hit.Highlight["content"]; ok && len(contentHL) > 0 {
-			headline = contentHL[0]
-		} else {
-			for k, v := range hit.Highlight {
-				if strings.HasPrefix(k, contentFieldPrefix) && len(v) > 0 {
-					headline = v[0]
-					break
-				}
-			}
-		}
-
+		headline := extractHighlightHeadline(hit.Highlight)
 		score := float64(hit.Score)
-
-		// Keep the highest-scored chunk per parent document
-		if existing, ok := chunkData[chunk.ParentID]; ok {
-			if score > existing.score {
-				existing.headline = headline
-				existing.score = score
-			}
-		} else {
-			chunkData[chunk.ParentID] = &rankedChunk{
-				parentID: chunk.ParentID,
-				doc: model.Document{
-					ID:             model.DocumentID(chunk.SourceType, chunk.SourceName, chunk.SourceID),
-					SourceType:     chunk.SourceType,
-					SourceName:     chunk.SourceName,
-					SourceID:       chunk.SourceID,
-					Title:          chunk.Title,
-					Content:        chunk.Content,
-					MimeType:       chunk.MimeType,
-					Size:           chunk.Size,
-					Metadata:       chunk.Metadata,
-					Relations:      chunk.Relations,
-					ConversationID: chunk.ConversationID,
-					URL:            chunk.URL,
-					Visibility:     chunk.Visibility,
-					CreatedAt:      chunk.CreatedAt,
-					IndexedAt:      chunk.IndexedAt,
-				},
-				headline: headline,
-				score:    score,
-			}
-		}
+		mergeRankedChunk(chunkData, &chunk, headline, score)
 	}
 
 	// Collect all deduped results — no score-floor filtering here (would be
@@ -565,6 +535,55 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 		Query:      req.Query,
 		Facets:     facets,
 	}, nil
+}
+
+// extractHighlightHeadline picks a preview snippet from OpenSearch highlight
+// fragments. Prefers the plain `content` field and falls back to any
+// language-analyzed sub-field (content.bulgarian, content.english, …).
+func extractHighlightHeadline(highlight map[string][]string) string {
+	if contentHL, ok := highlight["content"]; ok && len(contentHL) > 0 {
+		return contentHL[0]
+	}
+	for k, v := range highlight {
+		if strings.HasPrefix(k, contentFieldPrefix) && len(v) > 0 {
+			return v[0]
+		}
+	}
+	return ""
+}
+
+// mergeRankedChunk upserts a chunk into chunkData keyed by parent document,
+// keeping the highest-scored chunk per parent.
+func mergeRankedChunk(chunkData map[string]*rankedChunk, chunk *model.Chunk, headline string, score float64) {
+	if existing, ok := chunkData[chunk.ParentID]; ok {
+		if score > existing.score {
+			existing.headline = headline
+			existing.score = score
+		}
+		return
+	}
+	chunkData[chunk.ParentID] = &rankedChunk{
+		parentID: chunk.ParentID,
+		doc: model.Document{
+			ID:             model.DocumentID(chunk.SourceType, chunk.SourceName, chunk.SourceID),
+			SourceType:     chunk.SourceType,
+			SourceName:     chunk.SourceName,
+			SourceID:       chunk.SourceID,
+			Title:          chunk.Title,
+			Content:        chunk.Content,
+			MimeType:       chunk.MimeType,
+			Size:           chunk.Size,
+			Metadata:       chunk.Metadata,
+			Relations:      chunk.Relations,
+			ConversationID: chunk.ConversationID,
+			URL:            chunk.URL,
+			Visibility:     chunk.Visibility,
+			CreatedAt:      chunk.CreatedAt,
+			IndexedAt:      chunk.IndexedAt,
+		},
+		headline: headline,
+		score:    score,
+	}
 }
 
 // UpdateOwnershipBySource sets the owner_id and shared fields on every chunk
@@ -710,63 +729,76 @@ func (c *Client) ListIndexedSourceIDs(ctx context.Context, sourceType, sourceNam
 	var out []string
 	var afterKey map[string]any
 	for {
-		composite := map[string]any{
-			"size":    listIndexedSourceIDsPageSize,
-			"sources": []map[string]any{{"sid": map[string]any{"terms": map[string]any{"field": "source_id"}}}},
+		sids, next, done, err := c.fetchSourceIDPage(ctx, sourceType, sourceName, afterKey)
+		if err != nil {
+			return nil, err
 		}
-		if afterKey != nil {
-			composite["after"] = afterKey
+		out = append(out, sids...)
+		if done {
+			return out, nil
 		}
-		query := map[string]any{
-			"size": 0,
-			"query": map[string]any{
-				"bool": map[string]any{
-					"filter": []map[string]any{
-						{"term": map[string]any{"source_type": sourceType}},
-						{"term": map[string]any{"source_name": sourceName}},
-					},
+		afterKey = next
+	}
+}
+
+// fetchSourceIDPage fetches a single composite-aggregation page of source_ids
+// for ListIndexedSourceIDs. Returns the page's source_ids, the next afterKey
+// (or nil), and a done flag that signals pagination termination.
+func (c *Client) fetchSourceIDPage(ctx context.Context, sourceType, sourceName string, afterKey map[string]any) ([]string, map[string]any, bool, error) {
+	composite := map[string]any{
+		"size":    listIndexedSourceIDsPageSize,
+		"sources": []map[string]any{{"sid": map[string]any{"terms": map[string]any{"field": "source_id"}}}},
+	}
+	if afterKey != nil {
+		composite["after"] = afterKey
+	}
+	query := map[string]any{
+		"size": 0,
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"source_type": sourceType}},
+					{"term": map[string]any{"source_name": sourceName}},
 				},
 			},
-			"aggs": map[string]any{"source_ids": map[string]any{"composite": composite}},
-		}
-		body, err := json.Marshal(query)
-		if err != nil {
-			return nil, fmt.Errorf("search: marshal list-source-ids query: %w", err)
-		}
-		resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
-			Indices: []string{c.index},
-			Body:    bytes.NewReader(body),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("search: list source ids: %w", err)
-		}
-		if len(resp.Aggregations) == 0 {
-			return out, nil
-		}
-		var aggs struct {
-			SourceIDs struct {
-				AfterKey map[string]any `json:"after_key"`
-				Buckets  []struct {
-					Key map[string]string `json:"key"`
-				} `json:"buckets"`
-			} `json:"source_ids"`
-		}
-		if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
-			return nil, fmt.Errorf("search: parse source_ids agg: %w", err)
-		}
-		for _, b := range aggs.SourceIDs.Buckets {
-			if sid, ok := b.Key["sid"]; ok {
-				out = append(out, sid)
-			}
-		}
-		// after_key is omitted on the final page, signaling we've seen
-		// every bucket. Returning an empty buckets array is also a
-		// valid termination — guard both.
-		if aggs.SourceIDs.AfterKey == nil || len(aggs.SourceIDs.Buckets) == 0 {
-			return out, nil
-		}
-		afterKey = aggs.SourceIDs.AfterKey
+		},
+		"aggs": map[string]any{"source_ids": map[string]any{"composite": composite}},
 	}
+	body, err := json.Marshal(query)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("search: marshal list-source-ids query: %w", err)
+	}
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("search: list source ids: %w", err)
+	}
+	if len(resp.Aggregations) == 0 {
+		return nil, nil, true, nil
+	}
+	var aggs struct {
+		SourceIDs struct {
+			AfterKey map[string]any `json:"after_key"`
+			Buckets  []struct {
+				Key map[string]string `json:"key"`
+			} `json:"buckets"`
+		} `json:"source_ids"`
+	}
+	if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
+		return nil, nil, false, fmt.Errorf("search: parse source_ids agg: %w", err)
+	}
+	sids := make([]string, 0, len(aggs.SourceIDs.Buckets))
+	for _, b := range aggs.SourceIDs.Buckets {
+		if sid, ok := b.Key["sid"]; ok {
+			sids = append(sids, sid)
+		}
+	}
+	// after_key is omitted on the final page, signaling we've seen every
+	// bucket. An empty buckets array is also a valid termination — guard both.
+	done := aggs.SourceIDs.AfterKey == nil || len(aggs.SourceIDs.Buckets) == 0
+	return sids, aggs.SourceIDs.AfterKey, done, nil
 }
 
 // SourceAggregate summarises the indexed content for one
@@ -787,96 +819,120 @@ type SourceAggregate struct {
 // `*storage.BinaryStore.Stats` so the UI can show per-source doc count and
 // cache footprint in one row.
 func (c *Client) AggregateByTypeAndName(ctx context.Context) ([]SourceAggregate, int64, error) {
-	const pageSize = 1000
 	var out []SourceAggregate
 	var afterKey map[string]any
 	var total int64
 	for {
-		composite := map[string]any{
-			"size": pageSize,
-			"sources": []map[string]any{
-				{"st": map[string]any{"terms": map[string]any{"field": "source_type"}}},
-				{"sn": map[string]any{"terms": map[string]any{"field": "source_name"}}},
-			},
+		page, err := c.fetchAggregateBySourcePage(ctx, afterKey)
+		if err != nil {
+			return nil, 0, err
 		}
-		if afterKey != nil {
-			composite["after"] = afterKey
+		// track_total_hits is stable across pages; capture once.
+		if afterKey == nil {
+			total = page.total
 		}
-		query := map[string]any{
-			"size":             0,
-			"track_total_hits": true,
-			"query":            map[string]any{"match_all": map[string]any{}},
-			"aggs": map[string]any{
-				"by_source": map[string]any{
-					"composite": composite,
-					"aggregations": map[string]any{
-						"max_indexed_at": map[string]any{"max": map[string]any{"field": "indexed_at"}},
-						"min_indexed_at": map[string]any{"min": map[string]any{"field": "indexed_at"}},
-						"distinct_docs":  map[string]any{"cardinality": map[string]any{"field": "source_id"}},
-					},
+		out = append(out, page.aggs...)
+		if page.done {
+			return out, total, nil
+		}
+		afterKey = page.afterKey
+	}
+}
+
+// aggregateBySourcePage is the intermediate result of one composite-agg page
+// for AggregateByTypeAndName.
+type aggregateBySourcePage struct {
+	aggs     []SourceAggregate
+	afterKey map[string]any
+	total    int64
+	done     bool
+}
+
+// fetchAggregateBySourcePage fetches a single composite-aggregation page of
+// (source_type, source_name) aggregates.
+func (c *Client) fetchAggregateBySourcePage(ctx context.Context, afterKey map[string]any) (aggregateBySourcePage, error) {
+	const pageSize = 1000
+	composite := map[string]any{
+		"size": pageSize,
+		"sources": []map[string]any{
+			{"st": map[string]any{"terms": map[string]any{"field": "source_type"}}},
+			{"sn": map[string]any{"terms": map[string]any{"field": "source_name"}}},
+		},
+	}
+	if afterKey != nil {
+		composite["after"] = afterKey
+	}
+	query := map[string]any{
+		"size":             0,
+		"track_total_hits": true,
+		"query":            map[string]any{"match_all": map[string]any{}},
+		"aggs": map[string]any{
+			"by_source": map[string]any{
+				"composite": composite,
+				"aggregations": map[string]any{
+					"max_indexed_at": map[string]any{"max": map[string]any{"field": "indexed_at"}},
+					"min_indexed_at": map[string]any{"min": map[string]any{"field": "indexed_at"}},
+					"distinct_docs":  map[string]any{"cardinality": map[string]any{"field": "source_id"}},
 				},
 			},
-		}
-		body, err := json.Marshal(query)
-		if err != nil {
-			return nil, 0, fmt.Errorf("search: marshal aggregate-by-source query: %w", err)
-		}
-		resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
-			Indices: []string{c.index},
-			Body:    bytes.NewReader(body),
-		})
-		if err != nil {
-			return nil, 0, fmt.Errorf("search: aggregate by source: %w", err)
-		}
-		// track_total_hits forces an exact hit count. Captured once (buckets
-		// are paginated but hit count is stable across pages).
-		if afterKey == nil {
-			total = int64(resp.Hits.Total.Value)
-		}
-		if len(resp.Aggregations) == 0 {
-			return out, total, nil
-		}
-		var aggs struct {
-			BySource struct {
-				AfterKey map[string]any `json:"after_key"`
-				Buckets  []struct {
-					Key          map[string]string `json:"key"`
-					DocCount     int64             `json:"doc_count"`
-					MaxIndexedAt struct {
-						Value float64 `json:"value"`
-					} `json:"max_indexed_at"`
-					MinIndexedAt struct {
-						Value float64 `json:"value"`
-					} `json:"min_indexed_at"`
-					DistinctDocs struct {
-						Value int64 `json:"value"`
-					} `json:"distinct_docs"`
-				} `json:"buckets"`
-			} `json:"by_source"`
-		}
-		if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
-			return nil, 0, fmt.Errorf("search: parse by_source agg: %w", err)
-		}
-		for _, b := range aggs.BySource.Buckets {
-			agg := SourceAggregate{
-				SourceType:    b.Key["st"],
-				SourceName:    b.Key["sn"],
-				DocCount:      b.DocCount,
-				DistinctCount: b.DistinctDocs.Value,
-			}
-			if b.MaxIndexedAt.Value > 0 {
-				agg.MaxIndexedAt = time.UnixMilli(int64(b.MaxIndexedAt.Value)).UTC()
-			}
-			if b.MinIndexedAt.Value > 0 {
-				agg.MinIndexedAt = time.UnixMilli(int64(b.MinIndexedAt.Value)).UTC()
-			}
-			out = append(out, agg)
-		}
-		if aggs.BySource.AfterKey == nil || len(aggs.BySource.Buckets) == 0 {
-			return out, total, nil
-		}
-		afterKey = aggs.BySource.AfterKey
+		},
 	}
+	body, err := json.Marshal(query)
+	if err != nil {
+		return aggregateBySourcePage{}, fmt.Errorf("search: marshal aggregate-by-source query: %w", err)
+	}
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return aggregateBySourcePage{}, fmt.Errorf("search: aggregate by source: %w", err)
+	}
+	page := aggregateBySourcePage{total: int64(resp.Hits.Total.Value)}
+	if len(resp.Aggregations) == 0 {
+		page.done = true
+		return page, nil
+	}
+	var aggs struct {
+		BySource struct {
+			AfterKey map[string]any `json:"after_key"`
+			Buckets  []struct {
+				Key          map[string]string `json:"key"`
+				DocCount     int64             `json:"doc_count"`
+				MaxIndexedAt struct {
+					Value float64 `json:"value"`
+				} `json:"max_indexed_at"`
+				MinIndexedAt struct {
+					Value float64 `json:"value"`
+				} `json:"min_indexed_at"`
+				DistinctDocs struct {
+					Value int64 `json:"value"`
+				} `json:"distinct_docs"`
+			} `json:"buckets"`
+		} `json:"by_source"`
+	}
+	if err := json.Unmarshal(resp.Aggregations, &aggs); err != nil {
+		return aggregateBySourcePage{}, fmt.Errorf("search: parse by_source agg: %w", err)
+	}
+	page.aggs = make([]SourceAggregate, 0, len(aggs.BySource.Buckets))
+	for _, b := range aggs.BySource.Buckets {
+		agg := SourceAggregate{
+			SourceType:    b.Key["st"],
+			SourceName:    b.Key["sn"],
+			DocCount:      b.DocCount,
+			DistinctCount: b.DistinctDocs.Value,
+		}
+		if b.MaxIndexedAt.Value > 0 {
+			agg.MaxIndexedAt = time.UnixMilli(int64(b.MaxIndexedAt.Value)).UTC()
+		}
+		if b.MinIndexedAt.Value > 0 {
+			agg.MinIndexedAt = time.UnixMilli(int64(b.MinIndexedAt.Value)).UTC()
+		}
+		page.aggs = append(page.aggs, agg)
+	}
+	page.afterKey = aggs.BySource.AfterKey
+	page.done = aggs.BySource.AfterKey == nil || len(aggs.BySource.Buckets) == 0
+	return page, nil
 }
 
 // DeleteBySource deletes all documents from a specific source.

@@ -75,25 +75,29 @@ func LoadConfig(ctx context.Context, r SettingsReader) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	if v, ok := settings[SettingRetentionDays]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.RetentionDays = n
-		}
-	}
-	if v, ok := settings[SettingRetentionPerConn]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.RetentionPerConnector = n
-		}
-	}
-	if v, ok := settings[SettingSweepIntervalMins]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.SweepIntervalMinutes = n
-		}
-	}
+	applyIntSetting(settings, SettingRetentionDays, &cfg.RetentionDays, 0)
+	applyIntSetting(settings, SettingRetentionPerConn, &cfg.RetentionPerConnector, 0)
+	applyIntSetting(settings, SettingSweepIntervalMins, &cfg.SweepIntervalMinutes, 1)
+
 	if cfg.SweepIntervalMinutes < MinSweepIntervalMins {
 		cfg.SweepIntervalMinutes = MinSweepIntervalMins
 	}
 	return cfg, nil
+}
+
+// applyIntSetting parses an integer setting into dest when present, non-empty,
+// and at least minValue. Silently leaves dest unchanged on any parse failure
+// so callers keep their pre-populated defaults.
+func applyIntSetting(settings map[string]string, key string, dest *int, minValue int) {
+	v, ok := settings[key]
+	if !ok || v == "" {
+		return
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < minValue {
+		return
+	}
+	*dest = n
 }
 
 // Sweeper periodically prunes sync_runs according to retention config.

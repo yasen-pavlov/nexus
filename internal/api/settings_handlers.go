@@ -3,13 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
-	"github.com/google/uuid"
-	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/syncruns"
 	"go.uber.org/zap"
@@ -132,32 +129,7 @@ func (h *handler) triggerAutoReindex(ctx context.Context, oldDim, newDim int) {
 
 	// Trigger async sync for all connectors
 	for connID, entry := range h.cm.All() {
-		connName := entry.Conn.Name()
-		ownerID := ""
-		if entry.Config.UserID != nil {
-			ownerID = entry.Config.UserID.String()
-		}
-		job, runCtx, err := h.syncJobs.Start(connID, connName, entry.Conn.Type())
-		if err != nil {
-			if errors.Is(err, ErrAlreadyRunning) {
-				continue
-			}
-			h.log.Error("auto-reindex: start failed", zap.String("connector", connName), zap.Error(err))
-			continue
-		}
-		go func(cid uuid.UUID, ctx context.Context, n string, c connector.Connector, oid string, shared bool, jobID string) {
-			progress := func(total, processed, errors int) {
-				h.syncJobs.Update(jobID, total, processed, errors)
-			}
-			report, err := h.pipeline.RunWithProgress(ctx, cid, c, oid, shared, progress)
-			if report != nil {
-				h.syncJobs.SetDeleted(jobID, report.DocsDeleted)
-			}
-			h.syncJobs.Complete(jobID, err)
-			if err != nil && !errors.Is(err, context.Canceled) {
-				h.log.Error("auto-reindex: sync failed", zap.String("connector", n), zap.Error(err))
-			}
-		}(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID)
+		h.startBatchSyncJob(connID, entry, "auto-reindex")
 	}
 
 	h.log.Info("auto-reindex: triggered sync for all connectors")
@@ -449,70 +421,15 @@ func (h *handler) UpdateRankingSettings(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
-	// Reject unknown source_type keys so a typo can't silently persist.
-	for k := range req.SourceHalfLifeDays {
-		if !rankingKnownSourceTypes[k] {
-			writeError(w, http.StatusBadRequest, "unknown source_type in source_half_life_days: "+k)
-			return
-		}
-	}
-	for k := range req.SourceRecencyFloor {
-		if !rankingKnownSourceTypes[k] {
-			writeError(w, http.StatusBadRequest, "unknown source_type in source_recency_floor: "+k)
-			return
-		}
-	}
-	for k := range req.SourceTrustWeight {
-		if !rankingKnownSourceTypes[k] {
-			writeError(w, http.StatusBadRequest, "unknown source_type in source_trust_weight: "+k)
-			return
-		}
-	}
-	for k, v := range req.SourceHalfLifeDays {
-		if v <= 0 {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("source_half_life_days[%s] must be > 0", k))
-			return
-		}
-	}
-	for k, v := range req.SourceRecencyFloor {
-		if v < 0 || v > 1 {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("source_recency_floor[%s] must be in [0,1]", k))
-			return
-		}
-	}
-	for k, v := range req.SourceTrustWeight {
-		if v < 0 {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("source_trust_weight[%s] must be >= 0", k))
-			return
-		}
+	if errMsg := validateRankingSettings(&req); errMsg != "" {
+		writeError(w, http.StatusBadRequest, errMsg)
+		return
 	}
 
 	// Merge the submitted partial map onto the current config so partial
 	// PUTs preserve the keys the client didn't send. Rerank min score is
 	// owned by the Rerank settings endpoint now and deliberately preserved.
-	current := h.ranking.Get()
-	next := search.DefaultRankingConfig()
-	for k, v := range current.SourceHalfLifeDays {
-		next.SourceHalfLifeDays[k] = v
-	}
-	for k, v := range req.SourceHalfLifeDays {
-		next.SourceHalfLifeDays[k] = v
-	}
-	for k, v := range current.SourceRecencyFloor {
-		next.SourceRecencyFloor[k] = v
-	}
-	for k, v := range req.SourceRecencyFloor {
-		next.SourceRecencyFloor[k] = v
-	}
-	for k, v := range current.SourceTrustWeight {
-		next.SourceTrustWeight[k] = v
-	}
-	for k, v := range req.SourceTrustWeight {
-		next.SourceTrustWeight[k] = v
-	}
-	next.MetadataBonusEnabled = req.MetadataBonus
-	next.SourceTrustEnabled = req.SourceTrustEnabled
-	next.RerankerMinScore = current.RerankerMinScore
+	next := mergeRankingSettings(h.ranking.Get(), &req)
 
 	if err := h.ranking.Replace(r.Context(), next); err != nil {
 		h.log.Error("update ranking settings failed", zap.Error(err))
@@ -520,6 +437,73 @@ func (h *handler) UpdateRankingSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, rankingSettingsFrom(h.ranking.Get()))
+}
+
+// validateRankingSettings rejects unknown source_type keys and per-key value
+// violations. Returns the first offending message or "" on success.
+func validateRankingSettings(req *rankingSettings) string {
+	if msg := validateKnownSourceTypes(req.SourceHalfLifeDays, "source_half_life_days"); msg != "" {
+		return msg
+	}
+	if msg := validateKnownSourceTypes(req.SourceRecencyFloor, "source_recency_floor"); msg != "" {
+		return msg
+	}
+	if msg := validateKnownSourceTypes(req.SourceTrustWeight, "source_trust_weight"); msg != "" {
+		return msg
+	}
+	for k, v := range req.SourceHalfLifeDays {
+		if v <= 0 {
+			return fmt.Sprintf("source_half_life_days[%s] must be > 0", k)
+		}
+	}
+	for k, v := range req.SourceRecencyFloor {
+		if v < 0 || v > 1 {
+			return fmt.Sprintf("source_recency_floor[%s] must be in [0,1]", k)
+		}
+	}
+	for k, v := range req.SourceTrustWeight {
+		if v < 0 {
+			return fmt.Sprintf("source_trust_weight[%s] must be >= 0", k)
+		}
+	}
+	return ""
+}
+
+// validateKnownSourceTypes reports the first key in m that isn't a recognised
+// source type, formatted against fieldName for a user-facing 400.
+func validateKnownSourceTypes[V any](m map[string]V, fieldName string) string {
+	for k := range m {
+		if !rankingKnownSourceTypes[k] {
+			return "unknown source_type in " + fieldName + ": " + k
+		}
+	}
+	return ""
+}
+
+// mergeRankingSettings overlays the submitted partial maps onto a default
+// RankingConfig seeded with values from current, so partial PUTs preserve the
+// keys the client didn't send. RerankerMinScore stays on current because it's
+// owned by the Rerank settings endpoint.
+func mergeRankingSettings(current search.RankingConfig, req *rankingSettings) search.RankingConfig {
+	next := search.DefaultRankingConfig()
+	overlayRankingMap(next.SourceHalfLifeDays, current.SourceHalfLifeDays, req.SourceHalfLifeDays)
+	overlayRankingMap(next.SourceRecencyFloor, current.SourceRecencyFloor, req.SourceRecencyFloor)
+	overlayRankingMap(next.SourceTrustWeight, current.SourceTrustWeight, req.SourceTrustWeight)
+	next.MetadataBonusEnabled = req.MetadataBonus
+	next.SourceTrustEnabled = req.SourceTrustEnabled
+	next.RerankerMinScore = current.RerankerMinScore
+	return next
+}
+
+// overlayRankingMap writes current into dest first, then the submitted request
+// overrides — request values win when the same key appears in both.
+func overlayRankingMap[V any](dest, current, request map[string]V) {
+	for k, v := range current {
+		dest[k] = v
+	}
+	for k, v := range request {
+		dest[k] = v
+	}
 }
 
 func parseIntOr(s string, fallback int) int {

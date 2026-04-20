@@ -366,22 +366,41 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 	// The retrieval unit (window) != product unit (message) is deliberate:
 	// windows keep embeddings honest on short chat text, messages keep the
 	// reply graph and UI navigation clean. See plans/scalable-beaming-tower.md.
+	records, allMessages, err := c.collectChatHistory(ctx, api, inputPeer, userMap, sinceDate)
+	if err != nil {
+		return nil, err
+	}
+
+	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID, userMap, selfID, dmPeerID)
+
+	docs := make([]model.Document, 0, len(windowDocs)+len(allMessages))
+	docs = append(docs, windowDocs...)
+
+	for _, m := range allMessages {
+		docs = c.appendMessageDocs(ctx, dl, docs, m, chatName, chatID, msgIDToWindow, userMap, selfID, dmPeerID)
+	}
+
+	return docs, nil
+}
+
+// collectChatHistory paginates through MessagesGetHistory for a single peer,
+// merging user maps as it goes, and returns the per-message text records used
+// for conversation windowing alongside the full list of tg.Message values the
+// caller uses to emit per-message and media documents. Honors sinceDate to
+// short-circuit when older history is reached.
+func (c *Connector) collectChatHistory(ctx context.Context, api telegramAPI, inputPeer tg.InputPeerClass, userMap map[int64]*tg.User, sinceDate int) ([]messageRecord, []*tg.Message, error) {
 	var records []messageRecord
 	var allMessages []*tg.Message
 
-	req := &tg.MessagesGetHistoryRequest{
-		Peer:  inputPeer,
-		Limit: 100,
-	}
+	req := &tg.MessagesGetHistoryRequest{Peer: inputPeer, Limit: 100}
 
 	for {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
-
 		result, err := api.MessagesGetHistory(ctx, req)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// GetHistory responses carry users for forwarded messages, reply
@@ -399,101 +418,111 @@ func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl m
 			break
 		}
 
-		stop := false
-		for _, msg := range messages {
-			m, ok := msg.(*tg.Message)
-			if !ok {
-				continue
-			}
-
-			// Skip messages older than sinceDate. Applies before both
-			// text and media handling so we don't re-download media
-			// already cached from previous syncs.
-			if sinceDate > 0 && m.Date < sinceDate {
-				stop = true
-				break
-			}
-
-			allMessages = append(allMessages, m)
-			if m.Message != "" {
-				records = append(records, messageRecord{
-					ID:     m.ID,
-					Text:   m.Message,
-					Date:   time.Unix(int64(m.Date), 0),
-					FromID: m.FromID,
-					Out:    m.Out,
-				})
-			}
-		}
-
+		stop := appendHistoryPage(&records, &allMessages, messages, sinceDate)
 		if stop {
 			break
 		}
-
-		// Pagination: use the last message's ID as offset
-		lastMsg := messages[len(messages)-1]
-		if m, ok := lastMsg.(*tg.Message); ok {
-			req.OffsetID = m.ID
-			req.AddOffset = 0
-		} else {
+		if !advanceHistoryCursor(req, messages) {
 			break
 		}
-
 		if len(messages) < 100 {
 			break // no more messages
 		}
 	}
+	return records, allMessages, nil
+}
 
-	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID, userMap, selfID, dmPeerID)
-
-	docs := make([]model.Document, 0, len(windowDocs)+len(allMessages))
-	docs = append(docs, windowDocs...)
-
-	for _, m := range allMessages {
-		// Skip messages that carry neither text nor media — typically
-		// edit-cleared shells or unsupported event types that leaked
-		// past the *tg.Message type filter. A canonical record for them
-		// would just pollute the chat browser.
-		if m.Message == "" && m.Media == nil {
+// appendHistoryPage appends a page of messages into records/allMessages.
+// Returns true when sinceDate was reached (caller should stop paginating).
+func appendHistoryPage(records *[]messageRecord, allMessages *[]*tg.Message, messages []tg.MessageClass, sinceDate int) bool {
+	for _, msg := range messages {
+		m, ok := msg.(*tg.Message)
+		if !ok {
 			continue
 		}
-		// Eagerly cache the sender's avatar before emitting the doc so
-		// the frontend's first render after sync can show the image
-		// without another sync round-trip. No-op when already cached.
-		if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
-			if user, known := userMap[senderID]; known {
-				c.ensureAvatarCached(ctx, dl, user)
-			}
+		// Skip messages older than sinceDate. Applies before both text and
+		// media handling so we don't re-download media already cached from
+		// previous syncs.
+		if sinceDate > 0 && m.Date < sinceDate {
+			return true
 		}
-		msgDoc := c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID], userMap, selfID, dmPeerID)
-		if m.Media != nil {
-			if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
-				// Annotate the canonical message doc with attachment
-				// metadata so the chat UI can render attachment chips
-				// without a separate /related round-trip per message.
-				if msgDoc.Metadata == nil {
-					msgDoc.Metadata = map[string]any{}
-				}
-				att := map[string]any{
-					"id":        mediaDoc.ID.String(),
-					"source_id": mediaDoc.SourceID,
-					"mime_type": mediaDoc.MimeType,
-					"size":      mediaDoc.Size,
-				}
-				if filename, _ := mediaDoc.Metadata["filename"].(string); filename != "" {
-					att["filename"] = filename
-				} else {
-					att["filename"] = mediaDoc.Title
-				}
-				existing, _ := msgDoc.Metadata["attachments"].([]map[string]any)
-				msgDoc.Metadata["attachments"] = append(existing, att)
-				docs = append(docs, mediaDoc)
-			}
+		*allMessages = append(*allMessages, m)
+		if m.Message != "" {
+			*records = append(*records, messageRecord{
+				ID:     m.ID,
+				Text:   m.Message,
+				Date:   time.Unix(int64(m.Date), 0),
+				FromID: m.FromID,
+				Out:    m.Out,
+			})
 		}
-		docs = append(docs, msgDoc)
 	}
+	return false
+}
 
-	return docs, nil
+// advanceHistoryCursor moves the GetHistory offset to the last message's ID.
+// Returns false when the tail couldn't be cast to *tg.Message (shouldn't
+// happen in practice — returns as a safety net).
+func advanceHistoryCursor(req *tg.MessagesGetHistoryRequest, messages []tg.MessageClass) bool {
+	lastMsg := messages[len(messages)-1]
+	m, ok := lastMsg.(*tg.Message)
+	if !ok {
+		return false
+	}
+	req.OffsetID = m.ID
+	req.AddOffset = 0
+	return true
+}
+
+// appendMessageDocs emits the canonical per-message doc (and optional media
+// doc) for a single Telegram message. Skips shell messages that carry neither
+// text nor media. Returns the docs slice with the new entries appended.
+func (c *Connector) appendMessageDocs(ctx context.Context, dl mediaDownloader, docs []model.Document, m *tg.Message, chatName, chatID string, msgIDToWindow map[int]string, userMap map[int64]*tg.User, selfID, dmPeerID int64) []model.Document {
+	// Skip messages that carry neither text nor media — typically
+	// edit-cleared shells or unsupported event types that leaked past the
+	// *tg.Message type filter. A canonical record for them would just
+	// pollute the chat browser.
+	if m.Message == "" && m.Media == nil {
+		return docs
+	}
+	// Eagerly cache the sender's avatar before emitting the doc so the
+	// frontend's first render after sync can show the image without
+	// another sync round-trip. No-op when already cached.
+	if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
+		if user, known := userMap[senderID]; known {
+			c.ensureAvatarCached(ctx, dl, user)
+		}
+	}
+	msgDoc := c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID], userMap, selfID, dmPeerID)
+	if m.Media != nil {
+		if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
+			attachMediaMetadata(&msgDoc, mediaDoc)
+			docs = append(docs, mediaDoc)
+		}
+	}
+	return append(docs, msgDoc)
+}
+
+// attachMediaMetadata annotates a per-message doc with a compact attachment
+// summary so the chat UI can render attachment chips without a separate
+// /related round-trip per message.
+func attachMediaMetadata(msgDoc *model.Document, mediaDoc model.Document) {
+	if msgDoc.Metadata == nil {
+		msgDoc.Metadata = map[string]any{}
+	}
+	att := map[string]any{
+		"id":        mediaDoc.ID.String(),
+		"source_id": mediaDoc.SourceID,
+		"mime_type": mediaDoc.MimeType,
+		"size":      mediaDoc.Size,
+	}
+	if filename, _ := mediaDoc.Metadata["filename"].(string); filename != "" {
+		att["filename"] = filename
+	} else {
+		att["filename"] = mediaDoc.Title
+	}
+	existing, _ := msgDoc.Metadata["attachments"].([]map[string]any)
+	msgDoc.Metadata["attachments"] = append(existing, att)
 }
 
 // makeMessageDoc emits the canonical per-message record. It's Hidden
@@ -524,50 +553,8 @@ func resolveSenderID(m *tg.Message, selfID, dmPeerID int64) int64 {
 func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSourceID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) model.Document {
 	sourceID := fmt.Sprintf(msgSourceIDFormat, chatID, m.ID)
 
-	relations := make([]model.Relation, 0, 2)
-	if windowSourceID != "" {
-		relations = append(relations, model.Relation{
-			Type:           model.RelationMemberOfWindow,
-			TargetSourceID: windowSourceID,
-			TargetID:       model.DocumentID("telegram", c.name, windowSourceID).String(),
-		})
-	}
-	if h, ok := m.ReplyTo.(*tg.MessageReplyHeader); ok && h.ReplyToMsgID > 0 {
-		targetChatID := chatID
-		if h.ReplyToPeerID != nil {
-			resolved, ok := peerChatID(h.ReplyToPeerID)
-			if !ok {
-				resolved = ""
-			}
-			targetChatID = resolved
-		}
-		if targetChatID != "" {
-			replyTargetSourceID := fmt.Sprintf(msgSourceIDFormat, targetChatID, h.ReplyToMsgID)
-			relations = append(relations, model.Relation{
-				Type:           model.RelationReplyTo,
-				TargetSourceID: replyTargetSourceID,
-				TargetID:       model.DocumentID("telegram", c.name, replyTargetSourceID).String(),
-			})
-		}
-	}
-
-	metadata := map[string]any{
-		"chat_id":    chatID,
-		"chat_name":  chatName,
-		"message_id": m.ID,
-	}
-	if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
-		metadata["sender_id"] = senderID
-		if user, known := userMap[senderID]; known {
-			metadata["sender_name"] = userDisplayName(user)
-			if user.Username != "" {
-				metadata["sender_username"] = user.Username
-			}
-			if hasDownloadableAvatar(user) {
-				metadata["sender_avatar_key"] = AvatarSourceID(senderID)
-			}
-		}
-	}
+	relations := c.messageRelations(m, chatID, windowSourceID)
+	metadata := c.messageMetadata(m, chatName, chatID, userMap, selfID, dmPeerID)
 
 	return model.Document{
 		ID:             model.DocumentID("telegram", c.name, sourceID),
@@ -583,6 +570,69 @@ func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSource
 		Visibility:     "private",
 		CreatedAt:      time.Unix(int64(m.Date), 0),
 	}
+}
+
+// messageRelations builds the outgoing edges for a per-message document: its
+// enclosing window (when present) and a reply-to edge (when the message
+// replies to another, optionally in a different chat).
+func (c *Connector) messageRelations(m *tg.Message, chatID, windowSourceID string) []model.Relation {
+	relations := make([]model.Relation, 0, 2)
+	if windowSourceID != "" {
+		relations = append(relations, model.Relation{
+			Type:           model.RelationMemberOfWindow,
+			TargetSourceID: windowSourceID,
+			TargetID:       model.DocumentID("telegram", c.name, windowSourceID).String(),
+		})
+	}
+	h, ok := m.ReplyTo.(*tg.MessageReplyHeader)
+	if !ok || h.ReplyToMsgID <= 0 {
+		return relations
+	}
+	targetChatID := chatID
+	if h.ReplyToPeerID != nil {
+		resolved, ok := peerChatID(h.ReplyToPeerID)
+		if !ok {
+			resolved = ""
+		}
+		targetChatID = resolved
+	}
+	if targetChatID == "" {
+		return relations
+	}
+	replyTargetSourceID := fmt.Sprintf(msgSourceIDFormat, targetChatID, h.ReplyToMsgID)
+	relations = append(relations, model.Relation{
+		Type:           model.RelationReplyTo,
+		TargetSourceID: replyTargetSourceID,
+		TargetID:       model.DocumentID("telegram", c.name, replyTargetSourceID).String(),
+	})
+	return relations
+}
+
+// messageMetadata assembles the Metadata map for a per-message document with
+// chat/message identifiers plus optional sender info looked up in userMap.
+func (c *Connector) messageMetadata(m *tg.Message, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) map[string]any {
+	metadata := map[string]any{
+		"chat_id":    chatID,
+		"chat_name":  chatName,
+		"message_id": m.ID,
+	}
+	senderID := resolveSenderID(m, selfID, dmPeerID)
+	if senderID == 0 {
+		return metadata
+	}
+	metadata["sender_id"] = senderID
+	user, known := userMap[senderID]
+	if !known {
+		return metadata
+	}
+	metadata["sender_name"] = userDisplayName(user)
+	if user.Username != "" {
+		metadata["sender_username"] = user.Username
+	}
+	if hasDownloadableAvatar(user) {
+		metadata["sender_avatar_key"] = AvatarSourceID(senderID)
+	}
+	return metadata
 }
 
 // windowMessages groups consecutive messages from a single chat into
@@ -987,28 +1037,37 @@ func largestPhotoSize(sizes []tg.PhotoSizeClass) (string, int64, bool) {
 	var bestSize int64
 	found := false
 	for _, s := range sizes {
-		switch ps := s.(type) {
-		case *tg.PhotoSize:
-			if int64(ps.Size) > bestSize {
-				bestType = ps.Type
-				bestSize = int64(ps.Size)
-				found = true
-			}
-		case *tg.PhotoSizeProgressive:
-			var last int
-			for _, sz := range ps.Sizes {
-				if sz > last {
-					last = sz
-				}
-			}
-			if int64(last) > bestSize {
-				bestType = ps.Type
-				bestSize = int64(last)
-				found = true
-			}
+		typ, size, ok := downloadablePhotoSize(s)
+		if !ok {
+			continue
+		}
+		if size > bestSize {
+			bestType = typ
+			bestSize = size
+			found = true
 		}
 	}
 	return bestType, bestSize, found
+}
+
+// downloadablePhotoSize returns the (type, byte size) of a single PhotoSize
+// variant when it's downloadable from the file servers. Stripped/Cached/Path
+// previews return ok=false and are skipped by largestPhotoSize. Progressive
+// sizes report their largest Sizes[] entry.
+func downloadablePhotoSize(s tg.PhotoSizeClass) (string, int64, bool) {
+	switch ps := s.(type) {
+	case *tg.PhotoSize:
+		return ps.Type, int64(ps.Size), true
+	case *tg.PhotoSizeProgressive:
+		var last int
+		for _, sz := range ps.Sizes {
+			if sz > last {
+				last = sz
+			}
+		}
+		return ps.Type, int64(last), true
+	}
+	return "", 0, false
 }
 
 // documentFilename extracts the filename attribute from a Telegram

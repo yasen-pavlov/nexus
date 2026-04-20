@@ -403,28 +403,34 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// changes-someone-else, we deliberately return 204 with no new token,
 	// since the goal IS to revoke that user's existing sessions.
 	if claims.UserID == id {
-		user, err := h.store.GetUserByID(r.Context(), id)
-		if err != nil {
-			h.log.Error("change password: re-fetch user", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, errChangePasswordFail)
-			return
-		}
-		token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, errChangePasswordFail)
-			return
-		}
-		writeJSON(w, http.StatusOK, authResponse{
-			Token: token,
-			User: &userResponse{
-				ID:        user.ID,
-				Username:  user.Username,
-				Role:      user.Role,
-				CreatedAt: user.CreatedAt,
-			},
-		})
+		h.issueRotatedToken(w, r, id)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// issueRotatedToken mints a fresh JWT for a user who just rotated their own
+// password, so the caller stays signed in without bouncing to /login.
+func (h *handler) issueRotatedToken(w http.ResponseWriter, r *http.Request, id uuid.UUID) {
+	user, err := h.store.GetUserByID(r.Context(), id)
+	if err != nil {
+		h.log.Error("change password: re-fetch user", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
+		return
+	}
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Username, user.Role, user.TokenVersion)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errChangePasswordFail)
+		return
+	}
+	writeJSON(w, http.StatusOK, authResponse{
+		Token: token,
+		User: &userResponse{
+			ID:        user.ID,
+			Username:  user.Username,
+			Role:      user.Role,
+			CreatedAt: user.CreatedAt,
+		},
+	})
 }

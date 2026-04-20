@@ -192,45 +192,59 @@ func (s *Scheduler) runSync(ctx context.Context, id uuid.UUID) {
 	// triggers. The legacy direct-pipeline path remains for tests /
 	// deployments that wire the scheduler without a JobManager.
 	if s.jobs != nil {
-		jobID, runCtx, err := s.jobs.StartForSchedule(id, name, conn.Type())
-		if err != nil {
-			// ErrAlreadyRunning is a silent skip — a manual trigger is
-			// already syncing this connector. Other errors are logged.
-			s.log.Info("scheduled sync skipped",
-				zap.String("connector", name),
-				zap.Error(err))
-			return
-		}
-		progress := func(total, processed, errors int) {
-			s.jobs.Update(jobID, total, processed, errors)
-		}
-		report, runErr := s.pipe.RunWithProgress(runCtx, id, conn, ownerID, cfg.Shared, progress)
-		if report != nil {
-			s.jobs.SetDeleted(jobID, report.DocsDeleted)
-		}
-		s.jobs.Complete(jobID, runErr)
-
-		if runErr != nil {
-			s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(runErr))
-		} else if report != nil {
-			s.log.Info("scheduled sync completed",
-				zap.String("connector", name),
-				zap.Int("docs", report.DocsProcessed),
-				zap.Duration("duration", report.Duration),
-			)
-		}
-		// connector_configs.last_run stays for now — see Phase 4 in the
-		// plan for retiring it once the Activity timeline is the single
-		// source of truth for recency.
-		if runErr == nil {
-			if err := s.store.UpdateLastRun(ctx, id, time.Now()); err != nil {
-				s.log.Error("failed to update last_run", zap.String("connector", name), zap.Error(err))
-			}
-		}
+		s.runJobManagedSync(ctx, id, conn, cfg, ownerID)
 		return
 	}
 
-	// Legacy path — scheduler not wired to a JobManager.
+	s.runLegacySync(ctx, id, conn, cfg, ownerID)
+}
+
+// runJobManagedSync drives a scheduled sync through the SyncJobManager so the
+// run is tracked in sync_runs and streams SSE progress identically to manual
+// triggers.
+func (s *Scheduler) runJobManagedSync(ctx context.Context, id uuid.UUID, conn connector.Connector, cfg *model.ConnectorConfig, ownerID string) {
+	name := cfg.Name
+	jobID, runCtx, err := s.jobs.StartForSchedule(id, name, conn.Type())
+	if err != nil {
+		// ErrAlreadyRunning is a silent skip — a manual trigger is
+		// already syncing this connector. Other errors are logged.
+		s.log.Info("scheduled sync skipped",
+			zap.String("connector", name),
+			zap.Error(err))
+		return
+	}
+	progress := func(total, processed, errors int) {
+		s.jobs.Update(jobID, total, processed, errors)
+	}
+	report, runErr := s.pipe.RunWithProgress(runCtx, id, conn, ownerID, cfg.Shared, progress)
+	if report != nil {
+		s.jobs.SetDeleted(jobID, report.DocsDeleted)
+	}
+	s.jobs.Complete(jobID, runErr)
+
+	if runErr != nil {
+		s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(runErr))
+	} else if report != nil {
+		s.log.Info("scheduled sync completed",
+			zap.String("connector", name),
+			zap.Int("docs", report.DocsProcessed),
+			zap.Duration("duration", report.Duration),
+		)
+	}
+	// connector_configs.last_run stays for now — see Phase 4 in the
+	// plan for retiring it once the Activity timeline is the single
+	// source of truth for recency.
+	if runErr == nil {
+		if err := s.store.UpdateLastRun(ctx, id, time.Now()); err != nil {
+			s.log.Error("failed to update last_run", zap.String("connector", name), zap.Error(err))
+		}
+	}
+}
+
+// runLegacySync is the fallback path for deployments that wire the scheduler
+// without a SyncJobManager (mostly tests).
+func (s *Scheduler) runLegacySync(ctx context.Context, id uuid.UUID, conn connector.Connector, cfg *model.ConnectorConfig, ownerID string) {
+	name := cfg.Name
 	report, err := s.pipe.RunWithProgress(ctx, id, conn, ownerID, cfg.Shared, nil)
 	if err != nil {
 		s.log.Error("scheduled sync failed", zap.String("connector", name), zap.Error(err))
