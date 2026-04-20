@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	pgImage = "pgvector/pgvector:pg17"
+	pgImage = "postgres:17"
 	osImage = "opensearchproject/opensearch:2"
 )
 
@@ -27,8 +27,9 @@ var (
 
 // baseDatabaseURL returns a base Postgres URL usable by NewTestDB.
 // If NEXUS_TEST_DATABASE_URL is set, it's used verbatim (fast path for
-// developers running `make dev-db`). Otherwise a pgvector container is
-// started on first call and reused for the rest of the test process.
+// developers running `make dev-db`). Otherwise a stock Postgres
+// container is started on first call and reused for the rest of the
+// test process.
 func baseDatabaseURL(t *testing.T) string {
 	t.Helper()
 	if url := os.Getenv("NEXUS_TEST_DATABASE_URL"); url != "" {
