@@ -1,5 +1,5 @@
 # Stage 1: Build frontend
-FROM node:24-alpine AS frontend-builder
+FROM node:25-alpine AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 # --legacy-peer-deps: openapi-typescript@7 declares peer typescript@^5 but
