@@ -17,8 +17,7 @@ type AnyNavigate = (opts: {
   params?: Record<string, string>;
   search?:
     | SearchParams
-    | { anchor_id?: number; anchor_ts?: string }
-    | undefined;
+    | { anchor_id?: number; anchor_ts?: string };
   replace?: boolean;
 }) => void;
 

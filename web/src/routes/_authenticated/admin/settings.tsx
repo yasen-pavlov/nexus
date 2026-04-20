@@ -370,6 +370,72 @@ export function EmbeddingsForm() {
   );
 }
 
+function ApiKeyField({
+  provider,
+  apiKey,
+  savedApiKey,
+  replacingKey,
+  onChangeKey,
+  onStartReplace,
+  onCancelReplace,
+}: Readonly<{
+  provider: EmbeddingProvider;
+  apiKey: string;
+  savedApiKey: string;
+  replacingKey: boolean;
+  onChangeKey: (v: string) => void;
+  onStartReplace: () => void;
+  onCancelReplace: () => void;
+}>) {
+  const masked = apiKey?.startsWith("****") && !replacingKey;
+  return (
+    <Field
+      label="API key"
+      hint={`Paste your ${providerLabel(provider)} API key. Stored encrypted; only the last four characters show after saving.`}
+    >
+      {masked ? (
+        <div className="flex items-center gap-2">
+          <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-background px-3 font-mono text-[13px] text-muted-foreground">
+            <span aria-hidden className="select-none tracking-[0.3em]">
+              ••••
+            </span>
+            <span className="truncate">{apiKey.slice(4)}</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onStartReplace}
+          >
+            Replace
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            type="password"
+            value={apiKey}
+            onChange={(e) => onChangeKey(e.target.value)}
+            placeholder={apiKeyPlaceholder(provider)}
+            className="h-10 flex-1 font-mono text-[13px]"
+            autoFocus={replacingKey}
+          />
+          {replacingKey && savedApiKey && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onCancelReplace}
+            >
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
+    </Field>
+  );
+}
+
 function embeddingFingerprint(s: EmbeddingSettings | null): string {
   if (!s) return "empty";
   return `${s.provider}|${s.model}|${s.api_key}|${s.ollama_url}`;
@@ -511,61 +577,23 @@ function EmbeddingsFormInner({ ctx }: Readonly<{ ctx: UseEmbeddingSettings }>) {
         )}
 
         {needsAPIKey && (
-          <Field
-            label="API key"
-            hint={`Paste your ${providerLabel(form.provider)} API key. Stored encrypted; only the last four characters show after saving.`}
-          >
-            {form.api_key?.startsWith("****") && !replacingKey ? (
-              <div className="flex items-center gap-2">
-                <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-background px-3 font-mono text-[13px] text-muted-foreground">
-                  <span aria-hidden className="select-none tracking-[0.3em]">
-                    ••••
-                  </span>
-                  <span className="truncate">{form.api_key.slice(4)}</span>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setReplacingKey(true);
-                    setForm((f) => ({ ...f, api_key: "" }));
-                  }}
-                >
-                  Replace
-                </Button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <Input
-                  type="password"
-                  value={form.api_key}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, api_key: e.target.value }))
-                  }
-                  placeholder={apiKeyPlaceholder(form.provider)}
-                  className="h-10 flex-1 font-mono text-[13px]"
-                  autoFocus={replacingKey}
-                />
-                {replacingKey && saved.api_key && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setReplacingKey(false);
-                      setForm((f) => ({
-                        ...f,
-                        api_key: saved.api_key,
-                      }));
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                )}
-              </div>
-            )}
-          </Field>
+          <ApiKeyField
+            provider={form.provider}
+            apiKey={form.api_key}
+            savedApiKey={saved.api_key}
+            replacingKey={replacingKey}
+            onChangeKey={(v) =>
+              setForm((f) => ({ ...f, api_key: v }))
+            }
+            onStartReplace={() => {
+              setReplacingKey(true);
+              setForm((f) => ({ ...f, api_key: "" }));
+            }}
+            onCancelReplace={() => {
+              setReplacingKey(false);
+              setForm((f) => ({ ...f, api_key: saved.api_key }));
+            }}
+          />
         )}
       </div>
 
