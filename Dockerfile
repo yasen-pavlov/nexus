@@ -20,7 +20,7 @@ COPY --from=frontend-builder /app/web/dist ./internal/api/static/
 RUN CGO_ENABLED=0 go build -o /nexus ./cmd/nexus
 
 # Stage 3: Runtime
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates
 COPY --from=backend-builder /nexus /nexus
 EXPOSE 8080
