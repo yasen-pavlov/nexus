@@ -227,36 +227,78 @@ func (h *handler) loadReadableChunk(w http.ResponseWriter, r *http.Request, id u
 // edge is still echoed in the response; the UI shows a placeholder).
 func (h *handler) resolveRelationTarget(ctx context.Context, rel model.Relation, sourceType string, claims *auth.Claims) *model.Document {
 	// Prefer TargetID (UUID) when the connector resolved it at emit.
-	if rel.TargetID != "" {
-		ch, err := h.search.GetChunkByDocID(ctx, rel.TargetID)
-		if err == nil && canReadDocument(claims, ch.OwnerID, ch.Shared) {
-			return chunkToDocument(ch)
-		}
+	if doc := h.resolveByTargetID(ctx, rel.TargetID, claims); doc != nil {
+		return doc
 	}
 	if rel.TargetSourceID == "" {
 		return nil
 	}
-	// IMAP reply_to and member_of_thread point at Message-IDs (not the
-	// source_id we use internally). Try imap_message_id first for IMAP
-	// documents; any hit resolves the edge.
-	if sourceType == "imap" && (rel.Type == model.RelationReplyTo || rel.Type == model.RelationMemberOfThread) {
-		hits, err := h.search.FindChunksByTerm(ctx, "imap_message_id", rel.TargetSourceID)
-		if err == nil {
-			for i := range hits {
-				if canReadDocument(claims, hits[i].OwnerID, hits[i].Shared) {
-					return chunkToDocument(&hits[i])
-				}
-			}
-		}
+	// IMAP reply_to / member_of_thread point at Message-IDs instead of
+	// the source_id we use internally. Try that first when applicable.
+	if doc := h.resolveByIMAPMessageID(ctx, rel, sourceType, claims); doc != nil {
+		return doc
 	}
 	// Fallback: same-connector source_id lookup (Telegram member_of_window,
 	// reply_to, IMAP attachment_of via source_id).
-	hits, err := h.search.FindChunksByTerm(ctx, "source_id", rel.TargetSourceID)
-	if err == nil {
-		for i := range hits {
-			if hits[i].SourceType == sourceType && canReadDocument(claims, hits[i].OwnerID, hits[i].Shared) {
-				return chunkToDocument(&hits[i])
-			}
+	return h.resolveBySourceID(ctx, rel.TargetSourceID, sourceType, claims)
+}
+
+// resolveByTargetID resolves the UUID fast-path. Returns nil on miss or
+// visibility failure (caller falls back to the source_id path).
+func (h *handler) resolveByTargetID(ctx context.Context, targetID string, claims *auth.Claims) *model.Document {
+	if targetID == "" {
+		return nil
+	}
+	ch, err := h.search.GetChunkByDocID(ctx, targetID)
+	if err != nil || !canReadDocument(claims, ch.OwnerID, ch.Shared) {
+		return nil
+	}
+	return chunkToDocument(ch)
+}
+
+// resolveByIMAPMessageID handles IMAP reply_to and member_of_thread edges
+// whose TargetSourceID is a Message-ID rather than our internal source_id.
+func (h *handler) resolveByIMAPMessageID(ctx context.Context, rel model.Relation, sourceType string, claims *auth.Claims) *model.Document {
+	if sourceType != "imap" {
+		return nil
+	}
+	if rel.Type != model.RelationReplyTo && rel.Type != model.RelationMemberOfThread {
+		return nil
+	}
+	hits, err := h.search.FindChunksByTerm(ctx, "imap_message_id", rel.TargetSourceID)
+	if err != nil {
+		return nil
+	}
+	if ch := firstReadableChunk(hits, claims, ""); ch != nil {
+		return chunkToDocument(ch)
+	}
+	return nil
+}
+
+// resolveBySourceID looks the target up via the same connector's source_id
+// index. sourceType narrows results to the caller's connector.
+func (h *handler) resolveBySourceID(ctx context.Context, targetSourceID, sourceType string, claims *auth.Claims) *model.Document {
+	hits, err := h.search.FindChunksByTerm(ctx, "source_id", targetSourceID)
+	if err != nil {
+		return nil
+	}
+	if ch := firstReadableChunk(hits, claims, sourceType); ch != nil {
+		return chunkToDocument(ch)
+	}
+	return nil
+}
+
+// firstReadableChunk returns the first hit the caller can read. When
+// sourceTypeFilter is non-empty, hits with a different source_type are
+// skipped (used to confine the fallback source_id lookup to the caller's
+// own connector).
+func firstReadableChunk(hits []model.Chunk, claims *auth.Claims, sourceTypeFilter string) *model.Chunk {
+	for i := range hits {
+		if sourceTypeFilter != "" && hits[i].SourceType != sourceTypeFilter {
+			continue
+		}
+		if canReadDocument(claims, hits[i].OwnerID, hits[i].Shared) {
+			return &hits[i]
 		}
 	}
 	return nil
