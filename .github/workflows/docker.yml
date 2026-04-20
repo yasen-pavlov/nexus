@@ -54,5 +54,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Use an explicit shared scope so pushes to `main` and tag pushes
+          # (v*) reuse each other's buildx layer cache. Without this, type=gha
+          # defaults to the git ref and every tag rebuilds everything cold.
+          cache-from: type=gha,scope=buildx
+          cache-to: type=gha,scope=buildx,mode=max
