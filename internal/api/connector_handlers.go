@@ -17,6 +17,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	errConnectorNotFound  = "connector not found"
+	errInvalidConnectorID = "invalid connector id"
+	errFailedGetConnector = "failed to get connector"
+)
+
 type createConnectorRequest struct {
 	Type     string         `json:"type"`
 	Name     string         `json:"name"`
@@ -85,7 +91,7 @@ func writeMutationDenied(w http.ResponseWriter, claims *auth.Claims, cfg *model.
 		writeError(w, http.StatusForbidden, "shared connectors can only be modified by an admin")
 		return
 	}
-	writeError(w, http.StatusNotFound, "connector not found")
+	writeError(w, http.StatusNotFound, errConnectorNotFound)
 }
 
 // canReadDocument returns true if the user is allowed to read a document with
@@ -149,23 +155,23 @@ func (h *handler) ListConnectors(w http.ResponseWriter, r *http.Request) {
 func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
 	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
 		h.log.Error("get connector failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 
 	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeError(w, http.StatusNotFound, errConnectorNotFound)
 		return
 	}
 
@@ -193,7 +199,7 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	var req createConnectorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -251,13 +257,13 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
 	var req updateConnectorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -275,10 +281,10 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	existing, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 
@@ -303,7 +309,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.cm.Update(r.Context(), cfg); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
 		if errors.Is(err, store.ErrDuplicateName) {
@@ -346,17 +352,17 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
 	existing, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 
@@ -367,7 +373,7 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.cm.Remove(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
 		h.log.Error("delete connector failed", zap.Error(err))
@@ -395,7 +401,7 @@ func (h *handler) DeleteConnector(w http.ResponseWriter, r *http.Request) {
 func (h *handler) GetConnectorAvatar(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 	externalID := chi.URLParam(r, "external_id")
@@ -407,16 +413,16 @@ func (h *handler) GetConnectorAvatar(w http.ResponseWriter, r *http.Request) {
 	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
 		h.log.Error("get connector for avatar", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 
 	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeError(w, http.StatusNotFound, errConnectorNotFound)
 		return
 	}
 

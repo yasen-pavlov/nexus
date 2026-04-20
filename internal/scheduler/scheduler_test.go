@@ -160,7 +160,7 @@ func TestOnConnectorChanged_AddsJob(t *testing.T) {
 	defer s.Stop()
 
 	id := uuid.New()
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "new-conn", Enabled: true, Schedule: "*/5 * * * *",
 	})
 
@@ -176,7 +176,7 @@ func TestOnConnectorChanged_RemovesJobWhenDisabled(t *testing.T) {
 
 	id := uuid.New()
 	// Add first
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "*/5 * * * *",
 	})
 	if _, ok := s.entries[id]; !ok {
@@ -184,7 +184,7 @@ func TestOnConnectorChanged_RemovesJobWhenDisabled(t *testing.T) {
 	}
 
 	// Disable
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: false, Schedule: "*/5 * * * *",
 	})
 	if _, ok := s.entries[id]; ok {
@@ -198,11 +198,11 @@ func TestOnConnectorChanged_RemovesJobWhenNoSchedule(t *testing.T) {
 	defer s.Stop()
 
 	id := uuid.New()
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "*/5 * * * *",
 	})
 
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "",
 	})
 	if _, ok := s.entries[id]; ok {
@@ -216,11 +216,11 @@ func TestOnConnectorRemoved(t *testing.T) {
 	defer s.Stop()
 
 	id := uuid.New()
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "*/5 * * * *",
 	})
 
-	s.OnConnectorRemoved(id, "conn")
+	s.OnConnectorRemoved(context.Background(), id, "conn")
 	if _, ok := s.entries[id]; ok {
 		t.Error("expected entry to be removed")
 	}
@@ -232,7 +232,7 @@ func TestOnConnectorChanged_InvalidSchedule(t *testing.T) {
 	defer s.Stop()
 
 	id := uuid.New()
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "bad", Enabled: true, Schedule: "not a cron",
 	})
 
@@ -248,9 +248,8 @@ func TestRunSync_PipelineError(t *testing.T) {
 	}}
 	pipe := &mockPipelineRunner{err: fmt.Errorf("pipeline error")}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	if len(pipe.getCalls()) != 1 {
 		t.Errorf("expected 1 pipeline call, got %d", len(pipe.getCalls()))
@@ -267,9 +266,8 @@ func TestRunSync_UpdateLastRunError(t *testing.T) {
 		lastRun: nil, // UpdateLastRun will work but this tests the path
 	}
 	s := New(cm, pipe, store, zap.NewNop())
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 	// Should complete without panic even if UpdateLastRun has issues
 }
 
@@ -278,7 +276,7 @@ func TestRunSync_ConnectorNotFound(t *testing.T) {
 	pipe := &mockPipelineRunner{}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
 
-	s.runSync(uuid.New())
+	s.runSync(context.Background(), uuid.New())
 
 	if len(pipe.getCalls()) != 0 {
 		t.Error("expected no pipeline calls for missing connector")
@@ -293,9 +291,8 @@ func TestRunSync_Success(t *testing.T) {
 	pipe := &mockPipelineRunner{}
 	store := &mockConfigLister{}
 	s := New(cm, pipe, store, zap.NewNop())
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	calls := pipe.getCalls()
 	if len(calls) != 1 || calls[0].name != "test" {
@@ -323,9 +320,8 @@ func TestRunSync_PropagatesOwnership(t *testing.T) {
 	}
 	pipe := &mockPipelineRunner{}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	calls := pipe.getCalls()
 	if len(calls) != 1 {
@@ -349,9 +345,8 @@ func TestRunSync_PropagatesShared(t *testing.T) {
 	}
 	pipe := &mockPipelineRunner{}
 	s := New(cm, pipe, &mockConfigLister{}, zap.NewNop())
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	calls := pipe.getCalls()
 	if len(calls) != 1 {
@@ -425,9 +420,8 @@ func TestRunSync_RoutesThroughJobManager(t *testing.T) {
 
 	s := New(cm, pipe, cl, zap.NewNop())
 	s.SetJobManager(jm)
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	starts, completions := jm.snapshot()
 	if starts != 1 {
@@ -458,9 +452,8 @@ func TestRunSync_SkipsWhenJobManagerReportsAlreadyRunning(t *testing.T) {
 
 	s := New(cm, pipe, cl, zap.NewNop())
 	s.SetJobManager(jm)
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	// Pipeline should not be called if Start refused.
 	if calls := pipe.getCalls(); len(calls) != 0 {
@@ -474,7 +467,7 @@ func TestOnConnectorChanged_ReaddReplacesEntry(t *testing.T) {
 	defer s.Stop()
 
 	id := uuid.New()
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "*/5 * * * *",
 	})
 	first, ok := s.entries[id]
@@ -482,7 +475,7 @@ func TestOnConnectorChanged_ReaddReplacesEntry(t *testing.T) {
 		t.Fatal("expected initial entry")
 	}
 	// Re-add with a different schedule; old entry should be replaced.
-	s.OnConnectorChanged(&model.ConnectorConfig{
+	s.OnConnectorChanged(context.Background(), &model.ConnectorConfig{
 		ID: id, Name: "conn", Enabled: true, Schedule: "0 */2 * * *",
 	})
 	second, ok := s.entries[id]
@@ -506,9 +499,8 @@ func TestRunSync_JobManagerStartError_Logs(t *testing.T) {
 
 	s := New(cm, pipe, cl, zap.NewNop())
 	s.SetJobManager(jm)
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	// Non-ErrAlreadyRunning Start error falls through the log + return path;
 	// pipeline is never called.
@@ -530,9 +522,8 @@ func TestRunSync_FallsBackToLegacyPathWithoutJobManager(t *testing.T) {
 
 	s := New(cm, pipe, cl, zap.NewNop())
 	// no SetJobManager call — legacy path
-	s.ctx = context.Background()
 
-	s.runSync(id)
+	s.runSync(context.Background(), id)
 
 	if calls := pipe.getCalls(); len(calls) != 1 {
 		t.Errorf("expected pipeline call in legacy path, got %d", len(calls))

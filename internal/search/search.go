@@ -23,9 +23,10 @@ import (
 var ErrNotFound = errors.New("document not found")
 
 const (
-	defaultIndex    = "nexus-documents"
-	hybridPipeline  = "nexus-hybrid"
-	rrfRankConstant = 60
+	defaultIndex       = "nexus-documents"
+	hybridPipeline     = "nexus-hybrid"
+	rrfRankConstant    = 60
+	contentFieldPrefix = "content."
 )
 
 // Client wraps the OpenSearch client for document operations.
@@ -244,7 +245,7 @@ func (c *Client) highlightConfig() map[string]any {
 		},
 	}
 	for _, l := range c.languages {
-		fields["content."+l.Name] = map[string]any{
+		fields[contentFieldPrefix+l.Name] = map[string]any{
 			"fragment_size":       200,
 			"number_of_fragments": 1,
 		}
@@ -267,7 +268,7 @@ func (c *Client) textSearchFields() []string {
 	for _, l := range c.languages {
 		fields = append(fields,
 			"title."+l.Name+"^2",
-			"content."+l.Name,
+			contentFieldPrefix+l.Name,
 		)
 	}
 	return fields
@@ -481,7 +482,7 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 			headline = contentHL[0]
 		} else {
 			for k, v := range hit.Highlight {
-				if strings.HasPrefix(k, "content.") && len(v) > 0 {
+				if strings.HasPrefix(k, contentFieldPrefix) && len(v) > 0 {
 					headline = v[0]
 					break
 				}

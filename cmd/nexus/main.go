@@ -26,10 +26,10 @@ import (
 	"github.com/muty/nexus/internal/api"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
-	_ "github.com/muty/nexus/internal/connector/filesystem"
-	_ "github.com/muty/nexus/internal/connector/imap"
-	_ "github.com/muty/nexus/internal/connector/paperless"
-	_ "github.com/muty/nexus/internal/connector/telegram"
+	_ "github.com/muty/nexus/internal/connector/filesystem" // register filesystem connector via init()
+	_ "github.com/muty/nexus/internal/connector/imap"       // register imap connector via init()
+	_ "github.com/muty/nexus/internal/connector/paperless"  // register paperless connector via init()
+	_ "github.com/muty/nexus/internal/connector/telegram"   // register telegram connector via init()
 	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/pipeline"
@@ -153,7 +153,7 @@ func run() error {
 	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages)
 
 	// Set up binary content cache. Connectors that opt in via
-	// connector.CacheAware (IMAP lazy, Telegram eager) will receive this
+	// connector.BinaryStoreSetter (IMAP lazy, Telegram eager) will receive this
 	// during instantiation. Eviction runs every hour.
 	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
 	if err != nil {

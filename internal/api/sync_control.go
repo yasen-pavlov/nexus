@@ -54,7 +54,7 @@ func (h *handler) CancelSyncJob(w http.ResponseWriter, r *http.Request) {
 	}
 	_, cfg, ok := h.cm.GetByID(connID)
 	if !ok {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeError(w, http.StatusNotFound, errConnectorNotFound)
 		return
 	}
 	if !canModifyConnector(auth.UserFromContext(r.Context()), cfg) {
@@ -87,22 +87,22 @@ func (h *handler) CancelSyncJob(w http.ResponseWriter, r *http.Request) {
 func (h *handler) ListSyncRunsForConnector(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid connector id")
+		writeError(w, http.StatusBadRequest, errInvalidConnectorID)
 		return
 	}
 
 	cfg, err := h.store.GetConnectorConfig(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "connector not found")
+			writeError(w, http.StatusNotFound, errConnectorNotFound)
 			return
 		}
 		h.log.Error("list sync runs: get connector", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to get connector")
+		writeError(w, http.StatusInternalServerError, errFailedGetConnector)
 		return
 	}
 	if !canReadConnector(auth.UserFromContext(r.Context()), cfg) {
-		writeError(w, http.StatusNotFound, "connector not found")
+		writeError(w, http.StatusNotFound, errConnectorNotFound)
 		return
 	}
 

@@ -94,7 +94,7 @@ func (c *Connector) SetExtractor(ext *extractor.Registry) {
 }
 
 // SetBinaryStore wires the binary content cache plus the resolved
-// per-connector cache policy. Implements connector.CacheAware.
+// per-connector cache policy. Implements connector.BinaryStoreSetter.
 // Called once at wire time by ConnectorManager.instantiateConnector.
 func (c *Connector) SetBinaryStore(store connector.BinaryStoreAPI, cfg connector.CacheConfig) {
 	c.binaryStore = store

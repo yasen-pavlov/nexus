@@ -15,6 +15,10 @@ import (
 	"github.com/muty/nexus/internal/model"
 )
 
+// authTokenPrefix is the scheme used by the Paperless-ngx API for
+// token-based authentication on the Authorization header.
+const authTokenPrefix = "Token "
+
 func init() {
 	connector.Register("paperless", func() connector.Connector {
 		return &Connector{client: &http.Client{Timeout: 30 * time.Second}}
@@ -64,7 +68,7 @@ func (c *Connector) Validate() error {
 	if err != nil {
 		return fmt.Errorf("paperless: %w", err)
 	}
-	req.Header.Set("Authorization", "Token "+c.token)
+	req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -180,7 +184,7 @@ func (c *Connector) enumerateAllIDs(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Token "+c.token)
+		req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 		resp, err := c.client.Do(req)
 		if err != nil {
@@ -250,7 +254,7 @@ func (c *Connector) fetchPage(ctx context.Context, pageURL string) ([]paperlessD
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("Authorization", "Token "+c.token)
+	req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -294,7 +298,7 @@ func (c *Connector) fetchLookup(ctx context.Context, path string) (map[int]strin
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Token "+c.token)
+		req.Header.Set("Authorization", authTokenPrefix+c.token)
 
 		resp, err := c.client.Do(req)
 		if err != nil {

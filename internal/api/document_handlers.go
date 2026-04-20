@@ -18,6 +18,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	errDocumentNotFound = "document not found"
+	errLookupDocument   = "failed to look up document"
+)
+
 // DownloadDocument godoc
 //
 //	@Summary		Download or preview a document's binary content
@@ -43,24 +48,24 @@ func (h *handler) DownloadDocument(w http.ResponseWriter, r *http.Request) {
 	chunk, err := h.search.GetChunkByDocID(r.Context(), id.String())
 	if err != nil {
 		if errors.Is(err, search.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "document not found")
+			writeError(w, http.StatusNotFound, errDocumentNotFound)
 			return
 		}
 		h.log.Error("get chunk by doc id failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to look up document")
+		writeError(w, http.StatusInternalServerError, errLookupDocument)
 		return
 	}
 
 	// Auth check: 404 (not 403) on failure to avoid leaking existence.
 	if !canReadDocument(auth.UserFromContext(r.Context()), chunk.OwnerID, chunk.Shared) {
-		writeError(w, http.StatusNotFound, "document not found")
+		writeError(w, http.StatusNotFound, errDocumentNotFound)
 		return
 	}
 
 	conn, _, ok := h.cm.GetByTypeAndName(chunk.SourceType, chunk.SourceName)
 	if !ok {
 		// Connector is gone (deleted/disabled). Treat as not found.
-		writeError(w, http.StatusNotFound, "document not found")
+		writeError(w, http.StatusNotFound, errDocumentNotFound)
 		return
 	}
 
@@ -152,17 +157,17 @@ func (h *handler) GetRelatedDocuments(w http.ResponseWriter, r *http.Request) {
 	chunk, err := h.search.GetChunkByDocID(r.Context(), id.String())
 	if err != nil {
 		if errors.Is(err, search.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "document not found")
+			writeError(w, http.StatusNotFound, errDocumentNotFound)
 			return
 		}
 		h.log.Error("get chunk by doc id failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to look up document")
+		writeError(w, http.StatusInternalServerError, errLookupDocument)
 		return
 	}
 
 	claims := auth.UserFromContext(r.Context())
 	if !canReadDocument(claims, chunk.OwnerID, chunk.Shared) {
-		writeError(w, http.StatusNotFound, "document not found")
+		writeError(w, http.StatusNotFound, errDocumentNotFound)
 		return
 	}
 
@@ -529,7 +534,7 @@ func (h *handler) GetDocumentBySource(w http.ResponseWriter, r *http.Request) {
 	hits, err := h.search.FindChunksByTerm(r.Context(), "source_id", sourceID)
 	if err != nil {
 		h.log.Error("find chunk by source_id failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to look up document")
+		writeError(w, http.StatusInternalServerError, errLookupDocument)
 		return
 	}
 
@@ -545,7 +550,7 @@ func (h *handler) GetDocumentBySource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeError(w, http.StatusNotFound, "document not found")
+	writeError(w, http.StatusNotFound, errDocumentNotFound)
 }
 
 // chunkToDocument projects a chunk into the Document shape returned by

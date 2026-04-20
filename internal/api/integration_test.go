@@ -823,13 +823,13 @@ type testObserver struct {
 	onRemoved func(id uuid.UUID, name string)
 }
 
-func (o *testObserver) OnConnectorChanged(cfg *model.ConnectorConfig) {
+func (o *testObserver) OnConnectorChanged(_ context.Context, cfg *model.ConnectorConfig) {
 	if o.onChanged != nil {
 		o.onChanged(cfg)
 	}
 }
 
-func (o *testObserver) OnConnectorRemoved(id uuid.UUID, name string) {
+func (o *testObserver) OnConnectorRemoved(_ context.Context, id uuid.UUID, name string) {
 	if o.onRemoved != nil {
 		o.onRemoved(id, name)
 	}

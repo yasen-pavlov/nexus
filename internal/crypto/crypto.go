@@ -12,7 +12,10 @@ import (
 	"strings"
 )
 
-const encPrefix = "enc:"
+const (
+	encPrefix       = "enc:"
+	cryptoErrFormat = "crypto: %w"
+)
 
 // NewKey parses an encryption key from a hex-encoded string.
 // The key must be exactly 32 bytes (256 bits) for AES-256.
@@ -31,17 +34,17 @@ func NewKey(hexKey string) ([]byte, error) {
 func Encrypt(key []byte, plaintext string) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("crypto: %w", err)
+		return "", fmt.Errorf(cryptoErrFormat, err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("crypto: %w", err)
+		return "", fmt.Errorf(cryptoErrFormat, err)
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", fmt.Errorf("crypto: %w", err)
+		return "", fmt.Errorf(cryptoErrFormat, err)
 	}
 
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
@@ -62,12 +65,12 @@ func Decrypt(key []byte, ciphertext string) (string, error) {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", fmt.Errorf("crypto: %w", err)
+		return "", fmt.Errorf(cryptoErrFormat, err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", fmt.Errorf("crypto: %w", err)
+		return "", fmt.Errorf(cryptoErrFormat, err)
 	}
 
 	nonceSize := gcm.NonceSize()

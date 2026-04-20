@@ -16,6 +16,12 @@ import (
 	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
+// msgSourceIDFormat is the printf template for the per-message source ID
+// in the shape "<chatID>:<msgID>:msg". Used both when emitting the
+// message doc and when building reply-to pointers, so any change to the
+// shape needs to happen in exactly one place.
+const msgSourceIDFormat = "%s:%d:msg"
+
 // Conversation windowing constants. We group consecutive messages from the
 // same chat into "conversation windows" before emitting them as documents,
 // which gives the embedder enough context to produce meaningful vectors and
@@ -118,7 +124,7 @@ func (c *Connector) SetExtractor(ext *extractor.Registry) {
 }
 
 // SetBinaryStore wires the binary content cache plus the resolved
-// per-connector cache policy. Implements connector.CacheAware.
+// per-connector cache policy. Implements connector.BinaryStoreSetter.
 // Telegram runs in eager mode by default: media bytes are written
 // during Fetch because Telegram file references expire and lazy
 // refetch isn't viable.
@@ -516,7 +522,7 @@ func resolveSenderID(m *tg.Message, selfID, dmPeerID int64) int64 {
 }
 
 func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSourceID string, userMap map[int64]*tg.User, selfID, dmPeerID int64) model.Document {
-	sourceID := fmt.Sprintf("%s:%d:msg", chatID, m.ID)
+	sourceID := fmt.Sprintf(msgSourceIDFormat, chatID, m.ID)
 
 	relations := make([]model.Relation, 0, 2)
 	if windowSourceID != "" {
@@ -536,7 +542,7 @@ func (c *Connector) makeMessageDoc(m *tg.Message, chatName, chatID, windowSource
 			targetChatID = resolved
 		}
 		if targetChatID != "" {
-			replyTargetSourceID := fmt.Sprintf("%s:%d:msg", targetChatID, h.ReplyToMsgID)
+			replyTargetSourceID := fmt.Sprintf(msgSourceIDFormat, targetChatID, h.ReplyToMsgID)
 			relations = append(relations, model.Relation{
 				Type:           model.RelationReplyTo,
 				TargetSourceID: replyTargetSourceID,
@@ -884,7 +890,7 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 	// attachment_of points at the per-message doc (the canonical record
 	// for this Telegram message), not the window. The window can be
 	// reached by walking member_of_window from the message doc.
-	parentMsgSourceID := fmt.Sprintf("%s:%d:msg", chatID, m.ID)
+	parentMsgSourceID := fmt.Sprintf(msgSourceIDFormat, chatID, m.ID)
 
 	return model.Document{
 		ID:         model.DocumentID("telegram", c.name, sourceID),

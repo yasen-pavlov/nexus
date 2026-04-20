@@ -16,7 +16,7 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"go.uber.org/zap"
 
-	_ "github.com/muty/nexus/docs"
+	_ "github.com/muty/nexus/docs" // register generated swagger docs with httpSwagger handler
 )
 
 func NewRouter(

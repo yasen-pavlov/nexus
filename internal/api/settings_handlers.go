@@ -15,6 +15,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const errFailedGetSettings = "failed to get settings"
+
 type embeddingSettingsResponse struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
@@ -43,7 +45,7 @@ func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.store.GetSettings(r.Context(), keys)
 	if err != nil {
 		h.log.Error("get embedding settings failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to get settings")
+		writeError(w, http.StatusInternalServerError, errFailedGetSettings)
 		return
 	}
 
@@ -72,7 +74,7 @@ func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -81,7 +83,7 @@ func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request
 		existing, err := h.store.GetSetting(r.Context(), "embedding_api_key")
 		if err != nil {
 			h.log.Error("get api key failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to get settings")
+			writeError(w, http.StatusInternalServerError, errFailedGetSettings)
 			return
 		}
 		req.APIKey = existing
@@ -192,7 +194,7 @@ func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := h.store.GetSettings(r.Context(), keys)
 	if err != nil {
 		h.log.Error("get rerank settings failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to get settings")
+		writeError(w, http.StatusInternalServerError, errFailedGetSettings)
 		return
 	}
 
@@ -221,7 +223,7 @@ func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 func (h *handler) UpdateRerankSettings(w http.ResponseWriter, r *http.Request) {
 	var req rerankSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	if req.MinScore < 0 || req.MinScore > 1 {
@@ -233,7 +235,7 @@ func (h *handler) UpdateRerankSettings(w http.ResponseWriter, r *http.Request) {
 		existing, err := h.store.GetSetting(r.Context(), "rerank_api_key")
 		if err != nil {
 			h.log.Error("get rerank api key failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to get settings")
+			writeError(w, http.StatusInternalServerError, errFailedGetSettings)
 			return
 		}
 		req.APIKey = existing
@@ -326,7 +328,7 @@ func (h *handler) GetRetentionSettings(w http.ResponseWriter, r *http.Request) {
 func (h *handler) UpdateRetentionSettings(w http.ResponseWriter, r *http.Request) {
 	var req retentionSettingsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	if req.RetentionDays < 0 {
@@ -444,7 +446,7 @@ func (h *handler) GetRankingSettings(w http.ResponseWriter, r *http.Request) {
 func (h *handler) UpdateRankingSettings(w http.ResponseWriter, r *http.Request) {
 	var req rankingSettings
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	// Reject unknown source_type keys so a typo can't silently persist.

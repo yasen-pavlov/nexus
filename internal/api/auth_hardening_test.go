@@ -112,7 +112,7 @@ func TestLogin_RateLimit_TripsAfterMaxAttempts(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("4th attempt: expected 429, got %d", w.Code)
 	}
-	if retry := w.Header().Get("Retry-After"); retry == "" {
+	if w.Header().Get("Retry-After") == "" {
 		t.Error("expected Retry-After header on 429")
 	}
 }

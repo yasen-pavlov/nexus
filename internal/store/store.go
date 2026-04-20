@@ -9,7 +9,7 @@ import (
 	"io/fs"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib" // register pgx driver with database/sql for goose migrations
 	"github.com/pressly/goose/v3"
 	"go.uber.org/zap"
 )
