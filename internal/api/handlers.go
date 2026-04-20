@@ -569,7 +569,7 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 	// 3. Sync all connectors
 	var count int
 	for connID, entry := range h.cm.All() {
-		if job := h.startBatchSyncJob(connID, entry, "reindex"); job != nil {
+		if h.startBatchSyncJob(connID, entry, "reindex") != nil {
 			count++
 		}
 	}

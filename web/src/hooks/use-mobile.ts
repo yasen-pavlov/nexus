@@ -3,7 +3,7 @@ import * as React from "react"
 const MOBILE_BREAKPOINT = 768
 
 function readIsMobile(): boolean {
-  if (typeof globalThis.window === "undefined") return false
+  if (globalThis.window === undefined) return false
   return globalThis.innerWidth < MOBILE_BREAKPOINT
 }
 

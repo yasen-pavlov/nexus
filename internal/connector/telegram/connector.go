@@ -407,11 +407,7 @@ func (c *Connector) collectChatHistory(ctx context.Context, api telegramAPI, inp
 		// targets, and participants. Merge them into the shared map so
 		// sender lookup works even for users not in the top-level dialog
 		// list.
-		for id, u := range buildUserMap(extractHistoryUsers(result)) {
-			if _, exists := userMap[id]; !exists {
-				userMap[id] = u
-			}
-		}
+		mergeHistoryUsers(userMap, result)
 
 		messages := extractMessages(result)
 		if len(messages) == 0 {
@@ -430,6 +426,16 @@ func (c *Connector) collectChatHistory(ctx context.Context, api telegramAPI, inp
 		}
 	}
 	return records, allMessages, nil
+}
+
+// mergeHistoryUsers folds users referenced by a GetHistory response into
+// the caller's userMap, without clobbering existing entries.
+func mergeHistoryUsers(userMap map[int64]*tg.User, result tg.MessagesMessagesClass) {
+	for id, u := range buildUserMap(extractHistoryUsers(result)) {
+		if _, exists := userMap[id]; !exists {
+			userMap[id] = u
+		}
+	}
 }
 
 // appendHistoryPage appends a page of messages into records/allMessages.
