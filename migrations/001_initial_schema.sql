@@ -1,6 +1,4 @@
 -- +goose Up
-CREATE EXTENSION IF NOT EXISTS vector;
-
 CREATE TABLE documents (
     id UUID PRIMARY KEY,
     source_type TEXT NOT NULL,
@@ -26,7 +24,6 @@ CREATE TABLE chunks (
     id UUID PRIMARY KEY,
     document_id UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
     content TEXT NOT NULL DEFAULT '',
-    embedding VECTOR(768),
     chunk_index INT NOT NULL DEFAULT 0
 );
 
@@ -54,4 +51,3 @@ DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS sync_cursors;
 DROP TABLE IF EXISTS chunks;
 DROP TABLE IF EXISTS documents;
-DROP EXTENSION IF EXISTS vector;
