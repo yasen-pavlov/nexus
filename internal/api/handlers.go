@@ -308,8 +308,8 @@ func (h *handler) TriggerSync(w http.ResponseWriter, r *http.Request) {
 	// syncJobs.Cancel(job.ID) and propagates through conn.Fetch +
 	// pipeline's per-doc loop.
 	go func() {
-		progress := func(total, processed, errors int) {
-			h.syncJobs.Update(job.ID, total, processed, errors)
+		progress := func(total, processed, errors int, scope string) {
+			h.syncJobs.Update(job.ID, total, processed, errors, scope)
 		}
 
 		ownerID := ""
@@ -527,8 +527,8 @@ func (h *handler) startBatchSyncJob(connID uuid.UUID, entry ConnectorWithConfig,
 // runBatchSyncJob drives a single connector sync inside the pipeline and
 // records progress/completion on the syncJobs registry.
 func (h *handler) runBatchSyncJob(cid uuid.UUID, ctx context.Context, name string, c connector.Connector, ownerID string, shared bool, jobID string, logPrefix string) {
-	progress := func(total, processed, errCount int) {
-		h.syncJobs.Update(jobID, total, processed, errCount)
+	progress := func(total, processed, errCount int, scope string) {
+		h.syncJobs.Update(jobID, total, processed, errCount, scope)
 	}
 	report, err := h.pipeline.RunWithProgress(ctx, cid, c, ownerID, shared, progress)
 	if report != nil {

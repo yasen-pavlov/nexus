@@ -23,9 +23,22 @@ type Connector interface {
 	// Validate checks that the connector is properly configured.
 	Validate() error
 
-	// Fetch retrieves documents from the source, using the cursor for incremental sync.
-	// A nil cursor indicates a first-time full sync.
-	Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error)
+	// Fetch streams documents, enumeration markers, and cursor
+	// checkpoints for incremental sync. A nil cursor indicates a
+	// first-time full sync.
+	//
+	// Both channels are returned non-nil immediately. The implementation
+	// spawns a goroutine that emits FetchItems on the items channel and
+	// closes it when finished; the errors channel carries at most one
+	// terminal error (or nil) and is then closed. The pipeline is
+	// responsible for reading both to completion. Context cancellation
+	// triggers a graceful drain and a best-effort final checkpoint.
+	//
+	// Emission order contract: items of type SourceID MUST be emitted
+	// in UTF-8 lexicographic order matching OpenSearch's
+	// `source_id.keyword` sort. Violating this breaks the streaming
+	// merge-diff in the pipeline.
+	Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error)
 }
 
 // BinaryContent carries the bytes of a previewable/downloadable document along

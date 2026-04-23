@@ -1,7 +1,6 @@
 package imap
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/testutil"
 )
 
 func dialInsecure(address string, _ *imapclient.Options) (*imapclient.Client, error) {
@@ -106,9 +106,9 @@ func TestLive_Fetch_FullSync(t *testing.T) {
 		dial:     dialInsecure,
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("Fetch failed: %v", result.Err)
 	}
 
 	if len(result.Documents) != 2 {
@@ -129,16 +129,12 @@ func TestLive_Fetch_FullSync(t *testing.T) {
 		t.Errorf("doc1.URL = %q, want %q", doc1.URL, "mid:msg1@test.com")
 	}
 
-	// Verify cursor
-	if result.Cursor == nil {
+	if result.LastCursor == nil {
 		t.Fatal("cursor is nil")
 	}
-	if result.Cursor.ItemsSynced != 2 {
-		t.Errorf("ItemsSynced = %d, want 2", result.Cursor.ItemsSynced)
-	}
-	uidVal, ok := result.Cursor.CursorData["uid:INBOX"].(float64)
+	uidVal, ok := result.LastCursor.CursorData["uid:INBOX"].(float64)
 	if !ok || imap.UID(uidVal) != 2 {
-		t.Errorf("cursor uid:INBOX = %v, want 2", result.Cursor.CursorData["uid:INBOX"])
+		t.Errorf("cursor uid:INBOX = %v, want 2", result.LastCursor.CursorData["uid:INBOX"])
 	}
 }
 
@@ -180,17 +176,15 @@ func TestLive_Fetch_IncrementalSync(t *testing.T) {
 		dial:     dialInsecure,
 	}
 
-	// Simulate cursor from previous sync at UID 1
 	cursor := &model.SyncCursor{
 		CursorData: map[string]any{"uid:INBOX": float64(1)},
 	}
 
-	result, err := c.Fetch(context.Background(), cursor)
-	if err != nil {
-		t.Fatalf("Fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, cursor)
+	if result.Err != nil {
+		t.Fatalf("Fetch failed: %v", result.Err)
 	}
 
-	// Should only get the new email (UID > 1)
 	if len(result.Documents) != 1 {
 		t.Fatalf("got %d docs, want 1 (incremental)", len(result.Documents))
 	}
@@ -198,9 +192,9 @@ func TestLive_Fetch_IncrementalSync(t *testing.T) {
 		t.Errorf("doc.Title = %q, want %q", result.Documents[0].Title, "New email")
 	}
 
-	uidVal, ok := result.Cursor.CursorData["uid:INBOX"].(float64)
+	uidVal, ok := result.LastCursor.CursorData["uid:INBOX"].(float64)
 	if !ok || imap.UID(uidVal) != 5 {
-		t.Errorf("cursor uid:INBOX = %v, want 5", result.Cursor.CursorData["uid:INBOX"])
+		t.Errorf("cursor uid:INBOX = %v, want 5", result.LastCursor.CursorData["uid:INBOX"])
 	}
 }
 
@@ -242,16 +236,15 @@ func TestLive_Fetch_MultipleFolders(t *testing.T) {
 		dial:     dialInsecure,
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("Fetch failed: %v", result.Err)
 	}
 
 	if len(result.Documents) != 2 {
 		t.Fatalf("got %d docs, want 2", len(result.Documents))
 	}
 
-	// Verify docs come from different folders
 	sourceIDs := map[string]bool{}
 	for _, doc := range result.Documents {
 		sourceIDs[doc.SourceID] = true
@@ -260,11 +253,10 @@ func TestLive_Fetch_MultipleFolders(t *testing.T) {
 		t.Errorf("sourceIDs = %v, want INBOX:1 and Sent:1", sourceIDs)
 	}
 
-	// Verify cursor has both folders
-	if _, ok := result.Cursor.CursorData["uid:INBOX"]; !ok {
+	if _, ok := result.LastCursor.CursorData["uid:INBOX"]; !ok {
 		t.Error("missing cursor for INBOX")
 	}
-	if _, ok := result.Cursor.CursorData["uid:Sent"]; !ok {
+	if _, ok := result.LastCursor.CursorData["uid:Sent"]; !ok {
 		t.Error("missing cursor for Sent")
 	}
 }
@@ -284,9 +276,9 @@ func TestLive_Fetch_EmptyMailbox(t *testing.T) {
 		folders: []string{"INBOX"}, dial: dialInsecure,
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("Fetch failed: %v", result.Err)
 	}
 	if len(result.Documents) != 0 {
 		t.Errorf("got %d docs, want 0", len(result.Documents))
@@ -328,12 +320,11 @@ func TestLive_Fetch_WithSyncSince(t *testing.T) {
 		syncSince: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("Fetch failed: %v", result.Err)
 	}
 
-	// Should only get the recent email (after syncSince)
 	if len(result.Documents) != 1 {
 		t.Fatalf("got %d docs, want 1", len(result.Documents))
 	}

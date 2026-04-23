@@ -189,6 +189,7 @@ function ConnectorDetailPage() {
               processed={job.docs_processed}
               total={job.docs_total}
               errors={job.errors}
+              scope={job.scope}
             />
           </div>
         )}

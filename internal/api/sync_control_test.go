@@ -166,7 +166,7 @@ func TestListSyncRunsForConnector_PersistsStartCompleteRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	sjm.Update(job.ID, 100, 100, 0)
+	sjm.Update(job.ID, 100, 100, 0, "")
 	sjm.Complete(job.ID, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+cfg.ID.String()+"/runs?limit=10", nil)
@@ -296,7 +296,7 @@ func TestStreamAllSyncProgress_DeliversEventsForReadableJobs(t *testing.T) {
 		if err != nil {
 			return
 		}
-		sjm.Update(job.ID, 10, 5, 0)
+		sjm.Update(job.ID, 10, 5, 0, "")
 		time.Sleep(80 * time.Millisecond)
 		sjm.Complete(job.ID, nil)
 	}()
@@ -374,7 +374,7 @@ func TestStreamAllSyncProgress_FiltersOrphanedJobs(t *testing.T) {
 	if err := cm.Remove(context.Background(), cfg.ID); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	sjm.Update(job.ID, 5, 1, 0)
+	sjm.Update(job.ID, 5, 1, 0, "")
 
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -428,7 +428,7 @@ func TestStreamAllSyncProgress_FiltersJobsUserCannotRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sjm.Update(job.ID, 5, 1, 0)
+	sjm.Update(job.ID, 5, 1, 0, "")
 
 	srv := httptest.NewServer(router)
 	defer srv.Close()

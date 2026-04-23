@@ -12,6 +12,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/muty/nexus/internal/connector"
+	"github.com/muty/nexus/internal/testutil"
 )
 
 // fakeBinaryStore is a minimal in-memory BinaryStoreAPI stub for tests.
@@ -306,8 +307,9 @@ func TestFetchBinary_EagerMode_PopulatesDuringSync(t *testing.T) {
 	c.cacheConfig = connector.CacheConfig{Mode: "eager"}
 
 	// Run a full Fetch — eager-mode hook should Put each attachment.
-	if _, err := c.Fetch(context.Background(), nil); err != nil {
-		t.Fatal(err)
+	// Drain the stream so the Fetch goroutine completes.
+	if result := testutil.RunFetch(t, c, nil); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 
 	// Verify the attachment was cached without a FetchBinary call.

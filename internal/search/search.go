@@ -801,6 +801,114 @@ func (c *Client) fetchSourceIDPage(ctx context.Context, sourceType, sourceName s
 	return sids, aggs.SourceIDs.AfterKey, done, nil
 }
 
+// streamIndexedSourceIDsPage is the page size for StreamIndexedSourceIDs.
+// Large enough to amortize search_after round-trips; small enough that a
+// paused consumer doesn't pin much memory on the OpenSearch side.
+const streamIndexedSourceIDsPageSize = 1000
+
+// StreamIndexedSourceIDs emits every source_id currently indexed for
+// the given (source_type, source_name) on a channel, in OpenSearch
+// `source_id.keyword` ascending sort order. Used by the pipeline's
+// streaming merge-diff deletion reconciliation — the connector emits
+// source IDs in the same sort order, and the pipeline walks both
+// cursors to find entries present on only one side.
+//
+// Implementation: a search_after scroll filtered to `chunk_index:0`
+// so every doc appears exactly once (chunks share source_ids, and a
+// doc with 12 chunks would otherwise surface 12 times breaking the
+// two-pointer walk). Errors flow on the errs channel; the items
+// channel closes cleanly on completion. Context cancellation
+// short-circuits the scroll.
+func (c *Client) StreamIndexedSourceIDs(ctx context.Context, sourceType, sourceName string) (<-chan string, <-chan error) {
+	items := make(chan string)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		var searchAfter []any
+		for {
+			if ctx.Err() != nil {
+				errs <- ctx.Err()
+				return
+			}
+			page, nextAfter, err := c.streamSourceIDsPage(ctx, sourceType, sourceName, searchAfter)
+			if err != nil {
+				errs <- err
+				return
+			}
+			for _, sid := range page {
+				select {
+				case items <- sid:
+				case <-ctx.Done():
+					errs <- ctx.Err()
+					return
+				}
+			}
+			if len(nextAfter) == 0 {
+				return
+			}
+			searchAfter = nextAfter
+		}
+	}()
+	return items, errs
+}
+
+// streamSourceIDsPage fetches one page of source_ids for
+// StreamIndexedSourceIDs using search_after, filtered to chunk_index=0
+// so each doc contributes exactly one hit.
+func (c *Client) streamSourceIDsPage(ctx context.Context, sourceType, sourceName string, searchAfter []any) ([]string, []any, error) {
+	query := map[string]any{
+		"size": streamIndexedSourceIDsPageSize,
+		"sort": []map[string]any{
+			{"source_id": map[string]any{"order": "asc"}},
+		},
+		"_source": []string{"source_id"},
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"source_type": sourceType}},
+					{"term": map[string]any{"source_name": sourceName}},
+					{"term": map[string]any{"chunk_index": 0}},
+				},
+			},
+		},
+	}
+	if len(searchAfter) > 0 {
+		query["search_after"] = searchAfter
+	}
+	body, err := json.Marshal(query)
+	if err != nil {
+		return nil, nil, fmt.Errorf("search: marshal stream-source-ids query: %w", err)
+	}
+	resp, err := c.os.Search(ctx, &opensearchapi.SearchReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("search: stream source ids: %w", err)
+	}
+	if len(resp.Hits.Hits) == 0 {
+		return nil, nil, nil
+	}
+	sids := make([]string, 0, len(resp.Hits.Hits))
+	var lastSort []any
+	for _, hit := range resp.Hits.Hits {
+		var src struct {
+			SourceID string `json:"source_id"`
+		}
+		raw, _ := json.Marshal(hit.Source)
+		if err := json.Unmarshal(raw, &src); err == nil && src.SourceID != "" {
+			sids = append(sids, src.SourceID)
+		}
+		lastSort = hit.Sort
+	}
+	// When fewer hits than page size come back, we're done.
+	if len(resp.Hits.Hits) < streamIndexedSourceIDsPageSize {
+		return sids, nil, nil
+	}
+	return sids, lastSort, nil
+}
+
 // SourceAggregate summarises the indexed content for one
 // (source_type, source_name) pair. Used by the admin stats endpoint.
 type SourceAggregate struct {

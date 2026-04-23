@@ -53,7 +53,7 @@ func TestPipelineRun_FetchError(t *testing.T) {
 	}
 }
 
-// stubConnector lets tests inject deterministic Fetch results without touching the filesystem.
+// stubConnector streams deterministic docs without touching the filesystem.
 type stubConnector struct {
 	name   string
 	docs   []model.Document
@@ -65,11 +65,33 @@ func (s *stubConnector) Type() string                       { return "stub" }
 func (s *stubConnector) Name() string                       { return s.name }
 func (s *stubConnector) Configure(_ connector.Config) error { return nil }
 func (s *stubConnector) Validate() error                    { return nil }
-func (s *stubConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	return &model.FetchResult{Documents: s.docs, Cursor: s.cursor}, nil
+func (s *stubConnector) Fetch(ctx context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		if s.err != nil {
+			errs <- s.err
+			return
+		}
+		for i := range s.docs {
+			d := s.docs[i]
+			select {
+			case items <- model.FetchItem{Doc: &d}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if s.cursor != nil {
+			select {
+			case items <- model.FetchItem{Checkpoint: s.cursor}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return items, errs
 }
 
 // failingEmbedder implements the embedding.Embedder interface but always fails.
@@ -119,7 +141,6 @@ func TestPipelineRun_EmbedderFailureStillIndexes(t *testing.T) {
 		t.Errorf("expected 0 errors (embed failure should not increment), got %d", report.Errors)
 	}
 
-	// Doc should still be searchable in OpenSearch — embedding just isn't set
 	sc.Refresh(context.Background()) //nolint:errcheck // test
 	result, err := sc.Search(context.Background(), model.SearchRequest{Query: "embedder check", Limit: 10, OwnerID: "owner-x"})
 	if err != nil {
@@ -150,7 +171,6 @@ func TestPipelineRun_OwnershipPropagation(t *testing.T) {
 	}
 	sc.Refresh(context.Background()) //nolint:errcheck // test
 
-	// alice should see her own doc
 	res, err := sc.Search(context.Background(), model.SearchRequest{Query: "uniquetestword", Limit: 10, OwnerID: "alice"})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +179,6 @@ func TestPipelineRun_OwnershipPropagation(t *testing.T) {
 		t.Errorf("alice should see 1 doc, got %d", res.TotalCount)
 	}
 
-	// bob should not (private)
 	res, err = sc.Search(context.Background(), model.SearchRequest{Query: "uniquetestword", Limit: 10, OwnerID: "bob"})
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +208,6 @@ func TestPipelineRun_SharedPropagation(t *testing.T) {
 	}
 	sc.Refresh(context.Background()) //nolint:errcheck // test
 
-	// any user should see it via the shared clause
 	for _, owner := range []string{"alice", "bob", "charlie"} {
 		res, err := sc.Search(context.Background(), model.SearchRequest{Query: "anotheruniqueword", Limit: 10, OwnerID: owner})
 		if err != nil {
@@ -199,6 +217,152 @@ func TestPipelineRun_SharedPropagation(t *testing.T) {
 			t.Errorf("%s should see shared doc, got %d", owner, res.TotalCount)
 		}
 	}
+}
+
+// TestPipelineRun_StreamErrorSurfacedViaErrChannel covers the path
+// where a connector streams partial results and then signals failure
+// via its error channel. The pipeline must index everything that
+// made it through, skip deletion reconciliation (since the
+// enumeration was incomplete), and return the terminal error.
+func TestPipelineRun_StreamErrorSurfacedViaErrChannel(t *testing.T) {
+	st, sc := newTestDeps(t)
+	p := New(st, sc, nil, zap.NewNop())
+
+	conn := &streamingErrorConnector{
+		name: "err-stream",
+		docs: []model.Document{
+			{SourceType: "stub", SourceName: "err-stream", SourceID: "doc1",
+				Title: "partial", Content: "partial content", Metadata: map[string]any{}, CreatedAt: time.Now()},
+		},
+		err: fmt.Errorf("simulated fetch tail error"),
+	}
+	report, err := p.RunWithProgress(context.Background(), uuid.New(), conn, "", true, nil)
+	if err == nil || !strContains(err.Error(), "simulated fetch tail error") {
+		t.Fatalf("expected tail error, got %v", err)
+	}
+	if report == nil {
+		t.Fatal("expected partial report, got nil")
+	}
+	if report.DocsProcessed != 1 {
+		t.Errorf("DocsProcessed = %d, want 1 (the partial doc)", report.DocsProcessed)
+	}
+}
+
+// streamingErrorConnector emits docs then signals a terminal error
+// on its error channel. Used to cover the consumeStream→drainErr
+// path where items close cleanly but errs carries a failure.
+type streamingErrorConnector struct {
+	name string
+	docs []model.Document
+	err  error
+}
+
+func (s *streamingErrorConnector) Type() string                       { return "stub" }
+func (s *streamingErrorConnector) Name() string                       { return s.name }
+func (s *streamingErrorConnector) Configure(_ connector.Config) error { return nil }
+func (s *streamingErrorConnector) Validate() error                    { return nil }
+func (s *streamingErrorConnector) Fetch(ctx context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		// Send items unbuffered so the consumer has drained each
+		// one before the terminal error is enqueued — keeps the
+		// test deterministic vs. select's randomized choice when
+		// both channels are ready simultaneously.
+		for i := range s.docs {
+			d := s.docs[i]
+			select {
+			case items <- model.FetchItem{Doc: &d}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		errs <- s.err
+	}()
+	return items, errs
+}
+
+// strContains is inlined (rather than importing "strings") because
+// errors_test.go already has a lean import list; keeping the
+// dependency footprint minimal.
+func strContains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPipelineRun_EstimatedTotalPath covers the progress-estimation
+// branch in handleItem: a connector emits EstimatedTotal ahead of
+// any doc, bumping the pipeline's `total` before `processed` starts
+// growing.
+func TestPipelineRun_EstimatedTotalPath(t *testing.T) {
+	st, sc := newTestDeps(t)
+	p := New(st, sc, nil, zap.NewNop())
+
+	conn := &estimatingConnector{name: "est-test", estimates: []int64{10, 42}, docs: []model.Document{
+		{SourceType: "stub", SourceName: "est-test", SourceID: "doc1",
+			Title: "T", Content: "content for estimate test",
+			Metadata: map[string]any{}, CreatedAt: time.Now()},
+	}}
+
+	var maxTotal int
+	progress := func(total, _, _ int, _ string) {
+		if total > maxTotal {
+			maxTotal = total
+		}
+	}
+
+	if _, err := p.RunWithProgress(context.Background(), uuid.New(), conn, "", true, progress); err != nil {
+		t.Fatal(err)
+	}
+	// UI should have seen at least the highest EstimatedTotal the
+	// connector reported.
+	if maxTotal < 42 {
+		t.Errorf("expected progress total to reach at least 42, got %d", maxTotal)
+	}
+}
+
+// estimatingConnector emits a sequence of EstimatedTotal items, then
+// a doc, covering the handleItem EstimatedTotal branch.
+type estimatingConnector struct {
+	name      string
+	estimates []int64
+	docs      []model.Document
+}
+
+func (e *estimatingConnector) Type() string                       { return "stub" }
+func (e *estimatingConnector) Name() string                       { return e.name }
+func (e *estimatingConnector) Configure(_ connector.Config) error { return nil }
+func (e *estimatingConnector) Validate() error                    { return nil }
+func (e *estimatingConnector) Fetch(ctx context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		for i := range e.estimates {
+			v := e.estimates[i]
+			select {
+			case items <- model.FetchItem{EstimatedTotal: &v}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		for i := range e.docs {
+			d := e.docs[i]
+			select {
+			case items <- model.FetchItem{Doc: &d}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return items, errs
 }
 
 func TestPipelineRun_ProgressCallback(t *testing.T) {
@@ -215,7 +379,7 @@ func TestPipelineRun_ProgressCallback(t *testing.T) {
 	}
 
 	var calls []struct{ total, processed, errors int }
-	progress := func(total, processed, errors int) {
+	progress := func(total, processed, errors int, _ string) {
 		calls = append(calls, struct{ total, processed, errors int }{total, processed, errors})
 	}
 
@@ -223,14 +387,18 @@ func TestPipelineRun_ProgressCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// We expect 4 calls: initial (0/3) + one per doc
-	if len(calls) != 4 {
-		t.Errorf("expected 4 progress calls, got %d", len(calls))
+	// Streaming pipeline reports progress at least twice: once
+	// initially (0/0/0) and once after the final bulk flush.
+	// Exact call count depends on bulk-flush cadence, so we just
+	// assert the final state: all 3 docs processed, no errors.
+	if len(calls) < 2 {
+		t.Errorf("expected at least 2 progress calls, got %d", len(calls))
 	}
-	if calls[0].processed != 0 || calls[0].total != 3 {
-		t.Errorf("first call: expected (3,0), got (%d,%d)", calls[0].total, calls[0].processed)
+	final := calls[len(calls)-1]
+	if final.processed != 3 {
+		t.Errorf("final progress: expected processed=3, got %d", final.processed)
 	}
-	if calls[len(calls)-1].processed != 3 {
-		t.Errorf("final call: expected processed=3, got %d", calls[len(calls)-1].processed)
+	if final.errors != 0 {
+		t.Errorf("final progress: expected errors=0, got %d", final.errors)
 	}
 }

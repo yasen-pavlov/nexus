@@ -42,7 +42,7 @@ type ConfigLister interface {
 // predate the unification.
 type JobManager interface {
 	StartForSchedule(connectorID uuid.UUID, name, connectorType string) (jobID string, runCtx context.Context, err error)
-	Update(jobID string, total, processed, errors int)
+	Update(jobID string, total, processed, errors int, scope string)
 	SetDeleted(jobID string, deleted int)
 	Complete(jobID string, err error)
 }
@@ -213,8 +213,8 @@ func (s *Scheduler) runJobManagedSync(ctx context.Context, id uuid.UUID, conn co
 			zap.Error(err))
 		return
 	}
-	progress := func(total, processed, errors int) {
-		s.jobs.Update(jobID, total, processed, errors)
+	progress := func(total, processed, errors int, scope string) {
+		s.jobs.Update(jobID, total, processed, errors, scope)
 	}
 	report, runErr := s.pipe.RunWithProgress(runCtx, id, conn, ownerID, cfg.Shared, progress)
 	if report != nil {

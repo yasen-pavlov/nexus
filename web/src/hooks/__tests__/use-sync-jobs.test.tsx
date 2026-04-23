@@ -349,6 +349,29 @@ describe("useSyncJobs — live SSE transitions", () => {
     expect(result.current.jobsByConnector.get("c-1")?.id).toBe("job-new");
   });
 
+  it("clamps docs_total so the progress bar never regresses mid-run", async () => {
+    // Streaming connectors grow their total estimate as they
+    // discover work. A later frame with a lower total (because of
+    // out-of-order server delivery, a connector that's processed
+    // further than it's enumerated, or a late-arriving poll row)
+    // would otherwise yank the bar backwards.
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ docs_total: 500, docs_processed: 10 })));
+    act(() => sseOnMessage?.(job({ docs_total: 300, docs_processed: 100 })));
+    const clamped = result.current.jobsByConnector.get("c-1");
+    expect(clamped?.docs_total).toBe(500);
+    expect(clamped?.docs_processed).toBe(100);
+  });
+
+  it("lets docs_total rise as the connector discovers more work", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ docs_total: 100, docs_processed: 5 })));
+    act(() => sseOnMessage?.(job({ docs_total: 800, docs_processed: 10 })));
+    expect(result.current.jobsByConnector.get("c-1")?.docs_total).toBe(800);
+  });
+
   it("jobsByConnector: keeps the existing running row when an older completed arrives later", async () => {
     const { result } = mountWithEmptyList();
     await waitFor(() => expect(result.current.isLoading).toBe(false));

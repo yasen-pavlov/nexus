@@ -19,6 +19,21 @@ type Action =
   | { type: "hydrate"; jobs: SyncJob[] }
   | { type: "upsert"; job: SyncJob };
 
+/**
+ * Clamp a job's live docs_total so it never regresses below any value
+ * we've already shown to the user. The streaming pipeline reports a
+ * running total that grows as the connector discovers work (folders,
+ * chats, pages) — a final frame carrying a lower total because the
+ * connector emitted an EstimatedTotal slightly behind what's already
+ * been processed would otherwise yank the progress bar backwards.
+ */
+function clampTotal(prev: SyncJob | undefined, next: SyncJob): SyncJob {
+  if (!prev) return next;
+  if (prev.id !== next.id) return next;
+  if (next.docs_total >= prev.docs_total) return next;
+  return { ...next, docs_total: prev.docs_total };
+}
+
 function reducer(state: JobsState, action: Action): JobsState {
   switch (action.type) {
     case "hydrate": {
@@ -28,7 +43,8 @@ function reducer(state: JobsState, action: Action): JobsState {
     }
     case "upsert": {
       const byId = new Map(state.byId);
-      byId.set(action.job.id, action.job);
+      const prev = byId.get(action.job.id);
+      byId.set(action.job.id, clampTotal(prev, action.job));
       return { byId };
     }
   }

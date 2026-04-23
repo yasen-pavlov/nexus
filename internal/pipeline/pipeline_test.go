@@ -198,12 +198,30 @@ func TestPipelineRun(t *testing.T) {
 	}
 }
 
-// fakeDeletionConnector lets pipeline tests drive arbitrary
-// (Documents, CurrentSourceIDs) combinations without needing a real
-// connector to round-trip a fake source. Each Fetch call pops the next
-// scripted result.
+// scriptedRun is a single Fetch call's scripted output for
+// fakeDeletionConnector. It mirrors the old (Documents,
+// CurrentSourceIDs, Cursor) triple so the existing tests keep their
+// intent, but the connector translates each run into a streaming
+// FetchItem sequence internally.
+type scriptedRun struct {
+	Documents []model.Document
+	// CurrentSourceIDs mirrors the old semantics:
+	//   - nil: connector opted out of reconciliation (no SourceID
+	//     items emitted, no EnumerationComplete).
+	//   - empty slice: enumeration ran and found nothing (emits the
+	//     EnumerationComplete marker so the pipeline still
+	//     reconciles — this is the "wipe all" case).
+	//   - non-empty: enumeration emitted every listed id plus a
+	//     terminal EnumerationComplete marker.
+	CurrentSourceIDs []string
+	Cursor           *model.SyncCursor
+}
+
+// fakeDeletionConnector lets pipeline tests drive arbitrary scripted
+// runs without needing a real connector to round-trip a fake source.
+// Each Fetch call pops the next scripted run and streams it.
 type fakeDeletionConnector struct {
-	results []*model.FetchResult
+	results []scriptedRun
 	idx     int
 }
 
@@ -211,13 +229,49 @@ func (f *fakeDeletionConnector) Type() string                       { return "fi
 func (f *fakeDeletionConnector) Name() string                       { return "fake-del" }
 func (f *fakeDeletionConnector) Configure(_ connector.Config) error { return nil }
 func (f *fakeDeletionConnector) Validate() error                    { return nil }
-func (f *fakeDeletionConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+func (f *fakeDeletionConnector) Fetch(ctx context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	var run scriptedRun
 	if f.idx >= len(f.results) {
-		return &model.FetchResult{Cursor: &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"}}, nil
+		run = scriptedRun{Cursor: &model.SyncCursor{LastSync: time.Now(), LastStatus: "success"}}
+	} else {
+		run = f.results[f.idx]
+		f.idx++
 	}
-	r := f.results[f.idx]
-	f.idx++
-	return r, nil
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		send := func(it model.FetchItem) bool {
+			select {
+			case items <- it:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for i := range run.Documents {
+			d := run.Documents[i]
+			if !send(model.FetchItem{Doc: &d}) {
+				return
+			}
+		}
+		if run.CurrentSourceIDs != nil {
+			for _, sid := range run.CurrentSourceIDs {
+				s := sid
+				if !send(model.FetchItem{SourceID: &s}) {
+					return
+				}
+			}
+			if !send(model.FetchItem{EnumerationComplete: true}) {
+				return
+			}
+		}
+		if run.Cursor != nil {
+			_ = send(model.FetchItem{Checkpoint: run.Cursor})
+		}
+	}()
+	return items, errs
 }
 
 func newFakeDoc(sid, title string) model.Document {
@@ -246,7 +300,7 @@ func TestPipelineRun_DeletionSync_RemovesStale(t *testing.T) {
 	}
 
 	conn := &fakeDeletionConnector{
-		results: []*model.FetchResult{
+		results: []scriptedRun{
 			// First sync: index three docs.
 			{
 				Documents: []model.Document{
@@ -311,7 +365,7 @@ func TestPipelineRun_DeletionSync_NilSkipsDiff(t *testing.T) {
 	}
 
 	conn := &fakeDeletionConnector{
-		results: []*model.FetchResult{
+		results: []scriptedRun{
 			{
 				Documents:        []model.Document{newFakeDoc("survives.txt", "Survives")},
 				CurrentSourceIDs: []string{"survives.txt"},
@@ -363,7 +417,7 @@ func TestPipelineRun_DeletionSync_EmptySliceWipesAll(t *testing.T) {
 	}
 
 	conn := &fakeDeletionConnector{
-		results: []*model.FetchResult{
+		results: []scriptedRun{
 			{
 				Documents: []model.Document{
 					newFakeDoc("x.txt", "X"),
@@ -423,7 +477,7 @@ func TestPipelineRun_DeletionSync_PreservesColonSuffixChildren(t *testing.T) {
 	}
 
 	conn := &fakeDeletionConnector{
-		results: []*model.FetchResult{
+		results: []scriptedRun{
 			// Index both the parent and its "attachment" child.
 			{
 				Documents: []model.Document{
@@ -508,7 +562,7 @@ func TestPipelineRun_DeletionSync_CascadesToBinaryStore(t *testing.T) {
 	}
 
 	conn := &fakeDeletionConnector{
-		results: []*model.FetchResult{
+		results: []scriptedRun{
 			{
 				Documents: []model.Document{
 					newFakeDoc("a.txt", "A"),
@@ -539,7 +593,7 @@ func TestPipelineRun_DeletionSync_CascadesToBinaryStore(t *testing.T) {
 	// and drive a second deletion with a failing fake.
 	bs.err = fmt.Errorf("disk on fire")
 	conn.idx = 0
-	conn.results = []*model.FetchResult{
+	conn.results = []scriptedRun{
 		{
 			Documents:        []model.Document{newFakeDoc("c.txt", "C")},
 			CurrentSourceIDs: []string{"c.txt"},
@@ -654,7 +708,7 @@ func TestPipelineRun_LowInfoChunkSkipsEmbedding(t *testing.T) {
 	}
 }
 
-// mockManyDocsConnector returns a fixed number of tiny documents on Fetch.
+// mockManyDocsConnector streams a fixed number of tiny documents.
 // Used to test cancellation mid-loop: cancel via a progress callback at
 // doc N and verify the loop exits with ctx.Err() + a partial SyncReport.
 type mockManyDocsConnector struct {
@@ -666,19 +720,29 @@ func (m *mockManyDocsConnector) Type() string                       { return "fi
 func (m *mockManyDocsConnector) Name() string                       { return m.name }
 func (m *mockManyDocsConnector) Configure(_ connector.Config) error { return nil }
 func (m *mockManyDocsConnector) Validate() error                    { return nil }
-func (m *mockManyDocsConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
-	docs := make([]model.Document, m.count)
-	for i := range docs {
-		docs[i] = model.Document{
-			SourceType: "filesystem",
-			SourceName: m.name,
-			SourceID:   fmt.Sprintf("doc-%03d", i),
-			Title:      fmt.Sprintf("Doc %d", i),
-			Content:    "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt",
-			CreatedAt:  time.Now(),
+func (m *mockManyDocsConnector) Fetch(ctx context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		for i := 0; i < m.count; i++ {
+			doc := model.Document{
+				SourceType: "filesystem",
+				SourceName: m.name,
+				SourceID:   fmt.Sprintf("doc-%03d", i),
+				Title:      fmt.Sprintf("Doc %d", i),
+				Content:    "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt",
+				CreatedAt:  time.Now(),
+			}
+			select {
+			case items <- model.FetchItem{Doc: &doc}:
+			case <-ctx.Done():
+				return
+			}
 		}
-	}
-	return &model.FetchResult{Documents: docs}, nil
+	}()
+	return items, errs
 }
 
 func TestPipelineRun_CancelMidLoop_ReturnsPartialReport(t *testing.T) {
@@ -696,16 +760,20 @@ func TestPipelineRun_CancelMidLoop_ReturnsPartialReport(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Cancel after progress reports 5 docs processed. The next loop
-	// iteration observes ctx.Done() before indexing doc 6.
-	cancelAfter := 5
-	progress := func(_, processed, _ int) {
-		if processed >= cancelAfter {
+	// Cancel after the first bulk-flush progress callback fires.
+	// In the streaming pipeline, progress fires at batch boundaries
+	// (indexBatchSize=200), not per-doc — so the cancel-granularity
+	// is at most one batch. The connector emits well over one batch
+	// so we're guaranteed at least one intermediate flush before the
+	// stream closes.
+	progress := func(_, processed, _ int, _ string) {
+		if processed > 0 {
 			cancel()
 		}
 	}
 
-	conn := &mockManyDocsConnector{name: "cancel-test", count: 20}
+	const total = 500
+	conn := &mockManyDocsConnector{name: "cancel-test", count: total}
 
 	report, err := p.RunWithProgress(ctx, connID, conn, "", false, progress)
 	if !errors.Is(err, context.Canceled) {
@@ -714,14 +782,17 @@ func TestPipelineRun_CancelMidLoop_ReturnsPartialReport(t *testing.T) {
 	if report == nil {
 		t.Fatal("expected partial report, got nil")
 	}
-	// processed should be exactly cancelAfter because the check fires
-	// at the top of iteration i=cancelAfter (0-indexed) before indexing
-	// the (cancelAfter+1)-th doc.
-	if report.DocsProcessed != cancelAfter {
-		t.Errorf("DocsProcessed = %d, want %d", report.DocsProcessed, cancelAfter)
+	// Async flushes mean cancellation can interrupt a flush
+	// mid-bulk-index, which rolls the optimistic per-doc bumps
+	// back into `Errors` rather than `DocsProcessed`. Either
+	// outcome is acceptable — what matters is that the sync saw
+	// *some* activity before stopping and didn't process every
+	// doc.
+	if report.DocsProcessed+report.Errors == 0 {
+		t.Errorf("expected processed+errors > 0 after cancel, got processed=%d errors=%d", report.DocsProcessed, report.Errors)
 	}
-	if report.Errors != 0 {
-		t.Errorf("Errors = %d, want 0", report.Errors)
+	if report.DocsProcessed >= total {
+		t.Errorf("DocsProcessed = %d, want < %d (cancel should have stopped early)", report.DocsProcessed, total)
 	}
 	if report.ConnectorName != "cancel-test" {
 		t.Errorf("ConnectorName = %q, want cancel-test", report.ConnectorName)

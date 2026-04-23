@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sort"
@@ -21,9 +22,10 @@ import (
 
 // mockTelegramAPI implements telegramAPI for testing.
 type mockTelegramAPI struct {
-	dialogs tg.MessagesDialogsClass
-	msgList []tg.MessagesMessagesClass // returned in order
-	msgIdx  int
+	dialogs    tg.MessagesDialogsClass
+	dialogsErr error
+	msgList    []tg.MessagesMessagesClass // returned in order
+	msgIdx     int
 }
 
 // stubDownloader is a mediaDownloader that returns a fixed payload
@@ -103,7 +105,7 @@ func (*notExistErr) Is(target error) bool {
 }
 
 func (m *mockTelegramAPI) MessagesGetDialogs(_ context.Context, _ *tg.MessagesGetDialogsRequest) (tg.MessagesDialogsClass, error) {
-	return m.dialogs, nil
+	return m.dialogs, m.dialogsErr
 }
 
 func (m *mockTelegramAPI) MessagesGetHistory(_ context.Context, _ *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error) {
@@ -262,6 +264,114 @@ func TestSetSession(t *testing.T) {
 	c.SetSession(s)
 	if c.Session() == nil {
 		t.Error("expected non-nil session")
+	}
+}
+
+// TestEstimateChatDocs_CountsWindowsAndDualEmissions documents the
+// estimator's counting rule so a future refactor can't silently
+// change it. Window docs count once; per-message docs count once
+// per message with text or media; media docs count once per message
+// with a non-nil Media attachment.
+func TestEstimateChatDocs_CountsWindowsAndDualEmissions(t *testing.T) {
+	windows := []model.Document{{}, {}, {}} // 3 window docs
+	msgs := []*tg.Message{
+		{Message: "hello"},                             // +1 per-message, 0 media
+		{Media: &tg.MessageMediaDocument{}},            // +1 per-message, +1 media
+		{Message: "x", Media: &tg.MessageMediaPhoto{}}, // +1 per-message, +1 media
+		{}, // shell msg: skipped
+	}
+	got := estimateChatDocs(windows, msgs)
+	want := int64(3 + 3 + 2)
+	if got != want {
+		t.Errorf("estimateChatDocs = %d, want %d", got, want)
+	}
+}
+
+// TestEstimateChatDocs_Empty covers the zero-message short-circuit.
+func TestEstimateChatDocs_Empty(t *testing.T) {
+	if got := estimateChatDocs(nil, nil); got != 0 {
+		t.Errorf("expected 0 for empty inputs, got %d", got)
+	}
+}
+
+// TestMergeHistoryUsers_DoesNotClobber covers the "skip existing
+// entries" branch — tg.UserClass roster pages can repeat users
+// across calls and we want the first copy (populated from dialogs)
+// to win over partial records from history pages.
+func TestMergeHistoryUsers_DoesNotClobber(t *testing.T) {
+	existing := &tg.User{ID: 1, FirstName: "Primary"}
+	userMap := map[int64]*tg.User{1: existing}
+	page := &tg.MessagesMessages{
+		Users: []tg.UserClass{&tg.User{ID: 1, FirstName: "Shadow"}},
+	}
+	mergeHistoryUsers(userMap, page)
+	if userMap[1].FirstName != "Primary" {
+		t.Errorf("existing entry was overwritten: %+v", userMap[1])
+	}
+}
+
+// TestMergeHistoryUsers_AddsNewUsers covers the "doesn't exist yet"
+// branch — merging should bring in users the top-level dialog
+// roster never saw.
+func TestMergeHistoryUsers_AddsNewUsers(t *testing.T) {
+	userMap := map[int64]*tg.User{}
+	page := &tg.MessagesMessages{
+		Users: []tg.UserClass{&tg.User{ID: 7, FirstName: "Added"}},
+	}
+	mergeHistoryUsers(userMap, page)
+	if u, ok := userMap[7]; !ok || u.FirstName != "Added" {
+		t.Errorf("new user missing: %v", userMap)
+	}
+}
+
+// TestAttachMediaMetadata_FallsBackToTitle exercises the
+// no-filename branch where the media doc's Metadata doesn't carry
+// "filename" — the UI still needs a label, so we use the media
+// doc's title.
+func TestAttachMediaMetadata_FallsBackToTitle(t *testing.T) {
+	msgDoc := model.Document{} // nil Metadata
+	mediaDoc := model.Document{
+		Title:    "photo-123.jpg",
+		Metadata: map[string]any{}, // no filename
+	}
+	attachMediaMetadata(&msgDoc, mediaDoc)
+	atts, _ := msgDoc.Metadata["attachments"].([]map[string]any)
+	if len(atts) != 1 {
+		t.Fatalf("expected 1 attachment, got %v", atts)
+	}
+	if atts[0]["filename"] != "photo-123.jpg" {
+		t.Errorf("expected title fallback, got %v", atts[0]["filename"])
+	}
+}
+
+// TestFetch_NoSession covers the authentication guard in
+// streamFetch — a connector without a persisted session must surface
+// a terminal error on the errs channel rather than crashing or
+// silently no-oping.
+func TestFetch_NoSession(t *testing.T) {
+	c := &Connector{name: "unauth", apiID: 1, apiHash: "x", phone: "+1"}
+	// No session wired; HasSession will return false via nil check.
+	items, errs := c.Fetch(context.Background(), nil)
+	itemsDone, errsDone := false, false
+	var gotErr error
+	for !itemsDone || !errsDone {
+		select {
+		case _, ok := <-items:
+			if !ok {
+				itemsDone = true
+			}
+		case e, ok := <-errs:
+			if !ok {
+				errsDone = true
+				continue
+			}
+			if e != nil {
+				gotErr = e
+			}
+		}
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "not authenticated") {
+		t.Errorf("expected 'not authenticated' error, got %v", gotErr)
 	}
 }
 
@@ -537,6 +647,54 @@ func TestFetchWithAPI_WithCursor(t *testing.T) {
 	}
 	if len(docs) != 2 {
 		t.Fatalf("expected 2 docs (window + message), got %d", len(docs))
+	}
+}
+
+// TestFetchWithAPI_DialogsErrorPropagates covers the early-return
+// path in streamWithAPI when the MessagesGetDialogs call errors.
+func TestFetchWithAPI_DialogsErrorPropagates(t *testing.T) {
+	api := &mockTelegramAPI{
+		dialogsErr: fmt.Errorf("simulated get-dialogs failure"),
+	}
+	c := &Connector{name: "test"}
+	_, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil, 0)
+	if err == nil || !strings.Contains(err.Error(), "get dialogs") {
+		t.Errorf("expected 'get dialogs' error, got %v", err)
+	}
+}
+
+// TestFetchWithAPI_UnknownDialogsType covers the default branch
+// in dialogRoster where the server returns a type the connector
+// doesn't know how to decompose.
+func TestFetchWithAPI_UnknownDialogsType(t *testing.T) {
+	api := &mockTelegramAPI{
+		dialogs: &tg.MessagesDialogsNotModified{}, // not one of the expected shapes
+	}
+	c := &Connector{name: "test"}
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("expected no docs from unknown dialog shape, got %d", len(docs))
+	}
+}
+
+// TestFetchWithAPI_ChatFilterMismatch covers the branch where the
+// chat filter rejects every candidate, so no chats are processed.
+func TestFetchWithAPI_ChatFilterMismatch(t *testing.T) {
+	api := &mockTelegramAPI{
+		dialogs: &tg.MessagesDialogs{
+			Chats: []tg.ChatClass{&tg.Chat{ID: 1, Title: "NoMatch"}},
+		},
+	}
+	c := &Connector{name: "test", chatFilter: []string{"Only-this-chat"}}
+	docs, err := c.fetchWithAPI(context.Background(), api, &stubDownloader{}, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 0 {
+		t.Errorf("chat filter should have excluded everything, got %d docs", len(docs))
 	}
 }
 

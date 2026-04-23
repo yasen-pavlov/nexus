@@ -1,9 +1,14 @@
+import { useAnimatedNumber } from "@/hooks/use-animated-number";
 import { cn } from "@/lib/utils";
 
 export interface SyncProgressProps {
   processed: number;
   total: number;
   errors?: number;
+  /** Free-form "what's happening now" label from the connector
+   *  (IMAP folder, Telegram chat, etc.). Rendered alongside the
+   *  counter so "0/327" becomes "Archive · 0/327". */
+  scope?: string;
   /** When true, emits a thin bar with no label row — used inside the card. */
   compact?: boolean;
   className?: string;
@@ -19,11 +24,24 @@ export function SyncProgress({
   processed,
   total,
   errors = 0,
+  scope,
   compact,
   className,
 }: Readonly<SyncProgressProps>) {
-  const pct = total > 0 ? Math.min(100, (processed / total) * 100) : 0;
+  // Smooth the counter — the SSE stream fires every per-doc event
+  // the backend emits, but React batches state updates within a
+  // microtask so a bursty connector (iCloud returning 100 envelopes
+  // at once) would render as 20+ visible jumps. Tweening the
+  // displayed numbers makes the text tick at a human-readable
+  // cadence even when the underlying state hops.
+  const animatedProcessed = useAnimatedNumber(processed);
+  const animatedTotal = useAnimatedNumber(total);
+  const pct =
+    animatedTotal > 0
+      ? Math.min(100, (animatedProcessed / animatedTotal) * 100)
+      : 0;
   const indeterminate = total === 0;
+  const trimmedScope = scope?.trim() ?? "";
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <div
@@ -49,14 +67,22 @@ export function SyncProgress({
         )}
       </div>
       {!compact && (
-        <div className="flex items-center justify-between text-[11.5px] tabular-nums text-muted-foreground">
-          <span>
+        <div className="flex items-center justify-between gap-3 text-[11.5px] tabular-nums text-muted-foreground">
+          <span className="truncate">
+            {trimmedScope && (
+              <span className="text-foreground">{trimmedScope}</span>
+            )}
+            {trimmedScope && (indeterminate || total > 0) && (
+              <span className="px-1 text-muted-foreground/70">·</span>
+            )}
             {indeterminate ? (
               "Discovering…"
             ) : (
               <>
-                <span className="text-foreground">{processed.toLocaleString()}</span> /{" "}
-                {total.toLocaleString()}
+                <span className="text-foreground">
+                  {animatedProcessed.toLocaleString()}
+                </span>{" "}
+                / {animatedTotal.toLocaleString()}
               </>
             )}
           </span>

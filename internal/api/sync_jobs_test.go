@@ -146,7 +146,7 @@ func TestSyncJobManager_Update(t *testing.T) {
 	m := newTestSyncJobManager()
 	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
-	m.Update(job.ID, 100, 50, 2)
+	m.Update(job.ID, 100, 50, 2, "")
 
 	got := m.Get(job.ID)
 	if got.DocsTotal != 100 {
@@ -163,7 +163,7 @@ func TestSyncJobManager_Update(t *testing.T) {
 func TestSyncJobManager_Complete_Success(t *testing.T) {
 	m := newTestSyncJobManager()
 	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
-	m.Update(job.ID, 10, 10, 0)
+	m.Update(job.ID, 10, 10, 0, "")
 	m.Complete(job.ID, nil)
 
 	got := m.Get(job.ID)
@@ -295,7 +295,7 @@ func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
 	}
 
 	// Update and receive
-	m.Update(job.ID, 50, 10, 0)
+	m.Update(job.ID, 50, 10, 0, "")
 	select {
 	case update := <-ch:
 		if update.DocsTotal != 50 || update.DocsProcessed != 10 {
@@ -344,7 +344,7 @@ func TestSyncJobManager_Get_ReturnsSnapshot(t *testing.T) {
 	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")
 
 	got1 := m.Get(job.ID)
-	m.Update(job.ID, 100, 50, 0)
+	m.Update(job.ID, 100, 50, 0, "")
 	got2 := m.Get(job.ID)
 
 	// got1 should still have old values (snapshot)
@@ -384,7 +384,7 @@ func TestStreamSyncProgress_Handler(t *testing.T) {
 	// Update and complete the job in a goroutine
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		h.syncJobs.Update(job.ID, 10, 5, 0)
+		h.syncJobs.Update(job.ID, 10, 5, 0, "")
 		time.Sleep(50 * time.Millisecond)
 		h.syncJobs.Complete(job.ID, nil)
 	}()
@@ -437,7 +437,7 @@ func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			m.Update(job.ID, 100, n, 0)
+			m.Update(job.ID, 100, n, 0, "")
 			_ = m.Get(job.ID)
 			_ = m.GetByConnector(uuid.New())
 			_ = m.Active()

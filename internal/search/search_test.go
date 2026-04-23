@@ -5,6 +5,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -291,6 +292,173 @@ func TestListIndexedSourceIDs_EmptySource(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty slice, got %v", got)
+	}
+}
+
+func TestStreamIndexedSourceIDs_SortedAndDeduped(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// Seed in deliberately non-sorted order; streaming should emit
+	// ascending-sorted per OpenSearch keyword sort.
+	for _, sid := range []string{"b.txt", "a.txt", "c.txt"} {
+		doc := testDoc(sid, "T-"+sid, "content for "+sid)
+		doc.SourceName = "stream-test"
+		if err := c.IndexDocument(ctx, doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = c.Refresh(ctx)
+
+	items, errs := c.StreamIndexedSourceIDs(ctx, "filesystem", "stream-test")
+	var got []string
+	var streamErr error
+	itemsDone, errsDone := false, false
+	for !itemsDone || !errsDone {
+		select {
+		case s, ok := <-items:
+			if !ok {
+				itemsDone = true
+				continue
+			}
+			got = append(got, s)
+		case e, ok := <-errs:
+			if !ok {
+				errsDone = true
+				continue
+			}
+			if e != nil {
+				streamErr = e
+			}
+		}
+	}
+	if streamErr != nil {
+		t.Fatalf("stream error: %v", streamErr)
+	}
+	want := []string{"a.txt", "b.txt", "c.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestUpdateOwnershipBySource_NoOpOnEmptySource covers the
+// update_by_query path when no docs match the filter.
+func TestUpdateOwnershipBySource_NoOpOnEmptySource(t *testing.T) {
+	c := newTestClient(t)
+	if err := c.UpdateOwnershipBySource(context.Background(), "filesystem", "nonexistent", "alice", true); err != nil {
+		t.Errorf("unexpected error for empty source update: %v", err)
+	}
+}
+
+func TestStreamIndexedSourceIDs_EmptySource(t *testing.T) {
+	c := newTestClient(t)
+	items, errs := c.StreamIndexedSourceIDs(context.Background(), "filesystem", "no-such-thing")
+	var got []string
+	for s := range items {
+		got = append(got, s)
+	}
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("unexpected error: %v", e)
+		}
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty stream, got %v", got)
+	}
+}
+
+func TestStreamIndexedSourceIDs_ContextCancelled(t *testing.T) {
+	c := newTestClient(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	items, errs := c.StreamIndexedSourceIDs(ctx, "filesystem", "anything")
+	// Drain: cancellation should either surface an error or
+	// produce no items at all. What matters is the goroutine
+	// exits — if either channel never closes we'd hang here and
+	// the test would time out, which is the assertion.
+	itemCount := 0
+	for range items {
+		itemCount++
+	}
+	var sawErr error
+	for e := range errs {
+		if e != nil {
+			sawErr = e
+		}
+	}
+	// Either path is acceptable; we just need them both visible
+	// so a future regression that stops producing either would
+	// show up in logs.
+	t.Logf("cancelled stream: %d items, err=%v", itemCount, sawErr)
+}
+
+func TestStreamIndexedSourceIDs_PageSpansMultipleRoundTrips(t *testing.T) {
+	// Seed more than one page worth of docs so the search_after
+	// pagination branch fires at least once. Uses a small local
+	// scope so it doesn't bloat the test index.
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	const total = streamIndexedSourceIDsPageSize + 5
+	for i := 0; i < total; i++ {
+		doc := testDoc(
+			// Zero-padded to keep lexicographic sort predictable
+			// regardless of digit count.
+			fmt.Sprintf("doc-%06d.txt", i), "T", "body",
+		)
+		doc.SourceName = "stream-paged"
+		if err := c.IndexDocument(ctx, doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = c.Refresh(ctx)
+
+	items, errs := c.StreamIndexedSourceIDs(ctx, "filesystem", "stream-paged")
+	count := 0
+	for range items {
+		count++
+	}
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("stream error: %v", e)
+		}
+	}
+	if count != total {
+		t.Errorf("expected %d docs across pages, got %d", total, count)
+	}
+}
+
+func TestStreamIndexedSourceIDs_ChunkedDocsDeduped(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// A multi-chunk doc would surface once per chunk without the
+	// chunk_index:0 filter. Streaming must emit the source_id
+	// exactly once.
+	doc := testDoc("multichunk.txt", "Multi", strings.Repeat("alpha beta gamma ", 200))
+	doc.SourceName = "stream-chunks"
+	if err := c.IndexDocument(ctx, doc); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Refresh(ctx)
+
+	items, errs := c.StreamIndexedSourceIDs(ctx, "filesystem", "stream-chunks")
+	var got []string
+	for s := range items {
+		got = append(got, s)
+	}
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("stream error: %v", e)
+		}
+	}
+	if len(got) != 1 || got[0] != "multichunk.txt" {
+		t.Errorf("expected ['multichunk.txt'], got %v", got)
 	}
 }
 

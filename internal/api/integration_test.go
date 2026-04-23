@@ -2552,8 +2552,12 @@ func (n *nonFetcherConnector) Configure(cfg connector.Config) error {
 	return nil
 }
 func (n *nonFetcherConnector) Validate() error { return nil }
-func (n *nonFetcherConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
-	return &model.FetchResult{}, nil
+func (n *nonFetcherConnector) Fetch(_ context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	close(items)
+	close(errs)
+	return items, errs
 }
 
 func init() {
