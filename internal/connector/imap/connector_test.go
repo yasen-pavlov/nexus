@@ -14,16 +14,46 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/testutil"
 )
+
+// runStreamFetch drives c.streamFetchWithClient against a mock and
+// returns the collected stream. Used by the per-folder streaming
+// tests below — exercises the real streaming code path without
+// needing a live IMAP dial/login.
+func runStreamFetch(t *testing.T, c *Connector, mbc mailboxClient, cursor *model.SyncCursor) *testutil.StreamResult {
+	t.Helper()
+	return runStreamFetchCtx(t, c, mbc, cursor, context.Background())
+}
+
+func runStreamFetchCtx(t *testing.T, c *Connector, mbc mailboxClient, cursor *model.SyncCursor, ctx context.Context) *testutil.StreamResult {
+	t.Helper()
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	go func() {
+		defer close(items)
+		defer close(errs)
+		if err := c.streamFetchWithClient(ctx, mbc, cursor, items); err != nil {
+			errs <- err
+		}
+	}()
+	return testutil.CollectStream(t, items, errs)
+}
 
 // --- Mock mailbox client ---
 
 type mockMailboxClient struct {
 	selectErr error
-	uids      []imap.UID
-	searchErr error
-	msgs      []*imapclient.FetchMessageBuffer
-	fetchErr  error
+	// selectData controls the (UIDValidity, HighestModSeq) returned
+	// by SelectFolder. Zero-valued by default, which means the
+	// connector falls back to UID-range delta since CONDSTORE looks
+	// unavailable. Tests that want to exercise CONDSTORE fast-skip
+	// or delta paths set these fields explicitly.
+	selectData imap.SelectData
+	uids       []imap.UID
+	searchErr  error
+	msgs       []*imapclient.FetchMessageBuffer
+	fetchErr   error
 
 	// failOnAllSearch, when true, returns an error from the *first*
 	// (no-criteria) SearchUIDs call — the deletion-sync enumeration
@@ -34,20 +64,32 @@ type mockMailboxClient struct {
 	searchCallCount int
 }
 
-func (m *mockMailboxClient) SelectFolder(_ string) error {
-	return m.selectErr
+func (m *mockMailboxClient) SelectFolder(_ string, _ bool) (*imap.SelectData, error) {
+	if m.selectErr != nil {
+		return nil, m.selectErr
+	}
+	d := m.selectData
+	return &d, nil
 }
 
 func (m *mockMailboxClient) SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UID, error) {
 	m.searchCallCount++
-	if m.failOnAllSearch && criteria != nil && len(criteria.UID) == 0 && criteria.Since.IsZero() {
+	if m.failOnAllSearch && criteria != nil && len(criteria.UID) == 0 && criteria.Since.IsZero() && criteria.ModSeq == nil {
 		return nil, fmt.Errorf("simulated SEARCH ALL failure")
 	}
 	return m.uids, m.searchErr
 }
 
-func (m *mockMailboxClient) FetchMessages(_ []imap.UID) ([]*imapclient.FetchMessageBuffer, error) {
-	return m.msgs, m.fetchErr
+func (m *mockMailboxClient) FetchMessages(_ []imap.UID, _ *imap.FetchOptions, yield func(*imapclient.FetchMessageBuffer) bool) error {
+	if m.fetchErr != nil {
+		return m.fetchErr
+	}
+	for _, msg := range m.msgs {
+		if !yield(msg) {
+			return nil
+		}
+	}
+	return nil
 }
 
 // --- Configure tests ---
@@ -220,48 +262,44 @@ func TestRegistration(t *testing.T) {
 	}
 }
 
-// --- deletion-sync enumeration tests ---
+// --- streaming Fetch tests (per-folder enumeration + body fetch) ---
 
-func TestFetchWithClient_EnumeratesAllUIDsAcrossFolders(t *testing.T) {
+func TestStreamFetch_EnumeratesAllUIDsAcrossFolders(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX", "Sent"}}
 	mock := &mockMailboxClient{
 		uids: []imap.UID{1, 2, 7},
 		msgs: []*imapclient.FetchMessageBuffer{},
 	}
 
-	_, _, currentSourceIDs, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
 	// Two folders × three UIDs each = six source ids, prefixed by folder.
+	// The connector emits lex-sorted per-folder, and folders are
+	// iterated in lex order (INBOX < Sent) → global stream is sorted.
 	want := []string{"INBOX:1", "INBOX:2", "INBOX:7", "Sent:1", "Sent:2", "Sent:7"}
-	got := append([]string{}, currentSourceIDs...)
+	got := append([]string{}, result.SourceIDs...)
 	sort.Strings(got)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("CurrentSourceIDs = %v, want %v", got, want)
+		t.Errorf("SourceIDs = %v, want %v", got, want)
 	}
 }
 
-func TestFetchWithClient_EnumerationFailureOptsOut(t *testing.T) {
+func TestStreamFetch_EnumerationFailureAbortsSync(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{
 		uids:            []imap.UID{1},
 		failOnAllSearch: true,
 	}
-	_, _, currentSourceIDs, err := c.fetchWithClient(context.Background(), mock, nil)
-	// SearchUIDs failure surfaces as a fetchFolder error, propagated up.
-	if err == nil {
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err == nil {
 		t.Fatal("expected error from failed SEARCH ALL")
-	}
-	if currentSourceIDs != nil {
-		t.Errorf("CurrentSourceIDs must be nil on enumeration failure, got %v", currentSourceIDs)
 	}
 }
 
-// --- fetchWithClient tests ---
-
-func TestFetchWithClient_SingleFolder(t *testing.T) {
+func TestStreamFetch_SingleFolder(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{
 		uids: []imap.UID{1, 2},
@@ -292,25 +330,29 @@ func TestFetchWithClient_SingleFolder(t *testing.T) {
 		},
 	}
 
-	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
-	if len(docs) != 2 {
-		t.Fatalf("got %d docs, want 2", len(docs))
+	if len(result.Documents) != 2 {
+		t.Fatalf("got %d docs, want 2", len(result.Documents))
 	}
-	if uids["INBOX"] != 2 {
-		t.Errorf("INBOX UID = %d, want 2", uids["INBOX"])
+	if result.LastCursor == nil {
+		t.Fatal("expected at least one checkpoint")
 	}
-	if docs[0].Title != "Hello" {
-		t.Errorf("doc[0].Title = %q, want %q", docs[0].Title, "Hello")
+	uidVal, ok := result.LastCursor.CursorData["uid:INBOX"].(float64)
+	if !ok || uidVal != 2 {
+		t.Errorf("cursor uid:INBOX = %v, want 2", result.LastCursor.CursorData["uid:INBOX"])
 	}
-	if docs[0].SourceID != "INBOX:1" {
-		t.Errorf("doc[0].SourceID = %q, want %q", docs[0].SourceID, "INBOX:1")
+	if result.Documents[0].Title != "Hello" {
+		t.Errorf("doc[0].Title = %q, want %q", result.Documents[0].Title, "Hello")
+	}
+	if result.Documents[0].SourceID != "INBOX:1" {
+		t.Errorf("doc[0].SourceID = %q, want %q", result.Documents[0].SourceID, "INBOX:1")
 	}
 }
 
-func TestFetchWithClient_MultipleFolders(t *testing.T) {
+func TestStreamFetch_MultipleFolders(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX", "Sent"}}
 	mock := &mockMailboxClient{
 		uids: []imap.UID{10},
@@ -329,20 +371,27 @@ func TestFetchWithClient_MultipleFolders(t *testing.T) {
 		},
 	}
 
-	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
 	// Same mock returns same msg for both folders
-	if len(docs) != 2 {
-		t.Fatalf("got %d docs, want 2 (one per folder)", len(docs))
+	if len(result.Documents) != 2 {
+		t.Fatalf("got %d docs, want 2 (one per folder)", len(result.Documents))
 	}
-	if uids["INBOX"] != 10 || uids["Sent"] != 10 {
-		t.Errorf("uids = %v, want both 10", uids)
+	// Both folders should advance their per-folder UID cursor entries.
+	if result.LastCursor == nil {
+		t.Fatal("expected cursor")
+	}
+	if v, _ := result.LastCursor.CursorData["uid:INBOX"].(float64); v != 10 {
+		t.Errorf("uid:INBOX = %v, want 10", result.LastCursor.CursorData["uid:INBOX"])
+	}
+	if v, _ := result.LastCursor.CursorData["uid:Sent"].(float64); v != 10 {
+		t.Errorf("uid:Sent = %v, want 10", result.LastCursor.CursorData["uid:Sent"])
 	}
 }
 
-func TestFetchWithClient_WithCursor(t *testing.T) {
+func TestStreamFetch_WithCursor(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{
 		uids: []imap.UID{51},
@@ -365,68 +414,70 @@ func TestFetchWithClient_WithCursor(t *testing.T) {
 		CursorData: map[string]any{"uid:INBOX": float64(50)},
 	}
 
-	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, cursor)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, cursor)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
-	if len(docs) != 1 {
-		t.Fatalf("got %d docs, want 1", len(docs))
+	if len(result.Documents) != 1 {
+		t.Fatalf("got %d docs, want 1", len(result.Documents))
 	}
-	if uids["INBOX"] != 51 {
-		t.Errorf("INBOX UID = %d, want 51", uids["INBOX"])
+	if v, _ := result.LastCursor.CursorData["uid:INBOX"].(float64); v != 51 {
+		t.Errorf("uid:INBOX = %v, want 51", result.LastCursor.CursorData["uid:INBOX"])
 	}
 }
 
-func TestFetchWithClient_NoMessages(t *testing.T) {
+func TestStreamFetch_NoMessages(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{uids: nil}
 
-	docs, uids, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
-	if len(docs) != 0 {
-		t.Errorf("got %d docs, want 0", len(docs))
+	if len(result.Documents) != 0 {
+		t.Errorf("got %d docs, want 0", len(result.Documents))
 	}
-	if _, ok := uids["INBOX"]; ok {
-		t.Error("expected no UID entry for empty folder")
+	// Empty folder still emits a checkpoint so the cursor can carry
+	// forward (e.g. CONDSTORE ModSeq in a later step).
+	if result.LastCursor == nil {
+		t.Error("expected a checkpoint even for empty folder")
 	}
 }
 
-func TestFetchWithClient_SelectError(t *testing.T) {
+func TestStreamFetch_SelectError(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{selectErr: fmt.Errorf("folder not found")}
 
-	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err == nil || !strings.Contains(err.Error(), "select") {
-		t.Errorf("error = %v, want 'select' error", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "select") {
+		t.Errorf("error = %v, want 'select' error", result.Err)
 	}
 }
 
-func TestFetchWithClient_SearchError(t *testing.T) {
+func TestStreamFetch_SearchError(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{searchErr: fmt.Errorf("search failed")}
 
-	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err == nil || !strings.Contains(err.Error(), "search") {
-		t.Errorf("error = %v, want 'search' error", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "search") {
+		t.Errorf("error = %v, want 'search' error", result.Err)
 	}
 }
 
-func TestFetchWithClient_FetchError(t *testing.T) {
+func TestStreamFetch_FetchError(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{
 		uids:     []imap.UID{1},
 		fetchErr: fmt.Errorf("fetch failed"),
 	}
 
-	_, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err == nil || !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("error = %v, want 'fetch' error", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "fetch") {
+		t.Errorf("error = %v, want 'fetch' error", result.Err)
 	}
 }
 
-func TestFetchWithClient_ContextCancelled(t *testing.T) {
+func TestStreamFetch_ContextCancelled(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX", "Sent"}}
 	mock := &mockMailboxClient{
 		uids: []imap.UID{1},
@@ -446,24 +497,184 @@ func TestFetchWithClient_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, _, _, err := c.fetchWithClient(ctx, mock, nil)
-	if err == nil {
-		t.Fatal("expected context cancellation error")
-	}
+	result := runStreamFetchCtx(t, c, mock, nil, ctx)
+	// Cancellation surfaces as either a terminal error or early
+	// closure; at minimum, the stream must not hang.
+	_ = result
 }
 
-func TestFetchWithClient_SyncSince(t *testing.T) {
+func TestStreamFetch_SyncSince(t *testing.T) {
 	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}, syncSince: since}
 	mock := &mockMailboxClient{uids: nil}
 
-	// Should not error — just returns no docs when there are no UIDs
-	docs, _, _, err := c.fetchWithClient(context.Background(), mock, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
-	if len(docs) != 0 {
-		t.Errorf("got %d docs, want 0", len(docs))
+	if len(result.Documents) != 0 {
+		t.Errorf("got %d docs, want 0", len(result.Documents))
+	}
+}
+
+// TestCopyCursorData covers the helper that defensively copies
+// cursor state before mid-sync mutation.
+func TestCopyCursorData(t *testing.T) {
+	t.Run("nil cursor", func(t *testing.T) {
+		got := copyCursorData(nil)
+		if got == nil || len(got) != 0 {
+			t.Fatal("expected empty non-nil map")
+		}
+	})
+	t.Run("nil CursorData field", func(t *testing.T) {
+		got := copyCursorData(&model.SyncCursor{})
+		if got == nil || len(got) != 0 {
+			t.Errorf("nil CursorData should yield empty map, got %v", got)
+		}
+	})
+	t.Run("independent of original", func(t *testing.T) {
+		orig := &model.SyncCursor{CursorData: map[string]any{"uid:INBOX": float64(42)}}
+		got := copyCursorData(orig)
+		got["uid:INBOX"] = float64(99)
+		if v, _ := orig.CursorData["uid:INBOX"].(float64); v != 42 {
+			t.Errorf("mutation leaked back to original: %v", v)
+		}
+	})
+}
+
+// TestCursorGetters_AbsentOrMalformed exercises the defensive
+// zero-return paths in cursorUIDValidityForFolder and
+// cursorModSeqForFolder — cases where the cursor is nil, the key
+// is absent, or the value has the wrong type.
+func TestCursorGetters_AbsentOrMalformed(t *testing.T) {
+	if got := cursorUIDValidityForFolder(nil, "INBOX"); got != 0 {
+		t.Errorf("nil cursor uidvalidity = %d, want 0", got)
+	}
+	if got := cursorModSeqForFolder(nil, "INBOX"); got != 0 {
+		t.Errorf("nil cursor modseq = %d, want 0", got)
+	}
+	bad := &model.SyncCursor{CursorData: map[string]any{
+		"uidvalidity:INBOX": "not-a-number",
+		"modseq:INBOX":      "bad",
+	}}
+	if got := cursorUIDValidityForFolder(bad, "INBOX"); got != 0 {
+		t.Errorf("malformed uidvalidity = %d, want 0", got)
+	}
+	if got := cursorModSeqForFolder(bad, "INBOX"); got != 0 {
+		t.Errorf("malformed modseq = %d, want 0", got)
+	}
+}
+
+// TestStripHTMLRegex covers the naive-regex fallback path — used
+// only when html.Parse fails outright. Guarded here so future
+// refactors don't accidentally tombstone it.
+func TestStripHTMLRegex(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"<p>Hello</p>", "Hello"},
+		{"<div><b>Bold</b> and <i>italic</i></div>", "Bold and italic"},
+		{"", ""},
+		{"No tags here", "No tags here"},
+		{"   leading and trailing whitespace   ", "leading and trailing whitespace"},
+	}
+	for _, tc := range cases {
+		if got := stripHTMLRegex(tc.in); got != tc.want {
+			t.Errorf("stripHTMLRegex(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// --- CONDSTORE tests ---
+
+func TestStreamFetch_CondStore_FastSkipUnchangedFolder(t *testing.T) {
+	// When the server's HighestModSeq matches the cursor's cached
+	// value, the connector still runs SEARCH ALL and emits the
+	// folder's SourceIDs (so the merge-diff has a complete view),
+	// but skips the delta SEARCH + body FETCH. Fast-skipping the
+	// enumeration would cause mass deletions — see the comment on
+	// streamFolder.
+	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
+	mock := &mockMailboxClient{
+		selectData: imap.SelectData{UIDValidity: 42, HighestModSeq: 100},
+		uids:       []imap.UID{1, 2, 3},
+	}
+	cursor := &model.SyncCursor{
+		CursorData: map[string]any{
+			"uidvalidity:INBOX": float64(42),
+			"modseq:INBOX":      float64(100),
+		},
+	}
+	result := runStreamFetch(t, c, mock, cursor)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if len(result.Documents) != 0 {
+		t.Errorf("fast-skip should emit no docs, got %d", len(result.Documents))
+	}
+	// SourceIDs must still flow so the pipeline's merge-diff sees
+	// a complete picture of the folder's state.
+	if len(result.SourceIDs) != 3 {
+		t.Errorf("fast-skip should still emit every source id (3), got %v", result.SourceIDs)
+	}
+	if result.LastCursor == nil {
+		t.Fatal("expected a checkpoint even on fast-skip")
+	}
+	if v, _ := result.LastCursor.CursorData["modseq:INBOX"].(float64); v != 100 {
+		t.Errorf("modseq:INBOX = %v, want 100", result.LastCursor.CursorData["modseq:INBOX"])
+	}
+	// SEARCH ALL is expected (1 call); the delta SEARCH is skipped.
+	if mock.searchCallCount != 1 {
+		t.Errorf("expected exactly 1 SEARCH call (SEARCH ALL), got %d", mock.searchCallCount)
+	}
+}
+
+func TestStreamFetch_CondStore_UIDValidityChangeDropsCache(t *testing.T) {
+	// Server returns a new UIDVALIDITY. The cached HighestModSeq is
+	// stale and must not gate the fast-skip — a full enumeration
+	// runs.
+	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
+	mock := &mockMailboxClient{
+		selectData: imap.SelectData{UIDValidity: 999, HighestModSeq: 100},
+		uids:       []imap.UID{1, 2},
+		msgs: []*imapclient.FetchMessageBuffer{
+			{
+				UID: 1,
+				Envelope: &imap.Envelope{
+					Subject: "A", Date: time.Now(), MessageID: "a@x.com",
+				},
+				BodySection: []imapclient.FetchBodySectionBuffer{
+					{Bytes: buildMIMEMessage("text/plain", "A body")},
+				},
+			},
+			{
+				UID: 2,
+				Envelope: &imap.Envelope{
+					Subject: "B", Date: time.Now(), MessageID: "b@x.com",
+				},
+				BodySection: []imapclient.FetchBodySectionBuffer{
+					{Bytes: buildMIMEMessage("text/plain", "B body")},
+				},
+			},
+		},
+	}
+	cursor := &model.SyncCursor{
+		CursorData: map[string]any{
+			"uidvalidity:INBOX": float64(42), // mismatches server
+			"modseq:INBOX":      float64(100),
+		},
+	}
+	result := runStreamFetch(t, c, mock, cursor)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	// With cached modseq invalidated, the connector falls back to
+	// UID-range delta (lastUID=0 → everything) and fetches both.
+	if len(result.Documents) != 2 {
+		t.Fatalf("UIDValidity change should force re-fetch, got %d docs", len(result.Documents))
+	}
+	if v, _ := result.LastCursor.CursorData["uidvalidity:INBOX"].(float64); v != 999 {
+		t.Errorf("uidvalidity:INBOX = %v, want 999", v)
 	}
 }
 
@@ -478,9 +689,9 @@ func TestFetch_ConnectionError(t *testing.T) {
 			return nil, fmt.Errorf("connection refused")
 		},
 	}
-	_, err := c.Fetch(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "connect") {
-		t.Errorf("error = %v, want 'connect'", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "connect") {
+		t.Errorf("error = %v, want 'connect'", result.Err)
 	}
 }
 

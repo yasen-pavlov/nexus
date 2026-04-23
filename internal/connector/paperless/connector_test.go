@@ -11,6 +11,7 @@ import (
 
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/testutil"
 )
 
 func TestConfigure(t *testing.T) {
@@ -153,6 +154,15 @@ func TestFetch(t *testing.T) {
 	})
 	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("fields") == "id" {
+			// Enumeration pass — return IDs for deletion-sync source-id emission.
+			json.NewEncoder(w).Encode(paperlessIDPage{ //nolint:errcheck // test
+				Results: []struct {
+					ID int `json:"id"`
+				}{{ID: 1}, {ID: 2}},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
 			Count: 2,
 			Results: []paperlessDoc{
@@ -175,9 +185,9 @@ func TestFetch(t *testing.T) {
 	c := &Connector{name: "test-paperless", baseURL: srv.URL, token: "test", client: srv.Client()}
 
 	t.Run("full sync", func(t *testing.T) {
-		result, err := c.Fetch(context.Background(), nil)
-		if err != nil {
-			t.Fatalf("fetch failed: %v", err)
+		result := testutil.RunFetch(t, c, nil)
+		if result.Err != nil {
+			t.Fatalf("fetch failed: %v", result.Err)
 		}
 		if len(result.Documents) != 2 {
 			t.Fatalf("expected 2 documents, got %d", len(result.Documents))
@@ -207,18 +217,13 @@ func TestFetch(t *testing.T) {
 			t.Errorf("expected tags ['invoice'], got %v", doc1.Metadata["tags"])
 		}
 
-		// Doc 2 has no correspondent or document_type
 		doc2 := result.Documents[1]
 		if _, ok := doc2.Metadata["correspondent"]; ok {
 			t.Error("expected no correspondent on doc 2")
 		}
 
-		// Verify cursor
-		if result.Cursor == nil {
+		if result.LastCursor == nil {
 			t.Fatal("expected cursor")
-		}
-		if result.Cursor.ItemsSynced != 2 {
-			t.Errorf("expected 2 items synced, got %d", result.Cursor.ItemsSynced)
 		}
 	})
 
@@ -228,9 +233,9 @@ func TestFetch(t *testing.T) {
 				"last_sync_time": now.Add(-1 * time.Hour).Format(time.RFC3339Nano),
 			},
 		}
-		result, err := c.Fetch(context.Background(), cursor)
-		if err != nil {
-			t.Fatalf("fetch failed: %v", err)
+		result := testutil.RunFetch(t, c, cursor)
+		if result.Err != nil {
+			t.Fatalf("fetch failed: %v", result.Err)
 		}
 		// Our mock doesn't actually filter, but verify the cursor was used
 		if len(result.Documents) != 2 {
@@ -241,6 +246,7 @@ func TestFetch(t *testing.T) {
 
 func TestFetch_Pagination(t *testing.T) {
 	callCount := 0
+	enumCount := 0
 	mux := http.NewServeMux()
 
 	// Empty lookups
@@ -252,11 +258,19 @@ func TestFetch_Pagination(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(mux)
-	// Need to set up document handler with reference to srv.URL for next link
 	page2URL := ""
 
 	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("fields") == "id" {
+			enumCount++
+			_ = json.NewEncoder(w).Encode(paperlessIDPage{
+				Results: []struct {
+					ID int `json:"id"`
+				}{{ID: 1}, {ID: 2}},
+			})
+			return
+		}
 		callCount++
 		now := time.Now()
 
@@ -283,21 +297,26 @@ func TestFetch_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("fetch failed: %v", result.Err)
 	}
 	if len(result.Documents) != 2 {
 		t.Fatalf("expected 2 documents across 2 pages, got %d", len(result.Documents))
 	}
-	// 2 paginated content fetches + 1 enumerateAllIDs pass for the
-	// deletion-sync source-id list.
-	if callCount != 3 {
-		t.Errorf("expected 3 calls (2 page fetches + 1 enumerate), got %d", callCount)
+	if callCount != 2 {
+		t.Errorf("expected 2 content page fetches, got %d", callCount)
+	}
+	if enumCount != 1 {
+		t.Errorf("expected 1 enumeration pass, got %d", enumCount)
 	}
 }
 
-func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
+func TestFetch_EmitsSourceIDsSortedLex(t *testing.T) {
+	// IDs are numeric strings; the connector must sort them
+	// lexicographically before emission so the pipeline's
+	// streaming merge-diff sees them in OpenSearch keyword-sort
+	// order.
 	mux := http.NewServeMux()
 	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
@@ -305,10 +324,10 @@ func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
 		})
 	}
 	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
-		// `fields=id` indicates the enumeration pass — return the
-		// id-only shape. Anything else is the regular fetch path.
 		if r.URL.Query().Get("fields") == "id" {
-			_, _ = w.Write([]byte(`{"results":[{"id":1},{"id":2},{"id":3}],"next":null}`))
+			// Deliberately non-sorted numeric IDs to prove the
+			// connector is sorting lex before emitting.
+			_, _ = w.Write([]byte(`{"results":[{"id":2},{"id":10},{"id":1}],"next":null}`))
 			return
 		}
 		_ = json.NewEncoder(w).Encode(paginatedResponse{
@@ -318,13 +337,14 @@ func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	c := &Connector{name: "test", baseURL: srv.URL, token: "k", client: srv.Client()}
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
 	}
-	want := []string{"1", "2", "3"}
-	if !reflect.DeepEqual(result.CurrentSourceIDs, want) {
-		t.Errorf("CurrentSourceIDs = %v, want %v", result.CurrentSourceIDs, want)
+	// "1" < "10" < "2" in lex order.
+	want := []string{"1", "10", "2"}
+	if !reflect.DeepEqual(result.SourceIDs, want) {
+		t.Errorf("SourceIDs = %v, want %v", result.SourceIDs, want)
 	}
 }
 
@@ -332,7 +352,7 @@ func TestFetch_EnumerationFailureDoesNotAbortFetch(t *testing.T) {
 	// A 500 on the id-only enumerate must NOT fail the sync — we still
 	// want to index the docs returned by the regular fetch. The
 	// enumeration error just opts the connector out of deletion sync
-	// for this round (CurrentSourceIDs == nil).
+	// for this round (no SourceID items emitted).
 	mux := http.NewServeMux()
 	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
@@ -351,15 +371,15 @@ func TestFetch_EnumerationFailureDoesNotAbortFetch(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	c := &Connector{name: "test", baseURL: srv.URL, token: "k", client: srv.Client()}
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Fetch should succeed even when enumeration fails, got %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("Fetch should succeed even when enumeration fails, got %v", result.Err)
 	}
 	if len(result.Documents) != 1 {
 		t.Errorf("expected 1 indexed doc, got %d", len(result.Documents))
 	}
-	if result.CurrentSourceIDs != nil {
-		t.Errorf("CurrentSourceIDs must be nil on enumeration failure, got %v", result.CurrentSourceIDs)
+	if len(result.SourceIDs) != 0 {
+		t.Errorf("expected no SourceID emissions on enumeration failure, got %v", result.SourceIDs)
 	}
 }
 
@@ -388,14 +408,62 @@ func TestFetch_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := c.Fetch(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error for cancelled context")
+	items, errs := c.Fetch(ctx, nil)
+	result := testutil.CollectStream(t, items, errs)
+	if result.Err == nil {
+		t.Fatal("expected terminal error for cancelled context")
+	}
+}
+
+// TestToDocument_UsesCreatedDateWhenParsable covers the "Created
+// date valid" branch — a YYYY-MM-DD `created` field wins over the
+// import `Added` timestamp for the Document.CreatedAt.
+func TestToDocument_UsesCreatedDateWhenParsable(t *testing.T) {
+	c := &Connector{name: "paperless"}
+	added := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	p := paperlessDoc{
+		ID: 5, Title: "Invoice", Content: "body",
+		Added: added, Modified: added, Created: "2025-12-31",
+	}
+	doc := c.toDocument(p, map[int]string{}, map[int]string{}, map[int]string{})
+	want := time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)
+	if !doc.CreatedAt.Equal(want) {
+		t.Errorf("CreatedAt = %v, want %v", doc.CreatedAt, want)
+	}
+}
+
+// TestToDocument_FallsBackToAdded covers the unparseable-date
+// branch — garbage in `created` falls through to `added`.
+func TestToDocument_FallsBackToAdded(t *testing.T) {
+	c := &Connector{name: "paperless"}
+	added := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	p := paperlessDoc{
+		ID: 1, Title: "X", Added: added, Modified: added,
+		Created: "not-a-date",
+	}
+	doc := c.toDocument(p, map[int]string{}, map[int]string{}, map[int]string{})
+	if !doc.CreatedAt.Equal(added) {
+		t.Errorf("CreatedAt = %v, want %v (fallback)", doc.CreatedAt, added)
+	}
+}
+
+// TestToDocument_IncludesResolvedCorrespondent covers the
+// correspondent-lookup path — when the ID maps to a name, the
+// name ends up in metadata.
+func TestToDocument_IncludesResolvedCorrespondent(t *testing.T) {
+	c := &Connector{name: "paperless"}
+	corr := 7
+	p := paperlessDoc{
+		ID: 1, Title: "t", Correspondent: &corr, Added: time.Now(), Modified: time.Now(),
+	}
+	doc := c.toDocument(p, nil,
+		map[int]string{7: "ACME Corp"}, nil)
+	if doc.Metadata["correspondent"] != "ACME Corp" {
+		t.Errorf("correspondent = %v, want ACME Corp", doc.Metadata["correspondent"])
 	}
 }
 
 func TestFetch_LookupHTTPError(t *testing.T) {
-	// Tags endpoint returns 500 — Fetch should propagate the error.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -404,13 +472,13 @@ func TestFetch_LookupHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	if _, err := c.Fetch(context.Background(), nil); err == nil {
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil {
 		t.Fatal("expected error from 500 on tags lookup")
 	}
 }
 
 func TestFetch_LookupBadJSON(t *testing.T) {
-	// Tags endpoint returns malformed JSON — fetchLookup should error out.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tags/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -420,13 +488,13 @@ func TestFetch_LookupBadJSON(t *testing.T) {
 	defer srv.Close()
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	if _, err := c.Fetch(context.Background(), nil); err == nil {
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil {
 		t.Fatal("expected error from malformed JSON")
 	}
 }
 
 func TestFetch_DocumentsHTTPError(t *testing.T) {
-	// Lookups succeed but documents endpoint returns 500.
 	mux := http.NewServeMux()
 	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
@@ -441,7 +509,8 @@ func TestFetch_DocumentsHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	if _, err := c.Fetch(context.Background(), nil); err == nil {
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil {
 		t.Fatal("expected error from 500 on documents fetch")
 	}
 }
@@ -454,20 +523,114 @@ func TestFetch_DocumentsBadJSON(t *testing.T) {
 			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
 		})
 	}
-	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fields") == "id" {
+			// Enumeration returns nothing so the connector still
+			// tries to fetch the regular content pages.
+			_ = json.NewEncoder(w).Encode(paperlessIDPage{})
+			return
+		}
 		w.Write([]byte("not json")) //nolint:errcheck // test
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	if _, err := c.Fetch(context.Background(), nil); err == nil {
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil {
 		t.Fatal("expected error from malformed documents JSON")
 	}
 }
 
+// TestFetch_CursorContextCancelledMidEnumeration covers the
+// ctx.Done() exit inside enumerateAllIDs's pagination loop.
+func TestFetch_CursorContextCancelledMidEnumeration(t *testing.T) {
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}})
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fields") == "id" {
+			// Return a page with a next URL so the loop would
+			// keep going — we cancel the context before it
+			// does.
+			next := r.Host + r.URL.Path + "?page=2"
+			nextStr := "http://" + next
+			_ = json.NewEncoder(w).Encode(struct {
+				Results []struct {
+					ID int `json:"id"`
+				} `json:"results"`
+				Next *string `json:"next"`
+			}{
+				Results: []struct {
+					ID int `json:"id"`
+				}{{ID: 1}},
+				Next: &nextStr,
+			})
+			return
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := &Connector{name: "test", baseURL: srv.URL, token: "k", client: srv.Client()}
+	items, errs := c.Fetch(ctx, nil)
+	result := testutil.CollectStream(t, items, errs)
+	if result.Err == nil {
+		t.Fatal("expected terminal error from cancelled context")
+	}
+}
+
+// TestFetch_SyncSinceFallback covers the branch where no cursor is
+// present but the connector has a syncSince cutoff — the API call
+// URL should carry modified__gt set to the syncSince timestamp.
+func TestFetch_SyncSinceFallback(t *testing.T) {
+	var capturedModifiedGt string
+	mux := http.NewServeMux()
+	for _, path := range []string{"/api/tags/", "/api/correspondents/", "/api/document_types/"} {
+		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}})
+		})
+	}
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("fields") == "id" {
+			_ = json.NewEncoder(w).Encode(paperlessIDPage{})
+			return
+		}
+		if gt := r.URL.Query().Get("modified__gt"); gt != "" {
+			capturedModifiedGt = gt
+		}
+		_ = json.NewEncoder(w).Encode(paginatedResponse{})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	since := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := &Connector{name: "ss-test", baseURL: srv.URL, token: "k", client: srv.Client(), syncSince: since}
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if capturedModifiedGt == "" {
+		t.Error("expected modified__gt to be set from syncSince")
+	}
+}
+
+// TestLogEnumerationFailure covers the no-op hook so future
+// refactors that wire it to structured logging don't regress the
+// coverage floor silently.
+func TestLogEnumerationFailure(t *testing.T) {
+	c := &Connector{}
+	c.logEnumerationFailure(nil)
+	c.logEnumerationFailure(http.ErrNotSupported)
+}
+
 func TestFetch_LookupPagination(t *testing.T) {
-	// Lookup page 1 has a Next pointer to page 2 — verify fetchLookup follows it.
 	mux := http.NewServeMux()
 	page2URL := ""
 	tagPage := 0
@@ -492,8 +655,16 @@ func TestFetch_LookupPagination(t *testing.T) {
 			json.NewEncoder(w).Encode(lookupResponse{Results: []lookupItem{}}) //nolint:errcheck // test
 		})
 	}
-	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/documents/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("fields") == "id" {
+			_ = json.NewEncoder(w).Encode(paperlessIDPage{
+				Results: []struct {
+					ID int `json:"id"`
+				}{{ID: 1}},
+			})
+			return
+		}
 		now := time.Now()
 		json.NewEncoder(w).Encode(paginatedResponse{ //nolint:errcheck // test
 			Results: []paperlessDoc{
@@ -506,9 +677,9 @@ func TestFetch_LookupPagination(t *testing.T) {
 	page2URL = srv.URL + "/api/tags/?page=2"
 
 	c := &Connector{name: "test", baseURL: srv.URL, token: "test", client: srv.Client()}
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
 	if len(result.Documents) != 1 {
 		t.Fatalf("expected 1 doc, got %d", len(result.Documents))

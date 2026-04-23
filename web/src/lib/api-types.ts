@@ -181,8 +181,14 @@ export type SyncStatus =
   | "canceled"
   | "interrupted";
 
+// scope is the connector's current sub-unit label (IMAP folder,
+// Telegram chat, etc.). Present in the backend since the streaming
+// refactor but not yet in the generated schema until the next
+// `npm run gen:types` sweep — surfaced here as optional so the
+// types stay honest in the meantime.
 export type SyncJob = Omit<Req<Schemas["internal_api.SyncJob"]>, "status"> & {
   status: SyncStatus;
+  scope?: string;
 };
 
 export type SyncRun = Omit<

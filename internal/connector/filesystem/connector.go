@@ -4,17 +4,21 @@ package filesystem
 import (
 	"context"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"mime"
-
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
 )
+
+// filesystemCheckpointEvery is how often the connector emits a
+// cursor checkpoint during a WalkDir pass. Matches the pipeline's
+// indexBatchSize so a checkpoint coincides with a bulk-index flush.
+const filesystemCheckpointEvery = 200
 
 func init() {
 	connector.Register("filesystem", func() connector.Connector {
@@ -77,53 +81,101 @@ func (c *Connector) Validate() error {
 	return nil
 }
 
-func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error) {
-	lastSync := resolveFilesystemCursor(cursor, c.syncSince)
+// Fetch streams filesystem entries as a single WalkDir pass. For each
+// matching file the connector emits a SourceID (the relative path,
+// regardless of whether the file is re-indexed this run) for the
+// pipeline's deletion reconciliation, followed by a Doc when the file
+// has been modified since the cursor's last_sync_time.
+//
+// WalkDir visits entries in lexical order per directory; the resulting
+// relative paths match OpenSearch's source_id.keyword sort closely
+// enough for the streaming merge-diff — Go's WalkDir promises lexical
+// order and the merge-diff treats any out-of-order emission as a
+// false-positive "delete", but filesystem paths have no numeric
+// collation hazards like IMAP UIDs, so the natural order works.
+func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
 
-	var docs []model.Document
-	// Every matching file's source_id, regardless of the lastSync filter.
-	// Populated during the same walk so deletion sync can diff this
-	// authoritative list against what's indexed. Built in parallel with
-	// docs so a single walk covers both incremental indexing and full
-	// enumeration.
-	currentSourceIDs := []string{}
-	err := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
-		if relPath != "" {
-			currentSourceIDs = append(currentSourceIDs, relPath)
-		}
-		if ok {
-			docs = append(docs, doc)
-		}
-		return nil
-	})
-	if err != nil {
-		// Walk errored partway → enumeration is incomplete. Return the
-		// docs we did collect (so indexing of the readable subset still
-		// happens) but null out CurrentSourceIDs to skip the deletion
-		// pass — a partial list would trigger false-positive deletions.
-		return nil, fmt.Errorf("filesystem: walk: %w", err)
-	}
+	go func() {
+		defer close(items)
+		defer close(errs)
 
-	now := time.Now()
-	return &model.FetchResult{
-		Documents:        docs,
-		CurrentSourceIDs: currentSourceIDs,
-		Cursor: &model.SyncCursor{
-			CursorData: map[string]any{
-				"last_sync_time": now.Format(time.RFC3339Nano),
-			},
-			LastSync:    now,
-			LastStatus:  "success",
-			ItemsSynced: len(docs),
+		lastSync := resolveFilesystemCursor(cursor, c.syncSince)
+		seen := 0
+		now := time.Now()
+
+		emit := func(item model.FetchItem) bool {
+			select {
+			case items <- item:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
+		walkErr := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
+			if relPath != "" {
+				sid := relPath
+				if !emit(model.FetchItem{SourceID: &sid}) {
+					return ctx.Err()
+				}
+				seen++
+			}
+			if ok {
+				if !emit(model.FetchItem{Doc: &doc}) {
+					return ctx.Err()
+				}
+			}
+			if seen > 0 && seen%filesystemCheckpointEvery == 0 {
+				cp := newFilesystemCursor(now)
+				if !emit(model.FetchItem{Checkpoint: cp}) {
+					return ctx.Err()
+				}
+			}
+			return nil
+		})
+
+		if walkErr != nil {
+			errs <- fmt.Errorf("filesystem: walk: %w", walkErr)
+			return
+		}
+
+		// Signal that the SourceID stream was authoritative. Empty
+		// directories (zero SourceID emissions) rely on this to wipe
+		// any leftover index entries rather than being treated as
+		// "opted out of reconciliation."
+		_ = emit(model.FetchItem{EnumerationComplete: true})
+		// Final checkpoint so the pipeline persists last_sync_time
+		// even on a walk that happened to land exactly on an
+		// every-N boundary (or a walk with < filesystemCheckpointEvery
+		// files).
+		_ = emit(model.FetchItem{Checkpoint: newFilesystemCursor(now)})
+	}()
+
+	return items, errs
+}
+
+// newFilesystemCursor builds a cursor payload with the run's start
+// timestamp. Time is captured once at the top of Fetch so every
+// checkpoint during a run persists the same last_sync_time — a later
+// incremental run picks up any file with ModTime >= that value.
+func newFilesystemCursor(startedAt time.Time) *model.SyncCursor {
+	return &model.SyncCursor{
+		CursorData: map[string]any{
+			"last_sync_time": startedAt.Format(time.RFC3339Nano),
 		},
-	}, nil
+		LastSync:   startedAt,
+		LastStatus: "success",
+	}
 }
 
 // resolveFilesystemCursor reads the persisted last_sync_time out of the

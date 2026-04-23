@@ -39,6 +39,7 @@ export interface ConnectorRow {
     processed: number;
     total: number;
     errors: number;
+    scope?: string;
   };
 }
 
@@ -147,6 +148,7 @@ export function ConnectorCard({
                 processed={row.sync.processed}
                 total={row.sync.total}
                 errors={row.sync.errors}
+                scope={row.sync.scope}
               />
             </div>
           )}

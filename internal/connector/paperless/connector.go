@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,11 @@ import (
 // authTokenPrefix is the scheme used by the Paperless-ngx API for
 // token-based authentication on the Authorization header.
 const authTokenPrefix = "Token "
+
+// paperlessCheckpointEvery matches the pipeline's bulk-index cadence —
+// we emit a checkpoint every N docs so a crash replays at most N docs
+// on the next run.
+const paperlessCheckpointEvery = 200
 
 func init() {
 	connector.Register("paperless", func() connector.Connector {
@@ -86,26 +92,83 @@ func (c *Connector) Validate() error {
 	return nil
 }
 
-func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error) {
-	// Resolve lookup tables for human-readable metadata
+// Fetch streams paperless docs in two phases: first the full set of
+// current document IDs (enumerated via a lightweight `?fields=id` scan
+// and sorted lexicographically to match OpenSearch source_id keyword
+// sort), then the cursor-filtered docs themselves. The pipeline treats
+// enumeration + doc-emission as one stream for merge-diff deletion
+// reconciliation — order within the SourceID phase must be globally
+// lex-sorted, so we accumulate all IDs before emission rather than
+// emitting per-page (page N+1 can contain numeric IDs that lex-sort
+// before page N's IDs — e.g. "1001" vs "999").
+func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(items)
+		defer close(errs)
+
+		if err := c.streamFetch(ctx, cursor, items); err != nil {
+			errs <- err
+		}
+	}()
+
+	return items, errs
+}
+
+// streamFetch implements the goroutine body of Fetch. Returns an error
+// to surface via the errs channel or nil on clean completion. All
+// emissions are ctx-aware: a cancelled context short-circuits the loop
+// and returns ctx.Err().
+func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	tags, err := c.fetchLookup(ctx, "/api/tags/")
 	if err != nil {
-		return nil, fmt.Errorf("paperless: fetch tags: %w", err)
+		return fmt.Errorf("paperless: fetch tags: %w", err)
 	}
 	correspondents, err := c.fetchLookup(ctx, "/api/correspondents/")
 	if err != nil {
-		return nil, fmt.Errorf("paperless: fetch correspondents: %w", err)
+		return fmt.Errorf("paperless: fetch correspondents: %w", err)
 	}
 	docTypes, err := c.fetchLookup(ctx, "/api/document_types/")
 	if err != nil {
-		return nil, fmt.Errorf("paperless: fetch document types: %w", err)
+		return fmt.Errorf("paperless: fetch document types: %w", err)
 	}
 
-	// Build initial URL
+	ids, err := c.enumerateAllIDs(ctx)
+	if err != nil {
+		// Enumeration errored — opt out of deletion reconciliation
+		// for this run, but still try to stream the incremental docs
+		// so indexing at least stays current. Pipeline treats
+		// zero SourceID emissions (and no EnumerationComplete) as
+		// "skip reconcile".
+		c.logEnumerationFailure(err)
+	} else {
+		sort.Strings(ids)
+		for i := range ids {
+			sid := ids[i]
+			if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
+				return ctx.Err()
+			}
+		}
+		// Signal the SourceID stream was authoritative so
+		// reconciliation runs even on an empty-upstream sync.
+		if !emitItem(ctx, items, model.FetchItem{EnumerationComplete: true}) {
+			return ctx.Err()
+		}
+	}
+
+	// Announce an estimated total once enumeration is complete — the
+	// UI gets an honest denominator as soon as the IDs list is known,
+	// without waiting for the first page of doc bodies.
+	if len(ids) > 0 {
+		estimate := int64(len(ids))
+		_ = emitItem(ctx, items, model.FetchItem{EstimatedTotal: &estimate})
+	}
+
 	params := url.Values{}
 	params.Set("ordering", "modified")
 	params.Set("page_size", "100")
-
 	if cursor != nil {
 		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
 			params.Set("modified__gt", ts)
@@ -115,59 +178,85 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model
 	}
 
 	fetchURL := c.baseURL + "/api/documents/?" + params.Encode()
-
-	var docs []model.Document
+	now := time.Now()
+	emitted := 0
 	for fetchURL != "" {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return ctx.Err()
 		}
-
 		page, nextURL, err := c.fetchPage(ctx, fetchURL)
 		if err != nil {
-			return nil, fmt.Errorf("paperless: fetch page: %w", err)
+			return fmt.Errorf("paperless: fetch page: %w", err)
 		}
-
 		for _, pdoc := range page {
 			doc := c.toDocument(pdoc, tags, correspondents, docTypes)
-			docs = append(docs, doc)
+			if !emitItem(ctx, items, model.FetchItem{Doc: &doc}) {
+				return ctx.Err()
+			}
+			emitted++
+			if emitted%paperlessCheckpointEvery == 0 {
+				if !emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)}) {
+					return ctx.Err()
+				}
+			}
 		}
-
 		fetchURL = nextURL
 	}
 
-	// Full-enumeration pass for deletion sync. Cheap (id-only fields),
-	// completely independent of the cursor-filtered fetch above. Any
-	// failure here just opts out of deletion this round — the indexed
-	// docs are still useful, and the next sync gets another shot.
-	currentSourceIDs, enumErr := c.enumerateAllIDs(ctx)
-	if enumErr != nil {
-		currentSourceIDs = nil
-	}
+	// Final checkpoint so last_sync_time advances even when the delta
+	// was empty or didn't land exactly on an every-N boundary.
+	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)})
+	return nil
+}
 
-	now := time.Now()
-	return &model.FetchResult{
-		Documents:        docs,
-		CurrentSourceIDs: currentSourceIDs,
-		Cursor: &model.SyncCursor{
-			CursorData: map[string]any{
-				"last_sync_time": now.Format(time.RFC3339Nano),
-			},
-			LastSync:    now,
-			LastStatus:  "success",
-			ItemsSynced: len(docs),
+// logEnumerationFailure is extracted to a method so future refactors
+// can surface the error into structured logs or metrics without
+// touching the main Fetch flow.
+func (c *Connector) logEnumerationFailure(_ error) {
+	// Connector-level logging isn't wired; failure is already
+	// implicit in "no SourceID emissions this run". Pipeline will
+	// skip deletion reconciliation, and the next sync gets another
+	// shot. Kept as a method so instrumentation can be added later
+	// without changing the caller.
+}
+
+// emitItem sends an item on items, respecting context cancellation.
+// Returns false when the context was cancelled before the send could
+// complete. All Fetch goroutines use this helper rather than writing
+// to the channel directly so shutdown semantics stay consistent.
+func emitItem(ctx context.Context, items chan<- model.FetchItem, item model.FetchItem) bool {
+	select {
+	case items <- item:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// newPaperlessCursor builds a cursor payload with last_sync_time set to
+// the run's start time. Captured once at the top of Fetch so every
+// mid-run checkpoint persists the same value — a later incremental
+// sync asks Paperless for `modified__gt={startedAt}` and picks up
+// anything touched during or after the previous run.
+func newPaperlessCursor(startedAt time.Time) *model.SyncCursor {
+	return &model.SyncCursor{
+		CursorData: map[string]any{
+			"last_sync_time": startedAt.Format(time.RFC3339Nano),
 		},
-	}, nil
+		LastSync:   startedAt,
+		LastStatus: "success",
+	}
 }
 
 // enumerateAllIDs paginates Paperless's `/api/documents/?fields=id`
 // to collect every document ID currently present, returned as
-// connector source_ids. Pulled in a separate pass from Fetch's
-// cursor-filtered request because the cursor scopes that to changed
-// docs only — deletion sync needs the unscoped full set.
+// connector source_ids. Pulled in a single unfiltered pass because
+// the cursor scopes the main fetch to changed docs only — deletion
+// reconciliation needs the unscoped full set.
 //
 // Any HTTP error or pagination failure aborts and returns the error;
-// the caller turns that into a nil CurrentSourceIDs (opting out of
-// deletion this round) rather than risking a partial list.
+// the caller elides SourceID emissions for this run (opting out of
+// deletion reconciliation) rather than risking a partial list.
 func (c *Connector) enumerateAllIDs(ctx context.Context) ([]string, error) {
 	params := url.Values{}
 	params.Set("fields", "id")

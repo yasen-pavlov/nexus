@@ -95,12 +95,12 @@ func init() {
 
 // Connector fetches messages from Telegram chats via the MTProto User API.
 //
-// Deletion sync: this connector permanently opts out by leaving
-// FetchResult.CurrentSourceIDs as nil. MTProto doesn't expose a
-// reliable "list all message IDs in a chat" signal — message
-// deletions aren't surfaced via incremental updates and full history
-// re-enumeration would defeat the purpose of incremental sync.
-// Telegram docs are only removed from the index by a full reindex.
+// Deletion sync: this connector permanently opts out by never emitting
+// FetchItem.SourceID items. MTProto doesn't expose a reliable "list all
+// message IDs in a chat" signal — message deletions aren't surfaced via
+// incremental updates and full history re-enumeration would defeat the
+// purpose of incremental sync. Telegram docs are only removed from the
+// index by a full reindex.
 type Connector struct {
 	name        string
 	apiID       int
@@ -197,57 +197,70 @@ func (c *Connector) Validate() error {
 	return nil
 }
 
-func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error) {
+// Fetch streams Telegram messages chat-by-chat. For each chat the
+// connector collects the full history up to the cursor's sinceDate
+// bound, builds conversation windows, and emits the window docs plus
+// the per-message canonical (Hidden) docs before moving to the next
+// chat. Per-chat memory is bounded by that chat's active history —
+// fine for Telegram's typical scale (low thousands of messages per
+// chat); the whole-account scan is not buffered.
+//
+// A Checkpoint is emitted at the end of every chat so cancellation
+// mid-account loses at most one chat's worth of in-flight work.
+func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(items)
+		defer close(errs)
+
+		if err := c.streamFetch(ctx, cursor, items); err != nil {
+			errs <- err
+		}
+	}()
+
+	return items, errs
+}
+
+// streamFetch is the goroutine body of Fetch — wraps the Telegram
+// client.Run boundary so the API/downloader pair can be built once per
+// sync.
+func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	if c.session == nil || !c.session.HasSession(ctx) {
-		return nil, fmt.Errorf("telegram: not authenticated, please connect via the UI first")
+		return fmt.Errorf("telegram: not authenticated, please connect via the UI first")
 	}
 
 	client := telegram.NewClient(c.apiID, c.apiHash, telegram.Options{
 		SessionStorage: c.session,
 	})
 
-	var docs []model.Document
-
+	var runErr error
 	err := client.Run(ctx, func(ctx context.Context) error {
-		// Resolve the authenticated user's own ID once per sync. Used
-		// to attribute DM messages where m.Out=true but m.FromID is
-		// nil (Telegram commonly omits FromID in private chats since
-		// the sender is implicit). Failure is non-fatal — falls back
-		// to FromID-only resolution.
+		// Resolve the authenticated user's own ID once per sync.
+		// Used to attribute DM messages where m.Out=true but m.FromID
+		// is nil (Telegram commonly omits FromID in private chats
+		// since the sender is implicit).
 		var selfID int64
 		if self, err := client.Self(ctx); err == nil && self != nil {
 			selfID = self.ID
-			// Cache the user's own avatar so the connectors-list
-			// identity row + any UI surface that shows "you" can render
-			// the same photo as a sent-message bubble. Without this,
-			// peer avatars get cached during message walks but the
-			// self-avatar never has a code path that fetches it.
 			c.ensureAvatarCached(ctx, liveMediaDownloader{client: client}, self)
 		}
-		var fetchErr error
-		docs, fetchErr = c.fetchWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor, selfID)
-		return fetchErr
+		runErr = c.streamWithAPI(ctx, client.API(), liveMediaDownloader{client: client}, cursor, selfID, items)
+		return runErr
 	})
-
-	if err != nil {
-		return nil, fmt.Errorf("telegram: client run: %w", err)
+	if err != nil && runErr == nil {
+		return fmt.Errorf("telegram: client run: %w", err)
 	}
-
-	now := time.Now()
-	return &model.FetchResult{
-		Documents: docs,
-		Cursor: &model.SyncCursor{
-			CursorData: map[string]any{
-				"last_message_date": float64(now.Unix()),
-			},
-			LastSync:    now,
-			LastStatus:  "success",
-			ItemsSynced: len(docs),
-		},
-	}, nil
+	return runErr
 }
 
-func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor, selfID int64) ([]model.Document, error) {
+// streamWithAPI implements the chat-by-chat streaming loop. sinceDate
+// bounds how far back each chat is paginated. The connector always
+// persists a cursor with last_message_date = now so the next run
+// advances its upper bound (the delta is handled implicitly via
+// sinceDate, not via per-message cursors).
+func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor, selfID int64, items chan<- model.FetchItem) error {
 	var sinceDate int
 	if cursor != nil {
 		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
@@ -262,125 +275,214 @@ func (c *Connector) fetchWithAPI(ctx context.Context, api telegramAPI, dl mediaD
 		Limit:      100,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get dialogs: %w", err)
+		return fmt.Errorf("get dialogs: %w", err)
 	}
 
-	var chats []tg.ChatClass
-	var users []tg.UserClass
-
-	switch d := dialogs.(type) {
-	case *tg.MessagesDialogs:
-		chats = d.Chats
-		users = d.Users
-	case *tg.MessagesDialogsSlice:
-		chats = d.Chats
-		users = d.Users
-	default:
-		return nil, nil
-	}
-
+	chats, users := dialogRoster(dialogs)
 	userMap := buildUserMap(users)
-	return c.processDialogs(ctx, api, dl, chats, users, userMap, selfID, sinceDate)
-}
 
-// buildUserMap indexes a slice of Telegram UserClass values by their
-// numeric user ID so downstream message emission can look up sender
-// display metadata without a second API round-trip per message.
-func buildUserMap(users []tg.UserClass) map[int64]*tg.User {
-	m := make(map[int64]*tg.User, len(users))
-	for _, u := range users {
-		if tu, ok := u.(*tg.User); ok {
-			m[tu.ID] = tu
+	now := time.Now()
+	cursorTemplate := func() *model.SyncCursor {
+		return &model.SyncCursor{
+			CursorData: map[string]any{
+				"last_message_date": float64(now.Unix()),
+			},
+			LastSync:   now,
+			LastStatus: "success",
 		}
 	}
-	return m
-}
-
-func (c *Connector) processDialogs(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, users []tg.UserClass, userMap map[int64]*tg.User, selfID int64, sinceDate int) ([]model.Document, error) {
-	var allDocs []model.Document
+	// Running total accumulated across chats. Each chat bumps
+	// it by its expected emission count (windows + per-message
+	// canonicals + approximate media) and emits an
+	// EstimatedTotal so the pipeline has a real denominator.
+	var totalEstimate int64
 
 	// Group chats & channels — dmPeerID=0 because the sender is
 	// always explicit via m.FromID in multi-user rooms.
 	for _, chat := range chats {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		chatName := chatTitle(chat)
 		chatID := chatIdentifier(chat)
-
 		if !c.matchesChatFilter(chatName, chatID) {
 			continue
 		}
-
 		inputPeer := chatToInputPeer(chat)
 		if inputPeer == nil {
 			continue
 		}
-
-		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate)
-		if err != nil {
+		scope := chatName
+		if !emitItem(ctx, items, model.FetchItem{Scope: &scope}) {
+			return ctx.Err()
+		}
+		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate, &totalEstimate, items); err != nil {
+			// Best-effort: one chat's pagination failing
+			// shouldn't halt the whole sync.
 			continue
 		}
-		allDocs = append(allDocs, docs...)
+		if !emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()}) {
+			return ctx.Err()
+		}
 	}
 
 	// Private chats — every message is between two knowable users, so
-	// we pass u.ID as dmPeerID. makeMessageDoc uses that to attribute
+	// we pass u.ID as dmPeerID. The connector uses that to attribute
 	// m.Out=false messages to the peer when FromID is nil (the common
 	// case in Telegram DMs).
 	for _, user := range users {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		u, ok := user.(*tg.User)
 		if !ok || u.Bot || u.Self {
 			continue
 		}
-
 		chatName := userDisplayName(u)
 		chatID := strconv.FormatInt(u.ID, 10)
-
 		if !c.matchesChatFilter(chatName, chatID) {
 			continue
 		}
-
-		// Cache the DM peer's avatar — it'll be used as the sender avatar
-		// for all of their messages in the DM.
 		c.ensureAvatarCached(ctx, dl, u)
-
 		inputPeer := &tg.InputPeerUser{UserID: u.ID, AccessHash: u.AccessHash}
-		docs, err := c.fetchChatMessages(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate)
-		if err != nil {
+		scope := chatName
+		if !emitItem(ctx, items, model.FetchItem{Scope: &scope}) {
+			return ctx.Err()
+		}
+		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate, &totalEstimate, items); err != nil {
 			continue
 		}
-		allDocs = append(allDocs, docs...)
+		if !emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()}) {
+			return ctx.Err()
+		}
 	}
-
-	return allDocs, nil
+	// Clear the scope at end-of-run so later progress frames
+	// don't leave the last chat name lingering in the UI.
+	empty := ""
+	_ = emitItem(ctx, items, model.FetchItem{Scope: &empty})
+	return nil
 }
 
-func (c *Connector) fetchChatMessages(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64, sinceDate int) ([]model.Document, error) {
-	// Dual emission: each Telegram message produces up to three documents:
-	//
-	//   1. a conversation *window* doc — the retrieval unit, embedded and
-	//      searchable, whose content is several messages joined together.
-	//   2. a canonical per-*message* doc — Hidden so it doesn't surface in
-	//      default search, used for reply_to targets and chat-browser
-	//      pagination.
-	//   3. a media doc — when m.Media is downloadable (see mediaToDocument).
-	//
-	// The retrieval unit (window) != product unit (message) is deliberate:
-	// windows keep embeddings honest on short chat text, messages keep the
-	// reply graph and UI navigation clean. See plans/scalable-beaming-tower.md.
+// dialogRoster extracts the chats + users slices from whichever
+// MessagesDialogsClass shape the server returned.
+func dialogRoster(dialogs tg.MessagesDialogsClass) ([]tg.ChatClass, []tg.UserClass) {
+	switch d := dialogs.(type) {
+	case *tg.MessagesDialogs:
+		return d.Chats, d.Users
+	case *tg.MessagesDialogsSlice:
+		return d.Chats, d.Users
+	default:
+		return nil, nil
+	}
+}
+
+// streamChat paginates one chat's history, builds conversation
+// windows, and emits the window doc + per-message canonical docs +
+// optional media docs to items. Memory is bounded by one chat's
+// active history — the whole-account sync never buffers across chats.
+//
+// After history collection the connector announces an EstimatedTotal
+// accounting for BOTH document kinds it emits (windows + per-message
+// canonicals + downloadable media) so the progress bar reflects real
+// work rather than treating per-message docs as a surprise bonus
+// that spikes the counter past 100%.
+func (c *Connector) streamChat(ctx context.Context, api telegramAPI, dl mediaDownloader, inputPeer tg.InputPeerClass, chatName, chatID string, userMap map[int64]*tg.User, selfID, dmPeerID int64, sinceDate int, totalEstimate *int64, items chan<- model.FetchItem) error {
 	records, allMessages, err := c.collectChatHistory(ctx, api, inputPeer, userMap, sinceDate)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	windowDocs, msgIDToWindow := c.windowMessages(records, chatName, chatID, userMap, selfID, dmPeerID)
 
-	docs := make([]model.Document, 0, len(windowDocs)+len(allMessages))
-	docs = append(docs, windowDocs...)
-
-	for _, m := range allMessages {
-		docs = c.appendMessageDocs(ctx, dl, docs, m, chatName, chatID, msgIDToWindow, userMap, selfID, dmPeerID)
+	// Upper-bound the chat's emission count. `estimateChatDocs`
+	// counts windows, emittable per-message canonicals, and any
+	// media that looks downloadable — matching the dual-emission
+	// rules inside emitMessageDocs/mediaToDocument. Overcount is
+	// preferable to undercount: the pipeline's per-flush progress
+	// still visibly ticks, and the UI won't sit pinned at 100%.
+	if chatEstimate := estimateChatDocs(windowDocs, allMessages); chatEstimate > 0 {
+		*totalEstimate += chatEstimate
+		est := *totalEstimate
+		if !emitItem(ctx, items, model.FetchItem{EstimatedTotal: &est}) {
+			return ctx.Err()
+		}
 	}
 
-	return docs, nil
+	for i := range windowDocs {
+		if !emitItem(ctx, items, model.FetchItem{Doc: &windowDocs[i]}) {
+			return ctx.Err()
+		}
+	}
+
+	for _, m := range allMessages {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := c.emitMessageDocs(ctx, dl, m, chatName, chatID, msgIDToWindow, userMap, selfID, dmPeerID, items); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// estimateChatDocs returns the expected emission count for a single
+// chat: one per window, plus one per message that carries text or
+// media (the per-message canonical doc), plus one per message that
+// has downloadable media (the sibling media doc). The media count
+// is approximate — mediaLocation filters a few shapes out at emit
+// time — but the small overshoot is fine: better a progress bar
+// that creeps toward the end than one that pins at 100% early.
+func estimateChatDocs(windowDocs []model.Document, allMessages []*tg.Message) int64 {
+	total := int64(len(windowDocs))
+	for _, m := range allMessages {
+		if m.Message != "" || m.Media != nil {
+			total++
+		}
+		if m.Media != nil {
+			total++
+		}
+	}
+	return total
+}
+
+// emitMessageDocs sends the canonical per-message doc (and optional
+// media doc) for a single Telegram message. Skips shell messages that
+// carry neither text nor media so the chat browser isn't polluted.
+func (c *Connector) emitMessageDocs(ctx context.Context, dl mediaDownloader, m *tg.Message, chatName, chatID string, msgIDToWindow map[int]string, userMap map[int64]*tg.User, selfID, dmPeerID int64, items chan<- model.FetchItem) error {
+	if m.Message == "" && m.Media == nil {
+		return nil
+	}
+	if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
+		if user, known := userMap[senderID]; known {
+			c.ensureAvatarCached(ctx, dl, user)
+		}
+	}
+	msgDoc := c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID], userMap, selfID, dmPeerID)
+	if m.Media != nil {
+		if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
+			attachMediaMetadata(&msgDoc, mediaDoc)
+			if !emitItem(ctx, items, model.FetchItem{Doc: &mediaDoc}) {
+				return ctx.Err()
+			}
+		}
+	}
+	if !emitItem(ctx, items, model.FetchItem{Doc: &msgDoc}) {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// emitItem sends item on items, respecting context cancellation.
+// Returns false when the context was cancelled before the send could
+// complete. Shared helper across chat-streaming paths so cancellation
+// semantics stay uniform.
+func emitItem(ctx context.Context, items chan<- model.FetchItem, item model.FetchItem) bool {
+	select {
+	case items <- item:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // collectChatHistory paginates through MessagesGetHistory for a single peer,
@@ -480,33 +582,17 @@ func advanceHistoryCursor(req *tg.MessagesGetHistoryRequest, messages []tg.Messa
 	return true
 }
 
-// appendMessageDocs emits the canonical per-message doc (and optional media
-// doc) for a single Telegram message. Skips shell messages that carry neither
-// text nor media. Returns the docs slice with the new entries appended.
-func (c *Connector) appendMessageDocs(ctx context.Context, dl mediaDownloader, docs []model.Document, m *tg.Message, chatName, chatID string, msgIDToWindow map[int]string, userMap map[int64]*tg.User, selfID, dmPeerID int64) []model.Document {
-	// Skip messages that carry neither text nor media — typically
-	// edit-cleared shells or unsupported event types that leaked past the
-	// *tg.Message type filter. A canonical record for them would just
-	// pollute the chat browser.
-	if m.Message == "" && m.Media == nil {
-		return docs
-	}
-	// Eagerly cache the sender's avatar before emitting the doc so the
-	// frontend's first render after sync can show the image without
-	// another sync round-trip. No-op when already cached.
-	if senderID := resolveSenderID(m, selfID, dmPeerID); senderID != 0 {
-		if user, known := userMap[senderID]; known {
-			c.ensureAvatarCached(ctx, dl, user)
+// buildUserMap indexes a slice of Telegram UserClass values by their
+// numeric user ID so downstream message emission can look up sender
+// display metadata without a second API round-trip per message.
+func buildUserMap(users []tg.UserClass) map[int64]*tg.User {
+	m := make(map[int64]*tg.User, len(users))
+	for _, u := range users {
+		if tu, ok := u.(*tg.User); ok {
+			m[tu.ID] = tu
 		}
 	}
-	msgDoc := c.makeMessageDoc(m, chatName, chatID, msgIDToWindow[m.ID], userMap, selfID, dmPeerID)
-	if m.Media != nil {
-		if mediaDoc, ok := c.mediaToDocument(ctx, dl, m, chatName, chatID); ok {
-			attachMediaMetadata(&msgDoc, mediaDoc)
-			docs = append(docs, mediaDoc)
-		}
-	}
-	return append(docs, msgDoc)
+	return m
 }
 
 // attachMediaMetadata annotates a per-message doc with a compact attachment
@@ -531,11 +617,6 @@ func attachMediaMetadata(msgDoc *model.Document, mediaDoc model.Document) {
 	msgDoc.Metadata["attachments"] = append(existing, att)
 }
 
-// makeMessageDoc emits the canonical per-message record. It's Hidden
-// (excluded from default search so it doesn't duplicate the window doc's
-// hit) but carries everything the chat browser and relation resolver need:
-// the text, the reply edge, the member-of-window edge (when the message is
-// part of a text window), and sender metadata.
 // resolveSenderID picks the numeric sender ID for a Telegram message
 // across group chats and DMs. Group messages carry m.FromID explicitly.
 // DMs commonly leave FromID nil because the sender is implicit: if
@@ -707,10 +788,6 @@ func buildMessageLine(r messageRecord, userMap map[int64]*tg.User, selfID, dmPee
 		"text":       r.Text,
 		"created_at": r.Date.Format(time.RFC3339),
 	}
-	// Resolve the sender using the same rules per-message docs apply,
-	// so group chats and DMs attribute consistently across both doc
-	// types. We build a lightweight *tg.Message for reuse of
-	// resolveSenderID — avoids a parallel helper that could drift.
 	probe := &tg.Message{FromID: r.FromID, Out: r.Out}
 	if senderID := resolveSenderID(probe, selfID, dmPeerID); senderID != 0 {
 		line["sender_id"] = senderID
@@ -889,8 +966,6 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 		return model.Document{}, false
 	}
 
-	// Use the actual downloaded byte count — the advertised size in
-	// the message header is a prediction; len(data) is truth.
 	size := int64(len(data))
 
 	// Photos have no filename attribute; synthesize one so the download
@@ -903,10 +978,6 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 	sourceID := fmt.Sprintf("%s:%d:media", chatID, m.ID)
 
 	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
-		// Best-effort — a cache write failure shouldn't abort the doc
-		// emit. If this Put fails the preview endpoint will surface a
-		// clear "media not cached" error later, which is the correct
-		// degraded-state behavior.
 		_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
 	}
 
@@ -917,10 +988,6 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 		}
 	}
 
-	// Caption flows through both the windowed text doc and the media
-	// doc. Having it in both is deliberate: the text window is for
-	// conversation-context ranking, while the media doc is the
-	// standalone searchable representation of the asset itself.
 	content := extracted
 	if content == "" {
 		content = m.Message
@@ -943,9 +1010,6 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 		metadata["caption"] = m.Message
 	}
 
-	// attachment_of points at the per-message doc (the canonical record
-	// for this Telegram message), not the window. The window can be
-	// reached by walking member_of_window from the message doc.
 	parentMsgSourceID := fmt.Sprintf(msgSourceIDFormat, chatID, m.ID)
 
 	return model.Document{
@@ -1001,11 +1065,6 @@ func mediaLocation(media tg.MessageMediaClass) (loc tg.InputFileLocationClass, m
 		if !dok {
 			return nil, "", "", 0, false
 		}
-		// Stickers are emoji-equivalent decorations — no search value,
-		// and their Lottie JSON (for animated stickers) actively
-		// pollutes ranking. Skip them. GIFs (DocumentAttributeAnimated)
-		// and round video messages still flow through since they can
-		// carry meaningful content.
 		if isSticker(doc) {
 			return nil, "", "", 0, false
 		}
@@ -1034,10 +1093,6 @@ func isSticker(doc *tg.Document) bool {
 // largestPhotoSize picks the largest downloadable PhotoSize from a
 // Telegram photo's sizes array and returns its type (used as ThumbSize
 // in InputPhotoFileLocation) and advertised byte size.
-//
-// Stripped/Cached/Path sizes are inline previews, not downloadable from
-// the file servers — skip them. Progressive sizes carry multiple byte
-// offsets; we use the final (largest) size from its Sizes slice.
 func largestPhotoSize(sizes []tg.PhotoSizeClass) (string, int64, bool) {
 	var bestType string
 	var bestSize int64

@@ -30,11 +30,15 @@ func (m *mockConnector) Name() string                       { return m.name }
 func (m *mockConnector) Configure(_ connector.Config) error { return nil }
 func (m *mockConnector) Validate() error                    { return nil }
 
-func (m *mockConnector) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
+func (m *mockConnector) Fetch(_ context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
 	if m.fetchErr != nil {
-		return nil, m.fetchErr
+		errs <- m.fetchErr
 	}
-	return &model.FetchResult{}, nil
+	close(items)
+	close(errs)
+	return items, errs
 }
 
 func newTestHandler() *handler {

@@ -39,18 +39,25 @@ var ErrAlreadyRunning = errors.New("sync already running for connector")
 // The same UUID is used for the sync_runs.id column so live progress and
 // persisted history correlate.
 type SyncJob struct {
-	ID            string    `json:"id"`
-	ConnectorID   string    `json:"connector_id"`
-	ConnectorName string    `json:"connector_name"`
-	ConnectorType string    `json:"connector_type"`
-	Status        string    `json:"status"` // running | completed | failed | canceled
-	DocsTotal     int       `json:"docs_total"`
-	DocsProcessed int       `json:"docs_processed"`
-	DocsDeleted   int       `json:"docs_deleted"`
-	Errors        int       `json:"errors"`
-	Error         string    `json:"error,omitempty"`
-	StartedAt     time.Time `json:"started_at"`
-	CompletedAt   time.Time `json:"completed_at,omitzero"`
+	ID            string `json:"id"`
+	ConnectorID   string `json:"connector_id"`
+	ConnectorName string `json:"connector_name"`
+	ConnectorType string `json:"connector_type"`
+	Status        string `json:"status"` // running | completed | failed | canceled
+	DocsTotal     int    `json:"docs_total"`
+	DocsProcessed int    `json:"docs_processed"`
+	DocsDeleted   int    `json:"docs_deleted"`
+	Errors        int    `json:"errors"`
+	Error         string `json:"error,omitempty"`
+	// Scope is a free-form label from the connector naming its
+	// current sub-unit of work — the IMAP folder, the Telegram
+	// chat, the Paperless page. Surfaces in the UI alongside the
+	// progress bar so "Syncing Archive…" beats a bare "0/327".
+	// Empty when the connector hasn't declared a scope yet or
+	// the sync has moved past the scoped portion.
+	Scope       string    `json:"scope,omitempty"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitzero"`
 }
 
 // runPersister is the subset of *store.Store this manager uses. Declared as
@@ -239,14 +246,16 @@ func (m *SyncJobManager) Active() []*SyncJob {
 	return result
 }
 
-// Update sets the total, processed, and error counts for a job and notifies subscribers.
-func (m *SyncJobManager) Update(id string, total, processed, errors int) {
+// Update sets the total, processed, error counts, and scope label
+// for a job and notifies subscribers.
+func (m *SyncJobManager) Update(id string, total, processed, errors int, scope string) {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
 	if ok {
 		job.DocsTotal = total
 		job.DocsProcessed = processed
 		job.Errors = errors
+		job.Scope = scope
 	}
 	m.mu.Unlock()
 

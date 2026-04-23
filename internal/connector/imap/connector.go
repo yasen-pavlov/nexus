@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,24 +19,53 @@ import (
 	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
+// imapBodyFetchBatch caps the number of UIDs fetched per IMAP FETCH
+// round-trip. Smaller batches mean more checkpoints (faster resume
+// after a cancel) and earlier visible progress; larger batches
+// amortize server round-trips. 100 is a pragmatic middle.
+const imapBodyFetchBatch = 100
+
 // mailboxClient abstracts IMAP operations for testability.
 type mailboxClient interface {
-	// SelectFolder selects a mailbox.
-	SelectFolder(folder string) error
+	// SelectFolder selects a mailbox. Returned SelectData carries
+	// UIDValidity and (when the server supports CONDSTORE and the
+	// caller opted in) HighestModSeq — the two values the cursor
+	// needs for incremental sync.
+	SelectFolder(folder string, condStore bool) (*imap.SelectData, error)
 	// SearchUIDs returns UIDs matching the criteria.
 	SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UID, error)
-	// FetchMessages fetches messages by UID set.
-	FetchMessages(uids []imap.UID) ([]*imapclient.FetchMessageBuffer, error)
+	// FetchMessages streams messages by UID set, calling yield
+	// once per message in server order. opts may be nil to use
+	// the default envelope+full-body shape; pass a populated
+	// *imap.FetchOptions to layer ChangedSince/ModSeq for
+	// CONDSTORE delta fetches. yield returning false stops
+	// iteration early (used for ctx cancellation). Streaming
+	// matters for large batches on slow servers: iCloud can
+	// take several minutes to return 100 messages, and the
+	// pipeline relies on per-message emission to show progress
+	// and flush indexing buffers while bytes are still arriving.
+	FetchMessages(uids []imap.UID, opts *imap.FetchOptions, yield func(*imapclient.FetchMessageBuffer) bool) error
 }
 
 // realMailboxClient wraps an imapclient.Client to satisfy mailboxClient.
+// hasCondStore gates whether SELECT sends the `(CONDSTORE)` qualifier —
+// set once at connection time from the server capability list so we
+// don't retry-on-BAD per folder.
 type realMailboxClient struct {
-	client *imapclient.Client
+	client       *imapclient.Client
+	hasCondStore bool
 }
 
-func (r *realMailboxClient) SelectFolder(folder string) error {
-	_, err := r.client.Select(folder, nil).Wait()
-	return err
+func (r *realMailboxClient) SelectFolder(folder string, condStore bool) (*imap.SelectData, error) {
+	// Only ask for CONDSTORE metadata when the server advertises
+	// support AND the caller wants it. Servers that don't advertise
+	// CONDSTORE commonly reject the qualifier outright with a
+	// BAD response (e.g. the dovecot minimal test server), so
+	// silently degrade to plain SELECT in that case.
+	if condStore && r.hasCondStore {
+		return r.client.Select(folder, &imap.SelectOptions{CondStore: true}).Wait()
+	}
+	return r.client.Select(folder, nil).Wait()
 }
 
 func (r *realMailboxClient) SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UID, error) {
@@ -46,16 +76,45 @@ func (r *realMailboxClient) SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UI
 	return data.AllUIDs(), nil
 }
 
-func (r *realMailboxClient) FetchMessages(uids []imap.UID) ([]*imapclient.FetchMessageBuffer, error) {
-	uidSet := imap.UIDSetNum(uids...)
-	fetchOptions := &imap.FetchOptions{
+// defaultFetchOptions is the envelope + full body MIME-parse shape
+// used when the caller passes nil to FetchMessages. Defined as a
+// helper so CONDSTORE callers can start from the same baseline and
+// only layer ChangedSince on top.
+func defaultFetchOptions() *imap.FetchOptions {
+	return &imap.FetchOptions{
 		Envelope: true,
 		UID:      true,
 		BodySection: []*imap.FetchItemBodySection{
 			{}, // entire message body for MIME parsing
 		},
 	}
-	return r.client.Fetch(uidSet, fetchOptions).Collect()
+}
+
+func (r *realMailboxClient) FetchMessages(uids []imap.UID, opts *imap.FetchOptions, yield func(*imapclient.FetchMessageBuffer) bool) error {
+	if opts == nil {
+		opts = defaultFetchOptions()
+	}
+	uidSet := imap.UIDSetNum(uids...)
+	cmd := r.client.Fetch(uidSet, opts)
+	defer cmd.Close() //nolint:errcheck // best-effort close
+	for {
+		msgData := cmd.Next()
+		if msgData == nil {
+			break
+		}
+		buf, err := msgData.Collect()
+		if err != nil {
+			return err
+		}
+		if !yield(buf) {
+			// Caller requested an early stop (usually ctx
+			// cancellation). cmd.Close via the deferred call
+			// drains the rest of the wire and lets the
+			// connection return to a usable state.
+			return nil
+		}
+	}
+	return cmd.Close()
 }
 
 // dialFunc allows overriding the IMAP connection for testing.
@@ -172,151 +231,321 @@ func (c *Connector) Validate() error {
 	return nil
 }
 
-func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (*model.FetchResult, error) {
+// Fetch streams emails folder-by-folder. For each folder, the connector
+// enumerates the current UID list (emitted as lex-sorted SourceID items
+// for deletion reconciliation), then fetches the delta bodies in
+// batches of imapBodyFetchBatch and emits one Doc per email (plus Docs
+// per attachment). A Checkpoint is emitted at the end of every batch
+// so a mid-folder cancel loses at most one batch of re-fetch work.
+//
+// Folders are processed in lexicographic order so the global SourceID
+// stream stays monotonic — required for the pipeline's streaming
+// merge-diff.
+func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+
+	go func() {
+		defer close(items)
+		defer close(errs)
+
+		if err := c.streamFetch(ctx, cursor, items); err != nil {
+			errs <- err
+		}
+	}()
+
+	return items, errs
+}
+
+// streamFetch is the goroutine body of Fetch. Manages the IMAP session
+// lifecycle and dispatches to streamFetchWithClient.
+func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	addr := fmt.Sprintf("%s:%d", c.server, c.port)
 	client, err := c.dial(addr, &imapclient.Options{
 		TLSConfig: &tls.Config{ServerName: c.server},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("imap: connect: %w", err)
+		return fmt.Errorf("imap: connect: %w", err)
 	}
 	defer client.Close() //nolint:errcheck // best-effort close
 
 	if err := client.Login(c.username, c.password).Wait(); err != nil {
-		return nil, fmt.Errorf("imap: login: %w", err)
+		return fmt.Errorf("imap: login: %w", err)
 	}
+	defer func() { _ = client.Logout().Wait() }()
 
-	mbc := &realMailboxClient{client: client}
-	docs, newUIDs, currentSourceIDs, err := c.fetchWithClient(ctx, mbc, cursor)
-	if err != nil {
-		return nil, err
-	}
+	// Probe CONDSTORE support once per sync — propagates into every
+	// realMailboxClient.SelectFolder call so we don't pester servers
+	// that don't advertise the capability with unsupported SELECT
+	// options (some minimal servers reject the `(CONDSTORE)`
+	// qualifier outright with a BAD response).
+	mbc := &realMailboxClient{client: client, hasCondStore: client.Caps().Has(imap.CapCondStore)}
+	return c.streamFetchWithClient(ctx, mbc, cursor, items)
+}
 
-	_ = client.Logout().Wait()
+// streamFetchWithClient is the per-folder streaming loop against an
+// abstracted mailbox client. Extracted from streamFetch so tests can
+// drive it with a mock without needing a live IMAP dial/login.
+func (c *Connector) streamFetchWithClient(ctx context.Context, mbc mailboxClient, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
+	folders := append([]string(nil), c.folders...)
+	sort.Strings(folders)
 
 	now := time.Now()
-	cursorData := map[string]any{}
-	for folder, uid := range newUIDs {
-		cursorData["uid:"+folder] = float64(uid)
-	}
+	cursorData := copyCursorData(cursor)
+	totalEstimate := int64(0)
 
-	return &model.FetchResult{
-		Documents:        docs,
-		CurrentSourceIDs: currentSourceIDs,
-		Cursor: &model.SyncCursor{
-			CursorData:  cursorData,
-			LastSync:    now,
-			LastStatus:  "success",
-			ItemsSynced: len(docs),
-		},
-	}, nil
-}
-
-func (c *Connector) fetchWithClient(ctx context.Context, mbc mailboxClient, cursor *model.SyncCursor) ([]model.Document, map[string]imap.UID, []string, error) {
-	var allDocs []model.Document
-	newUIDs := make(map[string]imap.UID)
-	// allUIDs accumulates the full UID list across folders for deletion
-	// sync. Stays nil if any folder fails its enumeration so the
-	// pipeline skips the diff (avoids false-positive deletions on a
-	// transient IMAP error).
-	var allUIDs []string
-	enumOK := true
-
-	for _, folder := range c.folders {
+	for _, folder := range folders {
 		if ctx.Err() != nil {
-			return allDocs, newUIDs, nil, ctx.Err()
+			return ctx.Err()
 		}
-
-		docs, lastUID, folderUIDs, err := c.fetchFolder(ctx, mbc, folder, cursor)
-		if err != nil {
-			return allDocs, newUIDs, nil, fmt.Errorf("imap: folder %q: %w", folder, err)
+		// Announce the current folder so the UI can show
+		// "Syncing INBOX…" instead of a bare counter. The
+		// pipeline just stamps the label onto the SyncJob and
+		// fires progress.
+		scope := folder
+		if !emitItem(ctx, items, model.FetchItem{Scope: &scope}) {
+			return ctx.Err()
 		}
-
-		allDocs = append(allDocs, docs...)
-		if lastUID > 0 {
-			newUIDs[folder] = lastUID
-		}
-		if folderUIDs == nil {
-			// Folder's full enumeration failed (search error); fall back
-			// to opting out of deletion sync for the entire connector
-			// run rather than presenting a partial picture.
-			enumOK = false
-		} else if enumOK {
-			allUIDs = append(allUIDs, folderUIDs...)
+		if _, err := c.streamFolder(ctx, mbc, folder, cursor, cursorData, now, &totalEstimate, items); err != nil {
+			return fmt.Errorf("imap: folder %q: %w", folder, err)
 		}
 	}
-
-	if !enumOK {
-		return allDocs, newUIDs, nil, nil
+	// Clear the scope once all folders are done so late
+	// progress frames don't linger on a stale folder name.
+	empty := ""
+	_ = emitItem(ctx, items, model.FetchItem{Scope: &empty})
+	// Only signal authoritative enumeration if every folder's
+	// SEARCH ALL succeeded — a partial run would cause false
+	// deletions.
+	if !emitItem(ctx, items, model.FetchItem{EnumerationComplete: true}) {
+		return ctx.Err()
 	}
-	return allDocs, newUIDs, allUIDs, nil
+	return nil
 }
 
-// fetchFolder returns (docs, lastUID, allFolderSourceIDs, err). The
-// fourth return is the full set of source_ids in the folder regardless
-// of cursor — used for deletion sync. nil signals "enumeration failed,
-// skip deletion for this run".
+// copyCursorData returns a mutable copy of the cursor's CursorData
+// (or an empty map when the cursor is nil). Mid-sync checkpoints
+// mutate this map and hand a snapshot to the pipeline, so the
+// connector owns the only mutable instance for the run.
+func copyCursorData(cursor *model.SyncCursor) map[string]any {
+	if cursor == nil || cursor.CursorData == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(cursor.CursorData))
+	for k, v := range cursor.CursorData {
+		out[k] = v
+	}
+	return out
+}
+
+// streamFolder selects a folder, emits its sorted SourceID
+// enumeration, and streams delta body fetches in batches. When the
+// server supports CONDSTORE (SelectData.HighestModSeq > 0) the
+// connector takes the delta via SEARCH MODSEQ and fast-skips folders
+// whose HighestModSeq hasn't changed since the last sync — making
+// recurring syncs O(delta) instead of O(enumeration).
 //
-// Only email source_ids (`{folder}:{uid}`) are enumerated, not
-// attachment source_ids. The pipeline's diff treats attachments whose
-// parent UID disappeared as orphans and removes them anyway, so this
-// is consistent without paying for a body-structure fetch on every
-// email just to enumerate attachment indices.
-func (c *Connector) fetchFolder(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor) ([]model.Document, imap.UID, []string, error) {
-	if err := mbc.SelectFolder(folder); err != nil {
-		return nil, 0, nil, fmt.Errorf("select: %w", err)
+// On UIDValidity change the cached CONDSTORE state is discarded and
+// the folder falls back to full enumeration (RFC 7162 §5: the
+// server has re-keyed UIDs so cached MODSEQ values are meaningless).
+func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor, cursorData map[string]any, startedAt time.Time, totalEstimate *int64, items chan<- model.FetchItem) (int, error) {
+	sel, err := mbc.SelectFolder(folder, true /* CondStore */)
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
 	}
 
-	// Full UID enumeration — runs once per sync, cheap (a single
-	// IMAP SEARCH command). Done before the cursor-based fetch so
-	// any error here aborts cleanly.
+	cachedUIDValidity := cursorUIDValidityForFolder(cursor, folder)
+	cachedModSeq := cursorModSeqForFolder(cursor, folder)
+	newUIDValidity := sel.UIDValidity
+	newHighestModSeq := sel.HighestModSeq
+
+	// RFC 7162 §5: a UIDVALIDITY change invalidates every cached
+	// MODSEQ value. Drop cachedModSeq so the fallback UID-range
+	// path (or a full MODSEQ=0 search) runs from scratch.
+	if cachedUIDValidity != 0 && cachedUIDValidity != newUIDValidity {
+		cachedModSeq = 0
+	}
+
+	// Full UID enumeration always runs, even when CONDSTORE says
+	// nothing has changed in this folder. The pipeline's merge-diff
+	// compares a globally-sorted SourceID stream against OpenSearch,
+	// so omitting one folder's IDs would make every indexed doc
+	// from that folder look stale the moment ANY other folder
+	// emits SourceIDs. A fast-skip that short-circuits the SEARCH
+	// ALL would therefore cause mass deletions on recurring syncs.
+	// Enumeration is a single cheap IMAP round-trip regardless of
+	// folder size; the CONDSTORE win lives in the body-fetch path
+	// below, not in the enumeration.
 	allUIDs, err := mbc.SearchUIDs(&imap.SearchCriteria{})
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("search all: %w", err)
+		return 0, fmt.Errorf("search all: %w", err)
 	}
-	folderSourceIDs := make([]string, 0, len(allUIDs))
-	for _, uid := range allUIDs {
-		folderSourceIDs = append(folderSourceIDs, fmt.Sprintf("%s:%d", folder, uid))
+	sourceIDs := make([]string, len(allUIDs))
+	for i, uid := range allUIDs {
+		sourceIDs[i] = fmt.Sprintf("%s:%d", folder, uid)
+	}
+	sort.Strings(sourceIDs)
+	for i := range sourceIDs {
+		sid := sourceIDs[i]
+		if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
+			return 0, ctx.Err()
+		}
 	}
 
-	lastUID := cursorUIDForFolder(cursor, folder)
-	criteria := buildFolderSearchCriteria(lastUID, c.syncSince)
+	// CONDSTORE fast-skip on the body-fetch path: if HighestModSeq
+	// hasn't advanced since last sync, there's nothing new to fetch.
+	// Persist the cursor to keep carrying the value forward and
+	// move on without running the delta SEARCH or any body FETCH.
+	if newHighestModSeq > 0 && cachedModSeq == newHighestModSeq && cachedUIDValidity == newUIDValidity {
+		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
+		cursorData["modseq:"+folder] = float64(newHighestModSeq)
+		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
+			return 0, ctx.Err()
+		}
+		return 0, nil
+	}
 
+	criteria, fetchOpts := c.buildDeltaCriteria(cursor, folder, cachedModSeq, newHighestModSeq)
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("search: %w", err)
+		return 0, fmt.Errorf("search: %w", err)
+	}
+
+	if len(uids) > 0 {
+		*totalEstimate += int64(len(uids))
+		est := *totalEstimate
+		if !emitItem(ctx, items, model.FetchItem{EstimatedTotal: &est}) {
+			return 0, ctx.Err()
+		}
 	}
 
 	if len(uids) == 0 {
-		return nil, lastUID, folderSourceIDs, nil
+		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
+		if newHighestModSeq > 0 {
+			cursorData["modseq:"+folder] = float64(newHighestModSeq)
+		}
+		cursorData["uid:"+folder] = float64(cursorUIDForFolder(cursor, folder))
+		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
+			return 0, ctx.Err()
+		}
+		return 0, nil
 	}
 
-	msgs, err := mbc.FetchMessages(uids)
-	if err != nil {
-		return nil, 0, nil, fmt.Errorf("fetch: %w", err)
-	}
-
-	var docs []model.Document
-	var maxUID imap.UID
-
-	for _, msg := range msgs {
+	processed := 0
+	maxUID := cursorUIDForFolder(cursor, folder)
+	sinceBatchStart := 0
+	for i := 0; i < len(uids); i += imapBodyFetchBatch {
 		if ctx.Err() != nil {
-			return docs, maxUID, nil, ctx.Err()
+			return processed, ctx.Err()
 		}
-
-		if msg.UID > maxUID {
-			maxUID = msg.UID
+		end := i + imapBodyFetchBatch
+		if end > len(uids) {
+			end = len(uids)
 		}
-
-		msgDocs := c.messageToDocuments(msg, folder)
-		docs = append(docs, msgDocs...)
+		batch := uids[i:end]
+		// Stream per-message: iCloud and other IMAP servers can
+		// take several minutes to return a large batch. Emitting
+		// docs as they arrive lets the pipeline's progress bar
+		// advance mid-batch instead of looking stuck at 0 for the
+		// whole batch duration.
+		emitErr := mbc.FetchMessages(batch, fetchOpts, func(msg *imapclient.FetchMessageBuffer) bool {
+			if ctx.Err() != nil {
+				return false
+			}
+			if msg.UID > maxUID {
+				maxUID = msg.UID
+			}
+			docs := c.messageToDocuments(msg, folder)
+			for k := range docs {
+				if !emitItem(ctx, items, model.FetchItem{Doc: &docs[k]}) {
+					return false
+				}
+			}
+			processed++
+			sinceBatchStart++
+			return true
+		})
+		if emitErr != nil {
+			return processed, fmt.Errorf("fetch: %w", emitErr)
+		}
+		if ctx.Err() != nil {
+			return processed, ctx.Err()
+		}
+		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
+		if newHighestModSeq > 0 {
+			cursorData["modseq:"+folder] = float64(newHighestModSeq)
+		}
+		cursorData["uid:"+folder] = float64(maxUID)
+		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
+			return processed, ctx.Err()
+		}
+		sinceBatchStart = 0
 	}
+	_ = sinceBatchStart // retained for future per-message checkpointing
+	return processed, nil
+}
 
-	if maxUID > lastUID {
-		lastUID = maxUID
+// buildDeltaCriteria chooses the SEARCH criteria + FETCH options for
+// the delta pass. When CONDSTORE is available and we have a cached
+// HighestModSeq, we ask the server for "UIDs with MODSEQ > cached"
+// — O(delta) regardless of mailbox size. Otherwise we fall back to
+// the UID-range heuristic (UID > lastUID) that predates CONDSTORE.
+func (c *Connector) buildDeltaCriteria(cursor *model.SyncCursor, folder string, cachedModSeq, newHighestModSeq uint64) (*imap.SearchCriteria, *imap.FetchOptions) {
+	opts := defaultFetchOptions()
+	if newHighestModSeq > 0 && cachedModSeq > 0 {
+		opts.ChangedSince = cachedModSeq
+		return &imap.SearchCriteria{
+			ModSeq: &imap.SearchCriteriaModSeq{ModSeq: cachedModSeq},
+		}, opts
 	}
+	lastUID := cursorUIDForFolder(cursor, folder)
+	return buildFolderSearchCriteria(lastUID, c.syncSince), opts
+}
 
-	return docs, lastUID, folderSourceIDs, nil
+// cursorUIDValidityForFolder reads the persisted UIDVALIDITY for
+// folder out of cursor.CursorData. Zero indicates an absent entry;
+// callers treat that as "no cached validity yet" rather than a real
+// UIDVALIDITY=0 (IMAP requires nonzero UIDVALIDITY).
+func cursorUIDValidityForFolder(cursor *model.SyncCursor, folder string) uint32 {
+	if cursor == nil {
+		return 0
+	}
+	v, ok := cursor.CursorData["uidvalidity:"+folder].(float64)
+	if !ok {
+		return 0
+	}
+	return uint32(v)
+}
+
+// cursorModSeqForFolder reads the persisted HIGHESTMODSEQ for folder
+// out of cursor.CursorData. Zero indicates an absent entry or a
+// non-CONDSTORE server; callers fall back to UID-range delta in
+// that case.
+func cursorModSeqForFolder(cursor *model.SyncCursor, folder string) uint64 {
+	if cursor == nil {
+		return 0
+	}
+	v, ok := cursor.CursorData["modseq:"+folder].(float64)
+	if !ok {
+		return 0
+	}
+	return uint64(v)
+}
+
+// buildCursor captures the current cursorData snapshot into a
+// SyncCursor shaped for persistence. The map is copied so the
+// pipeline's persistence path doesn't race with in-progress updates
+// from the next folder.
+func buildCursor(cursorData map[string]any, startedAt time.Time) *model.SyncCursor {
+	snapshot := make(map[string]any, len(cursorData))
+	for k, v := range cursorData {
+		snapshot[k] = v
+	}
+	return &model.SyncCursor{
+		CursorData: snapshot,
+		LastSync:   startedAt,
+		LastStatus: "success",
+	}
 }
 
 // cursorUIDForFolder reads the previously-persisted last-seen UID for folder
@@ -345,6 +574,19 @@ func buildFolderSearchCriteria(lastUID imap.UID, syncSince time.Time) *imap.Sear
 		criteria.Since = syncSince
 	}
 	return criteria
+}
+
+// emitItem sends item on items, respecting context cancellation.
+// Returns false when the context was cancelled before the send could
+// complete. Shared helper so cancellation semantics stay uniform
+// across the connector's streaming paths.
+func emitItem(ctx context.Context, items chan<- model.FetchItem, item model.FetchItem) bool {
+	select {
+	case items <- item:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folder string) []model.Document {
@@ -515,11 +757,6 @@ func (c *Connector) attachmentDocument(att attachment, index int, folder string,
 		CreatedAt:  createdAt,
 	}
 
-	// Eager cache population: the attachment bytes are already in memory from
-	// the MIME parse — dropping them here means the first preview click would
-	// have to re-fetch the entire email from IMAP. When the admin has opted
-	// into eager mode we proactively cache. Best-effort — a cache write
-	// failure shouldn't abort the sync.
 	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
 		_ = c.binaryStore.Put(
 			context.Background(),

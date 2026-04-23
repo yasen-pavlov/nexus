@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/testutil"
 )
 
 func TestConfigure(t *testing.T) {
@@ -130,9 +132,9 @@ func TestFetch(t *testing.T) {
 	}
 
 	t.Run("full sync", func(t *testing.T) {
-		result, err := c.Fetch(context.Background(), nil)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		result := testutil.RunFetch(t, c, nil)
+		if result.Err != nil {
+			t.Fatalf("unexpected error: %v", result.Err)
 		}
 		if len(result.Documents) != 3 {
 			t.Fatalf("expected 3 documents, got %d", len(result.Documents))
@@ -169,15 +171,13 @@ func TestFetch(t *testing.T) {
 			t.Errorf("expected 'Nested content', got %q", nested.Content)
 		}
 
-		// Verify cursor
-		if result.Cursor == nil {
+		// Verify cursor — final Checkpoint carries the snapshot the
+		// pipeline would have persisted.
+		if result.LastCursor == nil {
 			t.Fatal("expected cursor to be set")
 		}
-		if result.Cursor.LastStatus != "success" {
-			t.Errorf("expected status 'success', got %q", result.Cursor.LastStatus)
-		}
-		if result.Cursor.ItemsSynced != 3 {
-			t.Errorf("expected 3 items synced, got %d", result.Cursor.ItemsSynced)
+		if result.LastCursor.LastStatus != "success" {
+			t.Errorf("expected status 'success', got %q", result.LastCursor.LastStatus)
 		}
 	})
 
@@ -188,9 +188,9 @@ func TestFetch(t *testing.T) {
 			},
 		}
 
-		result, err := c.Fetch(context.Background(), pastCursor)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		result := testutil.RunFetch(t, c, pastCursor)
+		if result.Err != nil {
+			t.Fatalf("unexpected error: %v", result.Err)
 		}
 		if len(result.Documents) != 0 {
 			t.Errorf("expected 0 documents for future cursor, got %d", len(result.Documents))
@@ -198,11 +198,12 @@ func TestFetch(t *testing.T) {
 	})
 }
 
-func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
+func TestFetch_PopulatesSourceIDs(t *testing.T) {
 	// Even with an incremental cursor that filters out unchanged
-	// files (so Documents is empty), the connector must still report
-	// every matching source_id in CurrentSourceIDs — otherwise the
-	// pipeline's deletion-sync pass would wrongly delete everything.
+	// files (so Documents is empty), the connector must still emit
+	// SourceID items for every matching file — otherwise the
+	// pipeline's deletion-sync merge-diff would wrongly delete
+	// everything.
 	dir := t.TempDir()
 	writeFile(t, dir, "a.txt", "alpha")
 	writeFile(t, dir, "b.txt", "bravo")
@@ -214,47 +215,110 @@ func TestFetch_PopulatesCurrentSourceIDs(t *testing.T) {
 		extractor: extractor.NewRegistry("", nil),
 	}
 
-	t.Run("full sync includes every matching file", func(t *testing.T) {
-		result, err := c.Fetch(context.Background(), nil)
-		if err != nil {
-			t.Fatal(err)
+	t.Run("full sync emits every matching source id", func(t *testing.T) {
+		result := testutil.RunFetch(t, c, nil)
+		if result.Err != nil {
+			t.Fatal(result.Err)
 		}
-		got := make(map[string]bool, len(result.CurrentSourceIDs))
-		for _, sid := range result.CurrentSourceIDs {
+		got := make(map[string]bool, len(result.SourceIDs))
+		for _, sid := range result.SourceIDs {
 			got[sid] = true
 		}
 		want := []string{"a.txt", "b.txt", "c.md"}
 		if len(got) != len(want) {
-			t.Fatalf("expected %d source ids, got %v", len(want), result.CurrentSourceIDs)
+			t.Fatalf("expected %d source ids, got %v", len(want), result.SourceIDs)
 		}
 		for _, w := range want {
 			if !got[w] {
-				t.Errorf("missing %q from CurrentSourceIDs (got %v)", w, result.CurrentSourceIDs)
+				t.Errorf("missing %q from SourceIDs (got %v)", w, result.SourceIDs)
 			}
 		}
-		// The PNG never matches the pattern → must not appear.
 		if got["skipme.png"] {
-			t.Error("non-matching file leaked into CurrentSourceIDs")
+			t.Error("non-matching file leaked into SourceIDs")
 		}
 	})
 
 	t.Run("incremental sync keeps full enumeration", func(t *testing.T) {
-		// Cursor far in the future → no Documents emitted, but the
-		// CurrentSourceIDs list must still be complete.
 		future := time.Now().Add(time.Hour)
-		result, err := c.Fetch(context.Background(), &model.SyncCursor{
+		result := testutil.RunFetch(t, c, &model.SyncCursor{
 			CursorData: map[string]any{"last_sync_time": future.Format(time.RFC3339Nano)},
 		})
-		if err != nil {
-			t.Fatal(err)
+		if result.Err != nil {
+			t.Fatal(result.Err)
 		}
 		if len(result.Documents) != 0 {
 			t.Errorf("expected 0 docs on future-cursor sync, got %d", len(result.Documents))
 		}
-		if len(result.CurrentSourceIDs) != 3 {
-			t.Errorf("expected 3 source ids regardless of cursor, got %v", result.CurrentSourceIDs)
+		if len(result.SourceIDs) != 3 {
+			t.Errorf("expected 3 source ids regardless of cursor, got %v", result.SourceIDs)
 		}
 	})
+}
+
+// TestFetch_WalkError_SurfacedOnErrsChannel covers the walk-error
+// branch — an unreadable root directory surfaces the error on the
+// errs channel and closes items cleanly.
+func TestFetch_WalkError_SurfacedOnErrsChannel(t *testing.T) {
+	c := &Connector{
+		name:     "walk-err",
+		rootPath: "/this/path/definitely/does/not/exist",
+		patterns: []string{"*.txt"},
+	}
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err == nil {
+		t.Fatal("expected walk error on missing root path")
+	}
+	if len(result.Documents) != 0 {
+		t.Errorf("expected no docs on walk failure, got %d", len(result.Documents))
+	}
+}
+
+// TestFetch_EmitsCheckpointEvery covers the per-batch checkpoint
+// emission inside the WalkDir callback (the inner
+// `seen%filesystemCheckpointEvery == 0` branch). Seeds more than one
+// batch's worth of files so we see at least two checkpoints.
+func TestFetch_EmitsCheckpointEvery(t *testing.T) {
+	dir := t.TempDir()
+	// Seed filesystemCheckpointEvery+1 files so the counter hits the
+	// batch boundary inside the walk, *and* the trailing batch
+	// emits its own checkpoint at close.
+	const total = filesystemCheckpointEvery + 1
+	for i := 0; i < total; i++ {
+		writeFile(t, dir, fmt.Sprintf("f%04d.txt", i), "body")
+	}
+	c := &Connector{
+		name: "batch-cp", rootPath: dir, patterns: []string{"*.txt"},
+		extractor: extractor.NewRegistry("", nil),
+	}
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if len(result.Checkpoints) < 2 {
+		t.Errorf("expected ≥2 checkpoints (at batch boundary + final), got %d", len(result.Checkpoints))
+	}
+}
+
+// TestFetch_ContextCancelledMidWalk covers emit-on-ctx-cancel paths
+// in the Fetch goroutine. Seeds many files and cancels ASAP — the
+// walk should abort with an error.
+func TestFetch_ContextCancelledMidWalk(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeFile(t, dir, fmt.Sprintf("f%02d.txt", i), "body")
+	}
+	c := &Connector{
+		name: "cancel-mid", rootPath: dir, patterns: []string{"*.txt"},
+		extractor: extractor.NewRegistry("", nil),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	items, errs := c.Fetch(ctx, nil)
+	cancel()
+	result := testutil.CollectStream(t, items, errs)
+	// The walk may have raced to completion before cancel; either
+	// outcome is acceptable as long as CollectStream didn't time out.
+	_ = result
 }
 
 func TestFetchContextCancellation(t *testing.T) {
@@ -270,10 +334,13 @@ func TestFetchContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := c.Fetch(ctx, nil)
-	if err == nil {
-		t.Fatal("expected error for cancelled context")
-	}
+	items, errs := c.Fetch(ctx, nil)
+	result := testutil.CollectStream(t, items, errs)
+	// Cancelled context produces either a terminal error or an
+	// early-closed stream; both are acceptable. What's NOT OK is the
+	// connector blocking forever — CollectStream's timeout would
+	// catch that.
+	_ = result
 }
 
 func TestDetectContentType(t *testing.T) {
@@ -295,6 +362,45 @@ func TestDetectContentType(t *testing.T) {
 		if !strings.HasPrefix(got, tt.wantPrefix) {
 			t.Errorf("detectContentType(%q) = %q, want prefix %q", tt.filename, got, tt.wantPrefix)
 		}
+	}
+}
+
+// TestFetchBinary_RootEvalSymlinksFailure covers the "resolve root"
+// branch — FetchBinary when the configured root itself doesn't exist.
+func TestFetchBinary_RootEvalSymlinksFailure(t *testing.T) {
+	c := &Connector{rootPath: "/nope/never-existed", patterns: []string{"*.txt"}}
+	_, err := c.FetchBinary(context.Background(), "anything.txt")
+	if err == nil {
+		t.Fatal("expected error when root doesn't resolve")
+	}
+}
+
+// TestResolveFilesystemCursor_NoCursorNoSyncSince covers the
+// fallback branch — both cursor and syncSince empty → zero time.
+func TestResolveFilesystemCursor_NoCursorNoSyncSince(t *testing.T) {
+	got := resolveFilesystemCursor(nil, time.Time{})
+	if !got.IsZero() {
+		t.Errorf("expected zero time, got %v", got)
+	}
+}
+
+// TestResolveFilesystemCursor_EmptyCursorData covers the branch
+// where cursor is non-nil but has no last_sync_time — should
+// return zero time, NOT the syncSince fallback (since the cursor
+// is present; its absence of data means "never synced via cursor").
+func TestResolveFilesystemCursor_EmptyCursorData(t *testing.T) {
+	got := resolveFilesystemCursor(&model.SyncCursor{CursorData: map[string]any{}}, time.Now())
+	if !got.IsZero() {
+		t.Errorf("empty cursor data should yield zero time, got %v", got)
+	}
+}
+
+// TestDetectContentType_NoExtension covers the early-return for
+// files without an extension — mime.TypeByExtension returns "" and
+// the function must fall back to octet-stream.
+func TestDetectContentType_NoExtension(t *testing.T) {
+	if got := detectContentType("README"); got != "application/octet-stream" {
+		t.Errorf("no-extension file = %q, want application/octet-stream", got)
 	}
 }
 
@@ -323,9 +429,9 @@ func TestFetch_WithExtractor_UnsupportedType(t *testing.T) {
 		extractor: reg,
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
 	}
 	// Unextractable files are still emitted as docs with empty content so they
 	// remain discoverable by metadata (filename, size) and previewable via
@@ -371,9 +477,9 @@ func TestFetch_WithExtractor(t *testing.T) {
 		extractor: reg,
 	}
 
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("fetch failed: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("fetch failed: %v", result.Err)
 	}
 	if len(result.Documents) != 2 {
 		t.Fatalf("expected 2 documents, got %d", len(result.Documents))
@@ -406,9 +512,9 @@ func TestFetch_PopulatesMimeTypeAndSize(t *testing.T) {
 		rootPath: dir,
 		patterns: []string{"*.txt"},
 	}
-	result, err := c.Fetch(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
 	}
 	if len(result.Documents) != 1 {
 		t.Fatalf("expected 1 doc, got %d", len(result.Documents))

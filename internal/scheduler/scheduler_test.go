@@ -97,8 +97,12 @@ func (c *mockConn) Name() string                       { return c.name }
 func (c *mockConn) Configure(_ connector.Config) error { return nil }
 func (c *mockConn) Validate() error                    { return nil }
 
-func (c *mockConn) Fetch(_ context.Context, _ *model.SyncCursor) (*model.FetchResult, error) {
-	return &model.FetchResult{}, nil
+func (c *mockConn) Fetch(_ context.Context, _ *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
+	items := make(chan model.FetchItem)
+	errs := make(chan error, 1)
+	close(items)
+	close(errs)
+	return items, errs
 }
 
 func TestNew(t *testing.T) {
@@ -382,7 +386,7 @@ func (f *fakeJobManager) StartForSchedule(_ uuid.UUID, _, _ string) (string, con
 	return id, context.Background(), nil
 }
 
-func (f *fakeJobManager) Update(_ string, _, _, _ int) {
+func (f *fakeJobManager) Update(_ string, _, _, _ int, _ string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.updates++

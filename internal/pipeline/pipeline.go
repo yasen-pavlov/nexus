@@ -3,9 +3,11 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,6 +39,23 @@ const minEmbeddingContentLen = 0
 // ("ok", "thanks!"), URL-only chunks, and base64-only fragments will fall
 // below this threshold and get skipped.
 const minEmbeddingAlphabeticTokens = 10
+
+// indexBatchSize controls bulk-index flushing and coincides with the
+// checkpoint cadence. A checkpoint emission in the stream flushes any
+// buffered docs first, so cursor advancement always follows durable
+// OpenSearch writes — never precedes them.
+//
+// Kept modest because embeddings are computed per-doc (serial
+// Voyage/Cohere round-trips) inside the flush. A 200-doc batch on a
+// slow embedder would stall the entire pipeline for minutes while
+// the UI sat at 0%. Smaller batches → tighter progress feedback and
+// less back-pressure on the connector goroutine.
+const indexBatchSize = 25
+
+// checkpointInterval is the time-based fallback cadence for persisting
+// cursor state when the connector's own Checkpoint emissions are sparse
+// (e.g. slow-streaming connectors that spend minutes between docs).
+const checkpointInterval = 30 * time.Second
 
 // EmbedderProvider returns the current embedder (supports hot-reload).
 type EmbedderProvider interface {
@@ -82,17 +101,93 @@ func (p *Pipeline) SetBinaryStore(bs binaryStoreDeleter) {
 	p.binaryStore = bs
 }
 
-// ProgressFunc is called with (total, processed, errors) as documents are indexed.
-type ProgressFunc func(total, processed, errors int)
+// ProgressFunc is called with (total, processed, errors, scope) as
+// documents are indexed. Total is a running estimate — connectors
+// may emit EstimatedTotal multiple times during a sync, so UI
+// consumers should clamp any displayed value so it never regresses.
+// Scope is a free-form label describing the connector's current
+// sub-unit (IMAP folder name, Telegram chat title, etc.); empty
+// string means "no scope".
+type ProgressFunc func(total, processed, errors int, scope string)
 
-// RunWithProgress fetches documents from a connector, chunks them, generates embeddings, and indexes them.
-// connectorID identifies the connector in the sync_cursors table; ownerID and shared are
-// written to each indexed chunk for search scoping. progress may be nil.
+// runState holds the mutable state threaded through a single
+// RunWithProgress call. Kept as a struct rather than individual locals
+// so helper methods can manipulate it without long parameter lists.
+type runState struct {
+	connectorID    uuid.UUID
+	connName       string
+	connType       string
+	ownerID        string
+	shared         bool
+	progress       ProgressFunc
+	start          time.Time
+	pendingDocs    []model.Document
+	enumSourceIDs  []string
+	sawEnumeration bool
+	latestCursor   *model.SyncCursor
+	total          int
+	// hasEstimate flips true the first time a connector emits
+	// EstimatedTotal. Until then the pipeline leaves total at 0
+	// so the UI renders the indeterminate (gliding bead) state
+	// instead of a permanently-full bar where total auto-tracks
+	// processed. Filesystem and Telegram don't know their real
+	// denominator up front; showing "24/24" would pretend
+	// otherwise.
+	hasEstimate bool
+	processed   int
+	errCount    int
+	scope       string
+	lastFlush   time.Time
+
+	// Async flush coordination. Flushes run on their own
+	// goroutines so the consumer loop keeps advancing
+	// state.processed (and firing progress) while embeddings +
+	// bulk indexing happen in the background. flushSem caps
+	// concurrent flushes so a slow embedder can't spawn
+	// unbounded goroutines; the blocking acquire is the
+	// natural back-pressure. flushWG tracks outstanding
+	// flushes so the pipeline can wait for them before
+	// persisting checkpoints or finishing the run.
+	// reportMu serializes writes to the progress-visible
+	// counters (processed, errCount, total) and the progress
+	// callback itself, since multiple flush goroutines can
+	// roll back concurrently.
+	flushSem chan struct{}
+	flushWG  sync.WaitGroup
+	reportMu sync.Mutex
+}
+
+// RunWithProgress fetches documents from a connector, chunks them, generates
+// embeddings, and indexes them. connectorID identifies the connector in the
+// sync_cursors table; ownerID and shared are written to each indexed chunk
+// for search scoping. progress may be nil.
+//
+// The connector streams FetchItems on one channel and at most one terminal
+// error on the other. Docs are buffered and indexed in bulk every
+// indexBatchSize items or when the connector emits a Checkpoint (whichever
+// comes first), plus a time-based fallback flush every checkpointInterval
+// for slow connectors. Deletion reconciliation (for connectors that emit
+// SourceID items) runs once the stream closes normally.
 func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, conn connector.Connector, ownerID string, shared bool, progress ProgressFunc) (*SyncReport, error) {
-	start := time.Now()
-	connName := conn.Name()
+	state := &runState{
+		connectorID: connectorID,
+		connName:    conn.Name(),
+		connType:    conn.Type(),
+		ownerID:     ownerID,
+		shared:      shared,
+		progress:    progress,
+		start:       time.Now(),
+		lastFlush:   time.Now(),
+		// Cap concurrent flushes at 2: one currently talking
+		// to the embedder / OpenSearch, one queued ready to go
+		// the moment the first finishes. More concurrency
+		// doesn't help because Voyage rate-limits at the
+		// account level and OpenSearch bulk writes are fast
+		// enough to stay off the hot path.
+		flushSem: make(chan struct{}, 2),
+	}
 
-	p.log.Info("sync started", zap.String("connector", connName), zap.String("type", conn.Type()))
+	p.log.Info("sync started", zap.String("connector", state.connName), zap.String("type", state.connType))
 
 	if p.store == nil {
 		return nil, fmt.Errorf("pipeline: store not configured")
@@ -103,91 +198,253 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, connectorID uuid.UUID, c
 		return nil, fmt.Errorf("pipeline: get cursor: %w", err)
 	}
 
-	result, err := conn.Fetch(ctx, cursor)
-	if err != nil {
-		return nil, fmt.Errorf("pipeline: fetch: %w", err)
-	}
+	items, errs := conn.Fetch(ctx, cursor)
+	streamErr := p.consumeStream(ctx, state, items, errs)
 
-	total := len(result.Documents)
-	if progress != nil {
-		progress(total, 0, 0)
-	}
+	// Flush whatever is buffered whether or not the stream errored —
+	// partial progress is better than none, and the checkpoint we
+	// persist reflects only the docs that actually landed in OpenSearch.
+	p.flushPending(ctx, state)
+	// Wait for every in-flight async flush before persisting the
+	// cursor or running deletion reconciliation. Otherwise we could
+	// commit a cursor past documents that aren't in OpenSearch yet
+	// (defeating the streaming-checkpoint resume invariant) or
+	// delete indexed docs that a late flush is about to produce.
+	state.flushWG.Wait()
+	p.persistLatestCursor(ctx, state)
 
-	var errCount int
-	var processed int
-	for i := range result.Documents {
-		// Respect cancellation between documents. This loop is the
-		// long-running phase of a sync; without this check the run
-		// would only abort on the next network round-trip inside the
-		// connector / search client. Returning a partial report lets
-		// the caller persist what completed before the cancel.
-		select {
-		case <-ctx.Done():
-			return &SyncReport{
-				ConnectorName: connName,
-				ConnectorType: conn.Type(),
-				DocsProcessed: processed,
-				Errors:        errCount,
-				Duration:      time.Since(start),
-			}, ctx.Err()
-		default:
-		}
-
-		if err := p.indexDocument(ctx, &result.Documents[i], ownerID, shared); err != nil {
-			errCount++
-		}
-		processed = i + 1
-		if progress != nil {
-			progress(total, processed, errCount)
-		}
-	}
-
-	deletedCount := p.reconcileDeletions(ctx, conn.Type(), connName, result.CurrentSourceIDs)
-
-	if result.Cursor != nil {
-		// Override whatever the connector set as ConnectorID — it doesn't know
-		// the configured UUID. The store keys cursors by connector UUID.
-		result.Cursor.ConnectorID = connectorID
-		if err := p.store.UpsertSyncCursor(ctx, result.Cursor); err != nil {
-			return nil, fmt.Errorf("pipeline: update cursor: %w", err)
-		}
+	deletedCount := 0
+	if streamErr == nil && ctx.Err() == nil && state.sawEnumeration {
+		deletedCount = p.reconcileDeletions(ctx, state.connType, state.connName, state.enumSourceIDs)
 	}
 
 	report := &SyncReport{
-		ConnectorName: connName,
-		ConnectorType: conn.Type(),
-		DocsProcessed: processed,
+		ConnectorName: state.connName,
+		ConnectorType: state.connType,
+		DocsProcessed: state.processed,
 		DocsDeleted:   deletedCount,
-		Errors:        errCount,
-		Duration:      time.Since(start),
+		Errors:        state.errCount,
+		Duration:      time.Since(state.start),
+	}
+
+	if streamErr != nil {
+		return report, streamErr
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return report, ctxErr
 	}
 
 	p.log.Info("sync completed",
-		zap.String("connector", connName),
+		zap.String("connector", state.connName),
 		zap.Int("docs", report.DocsProcessed),
 		zap.Int("deleted", report.DocsDeleted),
 		zap.Int("errors", report.Errors),
 		zap.Duration("duration", report.Duration),
 	)
-
 	return report, nil
 }
 
-// indexDocument chunks a single document, optionally embeds the chunks that
-// pass the noise gate, and indexes them in OpenSearch. Returns an error only
-// for the indexing step — embedding failures are logged and the chunks are
-// still indexed (without vectors) so BM25 coverage stays intact.
-func (p *Pipeline) indexDocument(ctx context.Context, doc *model.Document, ownerID string, shared bool) error {
-	chunks := buildDocumentChunks(doc, ownerID, shared)
-	p.populateChunkEmbeddings(ctx, doc, chunks)
-	if err := p.search.IndexChunks(ctx, chunks); err != nil {
-		p.log.Error("failed to index document",
-			zap.String("source_id", doc.SourceID),
-			zap.Error(err),
-		)
-		return err
+// consumeStream drives the main event loop, reading items off the
+// connector's stream and routing each to the appropriate handler.
+// Returns the first terminal error from either channel (or nil on a
+// clean close + nil error).
+func (p *Pipeline) consumeStream(ctx context.Context, state *runState, items <-chan model.FetchItem, errs <-chan error) error {
+	if state.progress != nil {
+		state.progress(0, 0, 0, "")
+	}
+
+	ticker := time.NewTicker(checkpointInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Drain whatever is already in-flight on the error channel so
+			// we return the most specific cause.
+			select {
+			case e := <-errs:
+				if e != nil {
+					return e
+				}
+			default:
+			}
+			return ctx.Err()
+
+		case <-ticker.C:
+			// Time-based checkpoint: connectors that emit docs slowly
+			// (Paperless page loads, IMAP body fetches) would otherwise
+			// wait for indexBatchSize docs before a flush. Keep the
+			// resume cost bounded in wall-clock time too.
+			p.flushPending(ctx, state)
+			state.flushWG.Wait()
+			p.persistLatestCursor(ctx, state)
+			state.lastFlush = time.Now()
+
+		case item, ok := <-items:
+			if !ok {
+				return p.drainErr(errs)
+			}
+			p.handleItem(ctx, state, item)
+
+		case e := <-errs:
+			if e != nil {
+				return e
+			}
+			// errs closed cleanly before items — keep draining items.
+		}
+	}
+}
+
+// handleItem dispatches one FetchItem to the appropriate handler based on
+// which field is set. The connector contract guarantees exactly one field
+// is non-nil per item; unknown/empty items are simply ignored.
+func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.FetchItem) {
+	switch {
+	case item.Doc != nil:
+		state.pendingDocs = append(state.pendingDocs, *item.Doc)
+		// Optimistic per-doc progress: tick the counter the
+		// moment the doc is received from the connector, not
+		// after it lands in OpenSearch. The async flush
+		// (below) means the consumer loop never blocks on
+		// embedding/indexing, so the counter keeps climbing
+		// smoothly. Failure in the flush goroutine rolls the
+		// optimistic bump back under reportMu.
+		state.reportMu.Lock()
+		state.processed++
+		if state.hasEstimate && state.processed > state.total {
+			state.total = state.processed
+		}
+		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
+		state.reportMu.Unlock()
+		if state.progress != nil {
+			state.progress(total, processed, errCount, scope)
+		}
+		if len(state.pendingDocs) >= indexBatchSize {
+			p.flushPending(ctx, state)
+			state.lastFlush = time.Now()
+		}
+	case item.SourceID != nil:
+		state.sawEnumeration = true
+		state.enumSourceIDs = append(state.enumSourceIDs, *item.SourceID)
+	case item.EnumerationComplete:
+		state.sawEnumeration = true
+	case item.Checkpoint != nil:
+		state.latestCursor = item.Checkpoint
+		// Flush then wait for every in-flight async flush to
+		// land in OpenSearch before persisting the cursor —
+		// otherwise a resume-from-cursor could skip docs that
+		// never actually indexed.
+		p.flushPending(ctx, state)
+		state.flushWG.Wait()
+		p.persistLatestCursor(ctx, state)
+		state.lastFlush = time.Now()
+	case item.EstimatedTotal != nil:
+		state.reportMu.Lock()
+		state.hasEstimate = true
+		if *item.EstimatedTotal > int64(state.total) {
+			state.total = int(*item.EstimatedTotal)
+		}
+		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
+		state.reportMu.Unlock()
+		if state.progress != nil {
+			state.progress(total, processed, errCount, scope)
+		}
+	case item.Scope != nil:
+		state.reportMu.Lock()
+		state.scope = *item.Scope
+		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
+		state.reportMu.Unlock()
+		if state.progress != nil {
+			state.progress(total, processed, errCount, scope)
+		}
+	}
+}
+
+// drainErr reads a terminal error from errs (if present) without blocking
+// if the channel is already closed.
+func (p *Pipeline) drainErr(errs <-chan error) error {
+	for e := range errs {
+		if e != nil {
+			return e
+		}
 	}
 	return nil
+}
+
+// flushPending dispatches the buffered documents to a background
+// goroutine that computes embeddings and bulk-indexes them, then
+// returns immediately so the consumer loop can keep pumping items
+// from the connector. flushSem caps concurrent flushes so a slow
+// embedder can't balloon into unbounded goroutines; the blocking
+// acquire provides natural back-pressure on the producer.
+//
+// Callers that need the flushes to be durable before proceeding
+// (persistLatestCursor, end-of-run reconciliation) must first call
+// state.flushWG.Wait().
+func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
+	if len(state.pendingDocs) == 0 {
+		return
+	}
+	batch := state.pendingDocs
+	state.pendingDocs = nil
+
+	state.flushWG.Add(1)
+	go func() {
+		defer state.flushWG.Done()
+		// Acquire before doing work. The semaphore buffer is
+		// the concurrency limit; if it's full we block here
+		// until an earlier flush finishes.
+		select {
+		case state.flushSem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		defer func() { <-state.flushSem }()
+
+		chunks := make([]model.Chunk, 0, len(batch))
+		for i := range batch {
+			docChunks := buildDocumentChunks(&batch[i], state.ownerID, state.shared)
+			p.populateChunkEmbeddings(ctx, &batch[i], docChunks)
+			chunks = append(chunks, docChunks...)
+		}
+
+		if err := p.search.IndexChunks(ctx, chunks); err != nil {
+			p.log.Error("failed to bulk-index batch",
+				zap.String("connector", state.connName),
+				zap.Int("batch", len(batch)),
+				zap.Error(err),
+			)
+			// Roll back the optimistic per-doc bumps and
+			// reclassify the batch as errors. reportMu
+			// serializes with handleItem and with any
+			// other concurrently-running flush goroutine.
+			state.reportMu.Lock()
+			state.processed -= len(batch)
+			state.errCount += len(batch)
+			total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
+			state.reportMu.Unlock()
+			if state.progress != nil {
+				state.progress(total, processed, errCount, scope)
+			}
+		}
+	}()
+}
+
+// persistLatestCursor writes the most recent checkpoint cursor to the
+// store if one is pending, clearing it afterward so subsequent
+// time-ticker flushes don't re-persist an already-committed cursor.
+func (p *Pipeline) persistLatestCursor(ctx context.Context, state *runState) {
+	if state.latestCursor == nil {
+		return
+	}
+	state.latestCursor.ConnectorID = state.connectorID
+	if err := p.store.UpsertSyncCursor(ctx, state.latestCursor); err != nil {
+		p.log.Warn("failed to persist cursor checkpoint",
+			zap.String("connector", state.connName),
+			zap.Error(err))
+		return
+	}
+	state.latestCursor = nil
 }
 
 // buildDocumentChunks splits doc.Content into chunks and fans the document's
@@ -272,35 +529,39 @@ func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Docum
 	}
 }
 
-// reconcileDeletions diffs the indexed source_ids against the
-// connector's authoritative CurrentSourceIDs list and removes the
-// stragglers (plus their cached binaries when a BinaryStore is
-// wired). Returns the count of source_ids deleted.
+// reconcileDeletions runs a streaming sorted merge-diff between the
+// connector's enumerated source IDs (accumulated on state.enumSourceIDs
+// in the order the connector emitted them, which is required to match
+// OpenSearch `source_id.keyword` ascending sort) and the live
+// OpenSearch index. Any ID present in OpenSearch but absent from the
+// connector's stream is deleted (alongside its cached binary blob when
+// a BinaryStore is wired). Returns the number of IDs deleted.
+//
+// Two-pointer walk invariants: both streams are ascending-sorted,
+// deduplicated (OpenSearch side via `chunk_index:0`, connector side
+// by contract), and cover the same connector scope. The colon-suffix
+// children rule still applies — an OS id `INBOX:42:attachment:0` is
+// preserved whenever its parent `INBOX:42` is in the connector's
+// keep-set, even if the parent comes after it in sort order. We
+// handle this by queueing provisional deletions and releasing them
+// from the queue when a later connector id would cover them as a
+// parent.
 //
 // Failure-mode semantics are deliberately permissive: any error in
-// enumeration or deletion is logged and the sync continues. Deletion
-// is bookkeeping — losing one round of cleanup is recoverable on the
-// next sync; failing the entire sync because of it would mean a
-// transient OpenSearch hiccup blocks indexing too. The all-or-nothing
-// rule lives one level up: connectors set CurrentSourceIDs to nil
-// when their enumeration is incomplete, which short-circuits this
+// enumeration or deletion is logged and the sync continues. The
+// opt-out lives one level up: connectors that never emit a SourceID
+// or EnumerationComplete item have sawEnumeration=false and skip this
 // function entirely.
-func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceName string, currentSourceIDs []string) int {
-	if currentSourceIDs == nil {
-		return 0 // connector opted out (or its enumeration errored)
-	}
-
-	indexed, err := p.search.ListIndexedSourceIDs(ctx, sourceType, sourceName)
-	if err != nil {
-		p.log.Warn("deletion sync: list indexed source ids failed; skipping",
-			zap.String("connector", sourceName), zap.Error(err))
+func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceName string, connectorIDs []string) int {
+	osItems, osErrs := p.search.StreamIndexedSourceIDs(ctx, sourceType, sourceName)
+	stale := mergeDiffStaleIDs(ctx, connectorIDs, osItems, osErrs)
+	if stale == nil {
+		// merge-diff errored partway. Don't flush the pending deletes —
+		// we can't tell them from legitimate keeps. Next sync retries.
+		p.log.Warn("deletion sync: merge-diff failed; skipping",
+			zap.String("connector", sourceName))
 		return 0
 	}
-	if len(indexed) == 0 {
-		return 0
-	}
-
-	stale := computeStaleSourceIDs(indexed, currentSourceIDs)
 	if len(stale) == 0 {
 		return 0
 	}
@@ -321,27 +582,68 @@ func (p *Pipeline) reconcileDeletions(ctx context.Context, sourceType, sourceNam
 	return len(stale)
 }
 
-// computeStaleSourceIDs returns the source_ids present in indexed that aren't
-// in currentSourceIDs (or a colon-suffix child of one).
-func computeStaleSourceIDs(indexed, currentSourceIDs []string) []string {
-	keep := make(map[string]struct{}, len(currentSourceIDs))
-	for _, sid := range currentSourceIDs {
-		keep[sid] = struct{}{}
+// mergeDiffStaleIDs walks the connector's (sorted) keep list against
+// a (sorted) stream of indexed IDs from OpenSearch. Returns the list
+// of indexed IDs that are neither in keep nor a colon-suffix child of
+// any keep entry — these are the stale docs to delete.
+//
+// Returns nil (not an empty slice) when the OpenSearch stream errored
+// or the context cancelled: callers treat nil as "don't flush" while
+// [] means "nothing to delete, confidently."
+func mergeDiffStaleIDs(ctx context.Context, connectorIDs []string, osItems <-chan string, osErrs <-chan error) []string {
+	// keepSet lets isChildOfKept do O(depth) prefix checks without
+	// re-scanning the sorted connector list — needed when an OS id
+	// is a colon-suffix child of a connector id that sorts earlier.
+	keepSet := make(map[string]struct{}, len(connectorIDs))
+	for _, sid := range connectorIDs {
+		keepSet[sid] = struct{}{}
 	}
 	stale := make([]string, 0)
-	for _, sid := range indexed {
-		if _, ok := keep[sid]; ok {
-			continue
+	ci := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case osID, ok := <-osItems:
+			if !ok {
+				// OS stream closed cleanly; drain errs below.
+				return drainOSErrsOrReturn(osErrs, stale)
+			}
+			// Advance the connector cursor past any entries that
+			// sort before osID. Everything skipped here is either
+			// a doc that was never indexed (fine — it'll be
+			// indexed on this or a future run) or already covered
+			// by a matching OS id we handled earlier.
+			for ci < len(connectorIDs) && connectorIDs[ci] < osID {
+				ci++
+			}
+			if ci < len(connectorIDs) && connectorIDs[ci] == osID {
+				ci++
+				continue
+			}
+			if isChildOfKept(osID, keepSet) {
+				continue
+			}
+			stale = append(stale, osID)
+		case err := <-osErrs:
+			if err != nil {
+				return nil
+			}
+			// nil on errs means the stream closed without error;
+			// keep reading osItems until it closes too.
 		}
-		if isChildOfKept(sid, keep) {
-			// Preserved by the "colon-suffix children" convention —
-			// e.g. IMAP attachment `INBOX:42:attachment:0` when the
-			// parent email `INBOX:42` is in keep. Lets connectors
-			// declare parent-only source_ids and inherit child
-			// preservation without enumerating every child.
-			continue
+	}
+}
+
+// drainOSErrsOrReturn pulls any pending error off the OpenSearch
+// stream's error channel now that its items channel has closed.
+// Returns nil when an error surfaces (signalling "don't flush"), or
+// the stale slice on clean close.
+func drainOSErrsOrReturn(osErrs <-chan error, stale []string) []string {
+	for err := range osErrs {
+		if err != nil {
+			return nil
 		}
-		stale = append(stale, sid)
 	}
 	return stale
 }
@@ -365,7 +667,7 @@ func (p *Pipeline) cascadeBinaryDelete(ctx context.Context, sourceType, sourceNa
 
 // isChildOfKept reports whether sid is a colon-suffix child of any
 // source_id in keep — i.e. sid starts with `{k}:` for some k in keep.
-// Implements the convention documented on FetchResult.CurrentSourceIDs:
+// Implements the convention documented on FetchItem.SourceID:
 // connectors that emit parent-only identifiers (IMAP enumerates email
 // UIDs but not attachment indices) get their children preserved
 // automatically via the shared naming scheme.
@@ -420,3 +722,9 @@ func countAlphabeticTokens(text string) int {
 	}
 	return count
 }
+
+// ErrStreamClosed is returned when the pipeline attempts to read from a
+// closed connector stream. Currently unused — reserved for future error
+// paths that need to distinguish "stream ended cleanly" from "connector
+// emitted a terminal error".
+var ErrStreamClosed = errors.New("pipeline: connector stream closed")
