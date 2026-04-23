@@ -23,16 +23,20 @@ describe("useAnimatedNumber", () => {
     });
   });
 
-  it("snaps down immediately when the target regresses", () => {
+  it("snaps down to the regressed target on the next frame", async () => {
     // Regressions correspond to a pipeline-flush failure rolling
-    // back the optimistic processed bumps — animating a countdown
-    // would pretend work undid itself over time.
+    // back the optimistic processed bumps — the snap happens on
+    // the next rAF tick (lint prohibits synchronous setState in
+    // the effect body), which is sub-frame from a user's
+    // perspective.
     const { result, rerender } = renderHook(
       ({ target }) => useAnimatedNumber(target, 200),
       { initialProps: { target: 100 } },
     );
     rerender({ target: 80 });
-    expect(result.current).toBe(80);
+    await waitFor(() => {
+      expect(result.current).toBe(80);
+    });
   });
 
   it("stays put when the target doesn't change", async () => {

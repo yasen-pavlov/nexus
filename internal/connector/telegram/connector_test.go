@@ -275,10 +275,10 @@ func TestSetSession(t *testing.T) {
 func TestEstimateChatDocs_CountsWindowsAndDualEmissions(t *testing.T) {
 	windows := []model.Document{{}, {}, {}} // 3 window docs
 	msgs := []*tg.Message{
-		{Message: "hello"},                   // +1 per-message, 0 media
-		{Media: &tg.MessageMediaDocument{}},  // +1 per-message, +1 media
+		{Message: "hello"},                             // +1 per-message, 0 media
+		{Media: &tg.MessageMediaDocument{}},            // +1 per-message, +1 media
 		{Message: "x", Media: &tg.MessageMediaPhoto{}}, // +1 per-message, +1 media
-		{},                                   // shell msg: skipped
+		{}, // shell msg: skipped
 	}
 	got := estimateChatDocs(windows, msgs)
 	want := int64(3 + 3 + 2)
