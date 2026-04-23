@@ -220,7 +220,7 @@ func TestEmitItem_CtxCancelReturnsFalse(t *testing.T) {
 	ctx, cancel := newTestContextDone()
 	defer cancel()
 	sid := "x"
-	if ok := emitItem(ctx, items, model.FetchItem{SourceID: &sid}); ok {
+	if emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
 		t.Error("expected emitItem to return false on cancelled ctx")
 	}
 }
