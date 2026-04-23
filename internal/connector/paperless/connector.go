@@ -199,17 +199,8 @@ func (c *Connector) streamPaginatedDocs(ctx context.Context, cursor *model.SyncC
 		if err != nil {
 			return fmt.Errorf("paperless: fetch page: %w", err)
 		}
-		for _, pdoc := range page {
-			doc := c.toDocument(pdoc, tags, correspondents, docTypes)
-			if !emitItem(ctx, items, model.FetchItem{Doc: &doc}) {
-				return ctx.Err()
-			}
-			emitted++
-			if emitted%paperlessCheckpointEvery == 0 {
-				if !emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)}) {
-					return ctx.Err()
-				}
-			}
+		if !c.emitPage(ctx, page, tags, correspondents, docTypes, items, now, &emitted) {
+			return ctx.Err()
 		}
 		fetchURL = nextURL
 	}
@@ -218,6 +209,25 @@ func (c *Connector) streamPaginatedDocs(ctx context.Context, cursor *model.SyncC
 	// boundary.
 	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)})
 	return nil
+}
+
+// emitPage fans out a single page of paperless docs to the items
+// channel, emitting periodic checkpoints. Returns false when the
+// context was cancelled mid-page.
+func (c *Connector) emitPage(ctx context.Context, page []paperlessDoc, tags, correspondents, docTypes map[int]string, items chan<- model.FetchItem, now time.Time, emitted *int) bool {
+	for _, pdoc := range page {
+		doc := c.toDocument(pdoc, tags, correspondents, docTypes)
+		if !emitItem(ctx, items, model.FetchItem{Doc: &doc}) {
+			return false
+		}
+		*emitted++
+		if *emitted%paperlessCheckpointEvery == 0 {
+			if !emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)}) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // initialDocsURL builds the first-page URL for the incremental

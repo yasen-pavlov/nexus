@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -48,5 +49,18 @@ func TestResolveSinceDate_CursorWithoutLastMessageDate(t *testing.T) {
 	cursor := &model.SyncCursor{CursorData: map[string]any{"other": "x"}}
 	if got := c.resolveSinceDate(cursor); got != 0 {
 		t.Errorf("expected 0, got %d", got)
+	}
+}
+
+// TestEmitItem_CtxCancelReturnsFalse covers the cancelled-ctx
+// branch of the connector-local emitItem helper. An unbuffered
+// channel with no receiver forces the select onto the Done case.
+func TestEmitItem_CtxCancelReturnsFalse(t *testing.T) {
+	items := make(chan model.FetchItem)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sid := "x"
+	if ok := emitItem(ctx, items, model.FetchItem{SourceID: &sid}); ok {
+		t.Error("expected emitItem to return false on cancelled ctx")
 	}
 }

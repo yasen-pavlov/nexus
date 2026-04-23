@@ -65,3 +65,19 @@ func TestInitialDocsURL_CursorWithoutLastSyncTime(t *testing.T) {
 		t.Errorf("expected no filter, got %q", u.Query().Get("modified__gt"))
 	}
 }
+
+// TestNewPaperlessCursor stamps the provided time into both
+// last_sync_time and LastSync, and marks the run successful.
+func TestNewPaperlessCursor(t *testing.T) {
+	ts := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	cur := newPaperlessCursor(ts)
+	if got, _ := cur.CursorData["last_sync_time"].(string); got != ts.Format(time.RFC3339Nano) {
+		t.Errorf("last_sync_time = %q, want %q", got, ts.Format(time.RFC3339Nano))
+	}
+	if !cur.LastSync.Equal(ts) {
+		t.Errorf("LastSync = %v, want %v", cur.LastSync, ts)
+	}
+	if cur.LastStatus != "success" {
+		t.Errorf("LastStatus = %q, want success", cur.LastStatus)
+	}
+}

@@ -1,11 +1,20 @@
 package imap
 
 import (
+	"context"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/muty/nexus/internal/model"
 )
+
+// newTestContextDone returns a context that's already been
+// cancelled, plus its cancel function for defer.
+func newTestContextDone() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx, cancel
+}
 
 // TestBuildEmailRelations_ReplyAndThreadRootDiffer covers the
 // primary case: InReplyTo names the direct parent, but a
@@ -157,5 +166,61 @@ func TestWriteFolderCursor_OmitsModSeqOnNonCondStoreServer(t *testing.T) {
 		condStoreState{newUIDValidity: 7, newHighestModSeq: 0}, imap.UID(100))
 	if _, has := cursorData["modseq:INBOX"]; has {
 		t.Errorf("modseq should be absent when HighestModSeq=0, got %v", cursorData["modseq:INBOX"])
+	}
+}
+
+// TestBuildDeltaCriteria_CondStoreDelta covers the O(delta)
+// CONDSTORE path — when both cached and server HighestModSeq are
+// non-zero, we ask for "UIDs changed since cachedModSeq" and
+// layer ChangedSince onto the FETCH options.
+func TestBuildDeltaCriteria_CondStoreDelta(t *testing.T) {
+	c := &Connector{}
+	criteria, opts := c.buildDeltaCriteria(nil, "INBOX", 50, 100)
+	if criteria.ModSeq == nil || criteria.ModSeq.ModSeq != 50 {
+		t.Errorf("expected ModSeq=50, got %+v", criteria.ModSeq)
+	}
+	if opts.ChangedSince != 50 {
+		t.Errorf("ChangedSince = %d, want 50", opts.ChangedSince)
+	}
+}
+
+// TestBuildDeltaCriteria_FallsBackToUIDRange: when the server
+// doesn't speak CONDSTORE (HighestModSeq == 0), we use the
+// UID-range heuristic — UID > lastUID from the cursor.
+func TestBuildDeltaCriteria_FallsBackToUIDRange(t *testing.T) {
+	c := &Connector{}
+	cursor := &model.SyncCursor{CursorData: map[string]any{"uid:INBOX": float64(42)}}
+	criteria, _ := c.buildDeltaCriteria(cursor, "INBOX", 0, 0)
+	if criteria.ModSeq != nil {
+		t.Errorf("expected no ModSeq in fallback path, got %+v", criteria.ModSeq)
+	}
+	if len(criteria.UID) == 0 {
+		t.Errorf("expected UID range criterion, got %+v", criteria)
+	}
+}
+
+// TestBuildDeltaCriteria_NoCachedModSeqFallsBack: cached ModSeq=0
+// (first sync with CONDSTORE server) means we can't compute a
+// delta — fall back to UID-range just like the no-CONDSTORE case.
+func TestBuildDeltaCriteria_NoCachedModSeqFallsBack(t *testing.T) {
+	c := &Connector{}
+	criteria, opts := c.buildDeltaCriteria(nil, "INBOX", 0, 200)
+	if criteria.ModSeq != nil {
+		t.Errorf("first sync shouldn't use MODSEQ criterion, got %+v", criteria.ModSeq)
+	}
+	if opts.ChangedSince != 0 {
+		t.Errorf("first sync shouldn't set ChangedSince, got %d", opts.ChangedSince)
+	}
+}
+
+// TestEmitItem_CtxCancelReturnsFalse covers the cancelled-select
+// branch of the connector-local emitItem helper.
+func TestEmitItem_CtxCancelReturnsFalse(t *testing.T) {
+	items := make(chan model.FetchItem) // unbuffered, no receiver
+	ctx, cancel := newTestContextDone()
+	defer cancel()
+	sid := "x"
+	if ok := emitItem(ctx, items, model.FetchItem{SourceID: &sid}); ok {
+		t.Error("expected emitItem to return false on cancelled ctx")
 	}
 }
