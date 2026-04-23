@@ -38,9 +38,7 @@ export function useAnimatedNumber(target: number, speed = 300): number {
     let current = displayed;
 
     const tick = (ts: number) => {
-      if (last === null) {
-        last = ts;
-      }
+      last ??= ts;
       const dt = (ts - last) / 1000;
       last = ts;
 

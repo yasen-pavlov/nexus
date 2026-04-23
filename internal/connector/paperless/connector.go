@@ -117,67 +117,78 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan
 	return items, errs
 }
 
-// streamFetch implements the goroutine body of Fetch. Returns an error
-// to surface via the errs channel or nil on clean completion. All
-// emissions are ctx-aware: a cancelled context short-circuits the loop
-// and returns ctx.Err().
+// streamFetch is the goroutine body of Fetch. Returns an error to
+// surface via the errs channel or nil on clean completion. All
+// emissions are ctx-aware: a cancelled context short-circuits the
+// loop and returns ctx.Err(). The work splits into three sequential
+// phases — lookup fetch, SourceID enumeration, doc pagination — each
+// extracted to its own helper so this function stays readable.
 func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
-	tags, err := c.fetchLookup(ctx, "/api/tags/")
+	tags, correspondents, docTypes, err := c.fetchLookupTables(ctx)
 	if err != nil {
-		return fmt.Errorf("paperless: fetch tags: %w", err)
+		return err
 	}
-	correspondents, err := c.fetchLookup(ctx, "/api/correspondents/")
-	if err != nil {
-		return fmt.Errorf("paperless: fetch correspondents: %w", err)
+	if err := c.emitEnumeration(ctx, items); err != nil {
+		return err
 	}
-	docTypes, err := c.fetchLookup(ctx, "/api/document_types/")
-	if err != nil {
-		return fmt.Errorf("paperless: fetch document types: %w", err)
-	}
+	return c.streamPaginatedDocs(ctx, cursor, tags, correspondents, docTypes, items)
+}
 
+// fetchLookupTables pulls the three Paperless lookup endpoints the
+// toDocument pass needs (tags, correspondents, document_types).
+// Any 4xx/5xx on any of them aborts the sync — without these
+// lookups we'd emit opaque numeric IDs instead of human labels.
+func (c *Connector) fetchLookupTables(ctx context.Context) (tags, correspondents, docTypes map[int]string, err error) {
+	tags, err = c.fetchLookup(ctx, "/api/tags/")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("paperless: fetch tags: %w", err)
+	}
+	correspondents, err = c.fetchLookup(ctx, "/api/correspondents/")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("paperless: fetch correspondents: %w", err)
+	}
+	docTypes, err = c.fetchLookup(ctx, "/api/document_types/")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("paperless: fetch document types: %w", err)
+	}
+	return tags, correspondents, docTypes, nil
+}
+
+// emitEnumeration streams every indexed Paperless doc ID as a
+// SourceID item, sorted lex so the pipeline's merge-diff sees them
+// in OpenSearch keyword-sort order. Enumeration failure is NOT
+// fatal: we opt out of reconciliation for this run (no SourceIDs,
+// no EnumerationComplete) but let the incremental fetch still
+// index whatever is new.
+func (c *Connector) emitEnumeration(ctx context.Context, items chan<- model.FetchItem) error {
 	ids, err := c.enumerateAllIDs(ctx)
 	if err != nil {
-		// Enumeration errored — opt out of deletion reconciliation
-		// for this run, but still try to stream the incremental docs
-		// so indexing at least stays current. Pipeline treats
-		// zero SourceID emissions (and no EnumerationComplete) as
-		// "skip reconcile".
 		c.logEnumerationFailure(err)
-	} else {
-		sort.Strings(ids)
-		for i := range ids {
-			sid := ids[i]
-			if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
-				return ctx.Err()
-			}
-		}
-		// Signal the SourceID stream was authoritative so
-		// reconciliation runs even on an empty-upstream sync.
-		if !emitItem(ctx, items, model.FetchItem{EnumerationComplete: true}) {
+		return nil
+	}
+	sort.Strings(ids)
+	for i := range ids {
+		sid := ids[i]
+		if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
 			return ctx.Err()
 		}
 	}
-
-	// Announce an estimated total once enumeration is complete — the
-	// UI gets an honest denominator as soon as the IDs list is known,
-	// without waiting for the first page of doc bodies.
+	if !emitItem(ctx, items, model.FetchItem{EnumerationComplete: true}) {
+		return ctx.Err()
+	}
 	if len(ids) > 0 {
 		estimate := int64(len(ids))
 		_ = emitItem(ctx, items, model.FetchItem{EstimatedTotal: &estimate})
 	}
+	return nil
+}
 
-	params := url.Values{}
-	params.Set("ordering", "modified")
-	params.Set("page_size", "100")
-	if cursor != nil {
-		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
-			params.Set("modified__gt", ts)
-		}
-	} else if !c.syncSince.IsZero() {
-		params.Set("modified__gt", c.syncSince.Format(time.RFC3339))
-	}
-
-	fetchURL := c.baseURL + "/api/documents/?" + params.Encode()
+// streamPaginatedDocs walks the `/api/documents/?modified__gt=...`
+// pagination, emitting each doc as a FetchItem and a Checkpoint
+// every paperlessCheckpointEvery docs so a cancel loses at most
+// that many docs of re-fetch work.
+func (c *Connector) streamPaginatedDocs(ctx context.Context, cursor *model.SyncCursor, tags, correspondents, docTypes map[int]string, items chan<- model.FetchItem) error {
+	fetchURL := c.initialDocsURL(cursor)
 	now := time.Now()
 	emitted := 0
 	for fetchURL != "" {
@@ -202,11 +213,28 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 		}
 		fetchURL = nextURL
 	}
-
-	// Final checkpoint so last_sync_time advances even when the delta
-	// was empty or didn't land exactly on an every-N boundary.
+	// Final checkpoint so last_sync_time advances even when the
+	// delta was empty or didn't land exactly on an every-N
+	// boundary.
 	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)})
 	return nil
+}
+
+// initialDocsURL builds the first-page URL for the incremental
+// docs fetch, layering in `modified__gt` from either the persisted
+// cursor or the connector's syncSince cutoff.
+func (c *Connector) initialDocsURL(cursor *model.SyncCursor) string {
+	params := url.Values{}
+	params.Set("ordering", "modified")
+	params.Set("page_size", "100")
+	if cursor != nil {
+		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
+			params.Set("modified__gt", ts)
+		}
+	} else if !c.syncSince.IsZero() {
+		params.Set("modified__gt", c.syncSince.Format(time.RFC3339))
+	}
+	return c.baseURL + "/api/documents/?" + params.Encode()
 }
 
 // logEnumerationFailure is extracted to a method so future refactors

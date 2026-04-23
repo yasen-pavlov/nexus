@@ -261,15 +261,7 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 // advances its upper bound (the delta is handled implicitly via
 // sinceDate, not via per-message cursors).
 func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor, selfID int64, items chan<- model.FetchItem) error {
-	var sinceDate int
-	if cursor != nil {
-		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
-			sinceDate = int(ts)
-		}
-	} else if !c.syncSince.IsZero() {
-		sinceDate = int(c.syncSince.Unix())
-	}
-
+	sinceDate := c.resolveSinceDate(cursor)
 	dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
 		OffsetPeer: &tg.InputPeerEmpty{},
 		Limit:      100,
@@ -297,8 +289,40 @@ func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl media
 	// EstimatedTotal so the pipeline has a real denominator.
 	var totalEstimate int64
 
-	// Group chats & channels — dmPeerID=0 because the sender is
-	// always explicit via m.FromID in multi-user rooms.
+	if err := c.streamGroupChats(ctx, api, dl, chats, userMap, selfID, sinceDate, &totalEstimate, cursorTemplate, items); err != nil {
+		return err
+	}
+	if err := c.streamPrivateChats(ctx, api, dl, users, userMap, selfID, sinceDate, &totalEstimate, cursorTemplate, items); err != nil {
+		return err
+	}
+	// Clear the scope at end-of-run so later progress frames
+	// don't leave the last chat name lingering in the UI.
+	empty := ""
+	_ = emitItem(ctx, items, model.FetchItem{Scope: &empty})
+	return nil
+}
+
+// resolveSinceDate picks the lower-bound epoch seconds for history
+// pagination. The persisted cursor's last_message_date wins when
+// present; otherwise the connector's syncSince cutoff applies; zero
+// means "no bound, paginate all history" (first run of a fresh
+// connector with no syncSince).
+func (c *Connector) resolveSinceDate(cursor *model.SyncCursor) int {
+	if cursor != nil {
+		if ts, ok := cursor.CursorData["last_message_date"].(float64); ok {
+			return int(ts)
+		}
+	}
+	if !c.syncSince.IsZero() {
+		return int(c.syncSince.Unix())
+	}
+	return 0
+}
+
+// streamGroupChats emits docs for every group chat / channel in
+// the dialog roster. dmPeerID=0 because the sender is always
+// explicit via m.FromID in multi-user rooms.
+func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, cursorTemplate func() *model.SyncCursor, items chan<- model.FetchItem) error {
 	for _, chat := range chats {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -316,7 +340,7 @@ func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl media
 		if !emitItem(ctx, items, model.FetchItem{Scope: &scope}) {
 			return ctx.Err()
 		}
-		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate, &totalEstimate, items); err != nil {
+		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate, totalEstimate, items); err != nil {
 			// Best-effort: one chat's pagination failing
 			// shouldn't halt the whole sync.
 			continue
@@ -325,11 +349,15 @@ func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl media
 			return ctx.Err()
 		}
 	}
+	return nil
+}
 
-	// Private chats — every message is between two knowable users, so
-	// we pass u.ID as dmPeerID. The connector uses that to attribute
-	// m.Out=false messages to the peer when FromID is nil (the common
-	// case in Telegram DMs).
+// streamPrivateChats emits docs for every DM peer in the dialog
+// roster. We pass u.ID as dmPeerID because every message is
+// between two knowable users — that lets makeMessageDoc attribute
+// m.Out=false messages to the peer when FromID is nil (the common
+// case in Telegram DMs).
+func (c *Connector) streamPrivateChats(ctx context.Context, api telegramAPI, dl mediaDownloader, users []tg.UserClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, cursorTemplate func() *model.SyncCursor, items chan<- model.FetchItem) error {
 	for _, user := range users {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -349,17 +377,13 @@ func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl media
 		if !emitItem(ctx, items, model.FetchItem{Scope: &scope}) {
 			return ctx.Err()
 		}
-		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate, &totalEstimate, items); err != nil {
+		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate, totalEstimate, items); err != nil {
 			continue
 		}
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()}) {
 			return ctx.Err()
 		}
 	}
-	// Clear the scope at end-of-run so later progress frames
-	// don't leave the last chat name lingering in the UI.
-	empty := ""
-	_ = emitItem(ctx, items, model.FetchItem{Scope: &empty})
 	return nil
 }
 

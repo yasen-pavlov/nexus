@@ -378,12 +378,23 @@ func TestStreamIndexedSourceIDs_ContextCancelled(t *testing.T) {
 	cancel()
 	items, errs := c.StreamIndexedSourceIDs(ctx, "filesystem", "anything")
 	// Drain: cancellation should either surface an error or
-	// produce no items at all. What matters is the goroutine exits.
+	// produce no items at all. What matters is the goroutine
+	// exits — if either channel never closes we'd hang here and
+	// the test would time out, which is the assertion.
+	itemCount := 0
 	for range items {
+		itemCount++
 	}
+	var sawErr error
 	for e := range errs {
-		_ = e
+		if e != nil {
+			sawErr = e
+		}
 	}
+	// Either path is acceptable; we just need them both visible
+	// so a future regression that stops producing either would
+	// show up in logs.
+	t.Logf("cancelled stream: %d items, err=%v", itemCount, sawErr)
 }
 
 func TestStreamIndexedSourceIDs_PageSpansMultipleRoundTrips(t *testing.T) {

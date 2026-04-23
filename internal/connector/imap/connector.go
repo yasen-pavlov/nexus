@@ -25,6 +25,15 @@ import (
 // amortize server round-trips. 100 is a pragmatic middle.
 const imapBodyFetchBatch = 100
 
+// Per-folder cursor-data key prefixes. Concatenated with the folder
+// name at runtime (e.g. "uid:INBOX"). Kept as constants so a typo
+// in one use site can't silently split the cursor map.
+const (
+	cursorKeyUID         = "uid:"
+	cursorKeyUIDValidity = "uidvalidity:"
+	cursorKeyModSeq      = "modseq:"
+)
+
 // mailboxClient abstracts IMAP operations for testability.
 type mailboxClient interface {
 	// SelectFolder selects a mailbox. Returned SelectData carries
@@ -354,58 +363,25 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 		return 0, fmt.Errorf("select: %w", err)
 	}
 
-	cachedUIDValidity := cursorUIDValidityForFolder(cursor, folder)
-	cachedModSeq := cursorModSeqForFolder(cursor, folder)
-	newUIDValidity := sel.UIDValidity
-	newHighestModSeq := sel.HighestModSeq
+	st := resolveCondStoreState(cursor, folder, sel)
 
-	// RFC 7162 §5: a UIDVALIDITY change invalidates every cached
-	// MODSEQ value. Drop cachedModSeq so the fallback UID-range
-	// path (or a full MODSEQ=0 search) runs from scratch.
-	if cachedUIDValidity != 0 && cachedUIDValidity != newUIDValidity {
-		cachedModSeq = 0
-	}
-
-	// Full UID enumeration always runs, even when CONDSTORE says
-	// nothing has changed in this folder. The pipeline's merge-diff
-	// compares a globally-sorted SourceID stream against OpenSearch,
-	// so omitting one folder's IDs would make every indexed doc
-	// from that folder look stale the moment ANY other folder
-	// emits SourceIDs. A fast-skip that short-circuits the SEARCH
-	// ALL would therefore cause mass deletions on recurring syncs.
-	// Enumeration is a single cheap IMAP round-trip regardless of
-	// folder size; the CONDSTORE win lives in the body-fetch path
-	// below, not in the enumeration.
-	allUIDs, err := mbc.SearchUIDs(&imap.SearchCriteria{})
-	if err != nil {
-		return 0, fmt.Errorf("search all: %w", err)
-	}
-	sourceIDs := make([]string, len(allUIDs))
-	for i, uid := range allUIDs {
-		sourceIDs[i] = fmt.Sprintf("%s:%d", folder, uid)
-	}
-	sort.Strings(sourceIDs)
-	for i := range sourceIDs {
-		sid := sourceIDs[i]
-		if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
-			return 0, ctx.Err()
-		}
+	if err := c.emitFolderEnumeration(ctx, mbc, folder, items); err != nil {
+		return 0, err
 	}
 
 	// CONDSTORE fast-skip on the body-fetch path: if HighestModSeq
 	// hasn't advanced since last sync, there's nothing new to fetch.
 	// Persist the cursor to keep carrying the value forward and
 	// move on without running the delta SEARCH or any body FETCH.
-	if newHighestModSeq > 0 && cachedModSeq == newHighestModSeq && cachedUIDValidity == newUIDValidity {
-		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
-		cursorData["modseq:"+folder] = float64(newHighestModSeq)
+	if st.unchanged() {
+		writeFolderCursor(cursorData, folder, st, cursorUIDForFolder(cursor, folder))
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return 0, ctx.Err()
 		}
 		return 0, nil
 	}
 
-	criteria, fetchOpts := c.buildDeltaCriteria(cursor, folder, cachedModSeq, newHighestModSeq)
+	criteria, fetchOpts := c.buildDeltaCriteria(cursor, folder, st.cachedModSeq, st.newHighestModSeq)
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
 		return 0, fmt.Errorf("search: %w", err)
@@ -420,20 +396,48 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 	}
 
 	if len(uids) == 0 {
-		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
-		if newHighestModSeq > 0 {
-			cursorData["modseq:"+folder] = float64(newHighestModSeq)
-		}
-		cursorData["uid:"+folder] = float64(cursorUIDForFolder(cursor, folder))
+		writeFolderCursor(cursorData, folder, st, cursorUIDForFolder(cursor, folder))
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return 0, ctx.Err()
 		}
 		return 0, nil
 	}
 
+	return c.streamFolderBodies(ctx, mbc, folder, cursor, cursorData, startedAt, st, uids, fetchOpts, items)
+}
+
+// emitFolderEnumeration runs SEARCH ALL and streams every UID as a
+// lex-sorted SourceID item. Always runs — even when CONDSTORE says
+// nothing has changed in this folder — so the pipeline's merge-diff
+// compares a globally-sorted stream against OpenSearch. Omitting one
+// folder's IDs would make every indexed doc from that folder look
+// stale the moment any OTHER folder emits SourceIDs.
+func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient, folder string, items chan<- model.FetchItem) error {
+	allUIDs, err := mbc.SearchUIDs(&imap.SearchCriteria{})
+	if err != nil {
+		return fmt.Errorf("search all: %w", err)
+	}
+	sourceIDs := make([]string, len(allUIDs))
+	for i, uid := range allUIDs {
+		sourceIDs[i] = fmt.Sprintf("%s:%d", folder, uid)
+	}
+	sort.Strings(sourceIDs)
+	for i := range sourceIDs {
+		sid := sourceIDs[i]
+		if !emitItem(ctx, items, model.FetchItem{SourceID: &sid}) {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// streamFolderBodies iterates the delta UIDs in
+// imapBodyFetchBatch-sized windows, streaming per-message docs as
+// the server returns them and checkpointing after each batch so a
+// mid-folder cancel only loses one batch of re-fetch work.
+func (c *Connector) streamFolderBodies(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor, cursorData map[string]any, startedAt time.Time, st condStoreState, uids []imap.UID, fetchOpts *imap.FetchOptions, items chan<- model.FetchItem) (int, error) {
 	processed := 0
 	maxUID := cursorUIDForFolder(cursor, folder)
-	sinceBatchStart := 0
 	for i := 0; i < len(uids); i += imapBodyFetchBatch {
 		if ctx.Err() != nil {
 			return processed, ctx.Err()
@@ -448,41 +452,94 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 		// docs as they arrive lets the pipeline's progress bar
 		// advance mid-batch instead of looking stuck at 0 for the
 		// whole batch duration.
-		emitErr := mbc.FetchMessages(batch, fetchOpts, func(msg *imapclient.FetchMessageBuffer) bool {
-			if ctx.Err() != nil {
-				return false
-			}
-			if msg.UID > maxUID {
-				maxUID = msg.UID
-			}
-			docs := c.messageToDocuments(msg, folder)
-			for k := range docs {
-				if !emitItem(ctx, items, model.FetchItem{Doc: &docs[k]}) {
-					return false
-				}
-			}
-			processed++
-			sinceBatchStart++
-			return true
-		})
-		if emitErr != nil {
-			return processed, fmt.Errorf("fetch: %w", emitErr)
+		batchProcessed, err := c.streamFolderBatch(ctx, mbc, folder, batch, fetchOpts, &maxUID, items)
+		processed += batchProcessed
+		if err != nil {
+			return processed, err
 		}
 		if ctx.Err() != nil {
 			return processed, ctx.Err()
 		}
-		cursorData["uidvalidity:"+folder] = float64(newUIDValidity)
-		if newHighestModSeq > 0 {
-			cursorData["modseq:"+folder] = float64(newHighestModSeq)
-		}
-		cursorData["uid:"+folder] = float64(maxUID)
+		writeFolderCursor(cursorData, folder, st, maxUID)
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return processed, ctx.Err()
 		}
-		sinceBatchStart = 0
 	}
-	_ = sinceBatchStart // retained for future per-message checkpointing
 	return processed, nil
+}
+
+// streamFolderBatch drives one FETCH round-trip, yielding per-
+// message. Caller advances maxUID via the shared pointer.
+func (c *Connector) streamFolderBatch(ctx context.Context, mbc mailboxClient, folder string, uids []imap.UID, fetchOpts *imap.FetchOptions, maxUID *imap.UID, items chan<- model.FetchItem) (int, error) {
+	processed := 0
+	emitErr := mbc.FetchMessages(uids, fetchOpts, func(msg *imapclient.FetchMessageBuffer) bool {
+		if ctx.Err() != nil {
+			return false
+		}
+		if msg.UID > *maxUID {
+			*maxUID = msg.UID
+		}
+		docs := c.messageToDocuments(msg, folder)
+		for k := range docs {
+			if !emitItem(ctx, items, model.FetchItem{Doc: &docs[k]}) {
+				return false
+			}
+		}
+		processed++
+		return true
+	})
+	if emitErr != nil {
+		return processed, fmt.Errorf("fetch: %w", emitErr)
+	}
+	return processed, nil
+}
+
+// condStoreState bundles the cached + server-reported CONDSTORE
+// values for a folder so we can pass them around as a value and
+// keep streamFolder's signature sane.
+type condStoreState struct {
+	cachedUIDValidity uint32
+	cachedModSeq      uint64
+	newUIDValidity    uint32
+	newHighestModSeq  uint64
+}
+
+// unchanged reports whether the folder can be body-fetch-skipped:
+// the server advertises CONDSTORE (HighestModSeq > 0), our cached
+// HighestModSeq matches, and UIDVALIDITY didn't rotate.
+func (s condStoreState) unchanged() bool {
+	return s.newHighestModSeq > 0 &&
+		s.cachedModSeq == s.newHighestModSeq &&
+		s.cachedUIDValidity == s.newUIDValidity
+}
+
+// resolveCondStoreState reads the cursor's cached values and
+// applies RFC 7162 §5: a UIDVALIDITY change invalidates every
+// cached MODSEQ value, so we drop cachedModSeq and force a full
+// re-fetch from scratch.
+func resolveCondStoreState(cursor *model.SyncCursor, folder string, sel *imap.SelectData) condStoreState {
+	s := condStoreState{
+		cachedUIDValidity: cursorUIDValidityForFolder(cursor, folder),
+		cachedModSeq:      cursorModSeqForFolder(cursor, folder),
+		newUIDValidity:    sel.UIDValidity,
+		newHighestModSeq:  sel.HighestModSeq,
+	}
+	if s.cachedUIDValidity != 0 && s.cachedUIDValidity != s.newUIDValidity {
+		s.cachedModSeq = 0
+	}
+	return s
+}
+
+// writeFolderCursor centralises the per-folder cursor write so the
+// "uid:" / "uidvalidity:" / "modseq:" keys stay in sync. modseq is
+// omitted when the server doesn't advertise CONDSTORE (ModSeq == 0)
+// so we don't accidentally pin a zero value into the map.
+func writeFolderCursor(cursorData map[string]any, folder string, st condStoreState, uid imap.UID) {
+	cursorData[cursorKeyUIDValidity+folder] = float64(st.newUIDValidity)
+	if st.newHighestModSeq > 0 {
+		cursorData[cursorKeyModSeq+folder] = float64(st.newHighestModSeq)
+	}
+	cursorData[cursorKeyUID+folder] = float64(uid)
 }
 
 // buildDeltaCriteria chooses the SEARCH criteria + FETCH options for
@@ -510,7 +567,7 @@ func cursorUIDValidityForFolder(cursor *model.SyncCursor, folder string) uint32 
 	if cursor == nil {
 		return 0
 	}
-	v, ok := cursor.CursorData["uidvalidity:"+folder].(float64)
+	v, ok := cursor.CursorData[cursorKeyUIDValidity+folder].(float64)
 	if !ok {
 		return 0
 	}
@@ -525,7 +582,7 @@ func cursorModSeqForFolder(cursor *model.SyncCursor, folder string) uint64 {
 	if cursor == nil {
 		return 0
 	}
-	v, ok := cursor.CursorData["modseq:"+folder].(float64)
+	v, ok := cursor.CursorData[cursorKeyModSeq+folder].(float64)
 	if !ok {
 		return 0
 	}
@@ -554,7 +611,7 @@ func cursorUIDForFolder(cursor *model.SyncCursor, folder string) imap.UID {
 	if cursor == nil {
 		return 0
 	}
-	uidVal, ok := cursor.CursorData["uid:"+folder].(float64)
+	uidVal, ok := cursor.CursorData[cursorKeyUID+folder].(float64)
 	if !ok {
 		return 0
 	}

@@ -100,68 +100,86 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan
 	go func() {
 		defer close(items)
 		defer close(errs)
-
-		lastSync := resolveFilesystemCursor(cursor, c.syncSince)
-		seen := 0
-		now := time.Now()
-
-		emit := func(item model.FetchItem) bool {
-			select {
-			case items <- item:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+		if err := c.streamWalk(ctx, cursor, items); err != nil {
+			errs <- err
 		}
-
-		walkErr := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
-			if relPath != "" {
-				sid := relPath
-				if !emit(model.FetchItem{SourceID: &sid}) {
-					return ctx.Err()
-				}
-				seen++
-			}
-			if ok {
-				if !emit(model.FetchItem{Doc: &doc}) {
-					return ctx.Err()
-				}
-			}
-			if seen > 0 && seen%filesystemCheckpointEvery == 0 {
-				cp := newFilesystemCursor(now)
-				if !emit(model.FetchItem{Checkpoint: cp}) {
-					return ctx.Err()
-				}
-			}
-			return nil
-		})
-
-		if walkErr != nil {
-			errs <- fmt.Errorf("filesystem: walk: %w", walkErr)
-			return
-		}
-
-		// Signal that the SourceID stream was authoritative. Empty
-		// directories (zero SourceID emissions) rely on this to wipe
-		// any leftover index entries rather than being treated as
-		// "opted out of reconciliation."
-		_ = emit(model.FetchItem{EnumerationComplete: true})
-		// Final checkpoint so the pipeline persists last_sync_time
-		// even on a walk that happened to land exactly on an
-		// every-N boundary (or a walk with < filesystemCheckpointEvery
-		// files).
-		_ = emit(model.FetchItem{Checkpoint: newFilesystemCursor(now)})
 	}()
 
 	return items, errs
+}
+
+// streamWalk does the single WalkDir pass, emitting SourceID / Doc /
+// Checkpoint items via the provided channel. Extracted from Fetch so
+// each piece of the walk — entry classification, periodic
+// checkpoint, terminal markers — is its own tightly-scoped helper.
+func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
+	lastSync := resolveFilesystemCursor(cursor, c.syncSince)
+	now := time.Now()
+	seen := 0
+
+	walkErr := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return c.emitWalkEntry(ctx, path, d, lastSync, now, &seen, items)
+	})
+	if walkErr != nil {
+		return fmt.Errorf("filesystem: walk: %w", walkErr)
+	}
+
+	// Signal that the SourceID stream was authoritative. Empty
+	// directories (zero SourceID emissions) rely on this to wipe
+	// any leftover index entries rather than being treated as
+	// "opted out of reconciliation."
+	_ = fsEmit(ctx, items, model.FetchItem{EnumerationComplete: true})
+	// Final checkpoint so the pipeline persists last_sync_time
+	// even on a walk that happened to land exactly on an
+	// every-N boundary (or a walk with < filesystemCheckpointEvery
+	// files).
+	_ = fsEmit(ctx, items, model.FetchItem{Checkpoint: newFilesystemCursor(now)})
+	return nil
+}
+
+// emitWalkEntry runs the per-file emission sequence: SourceID
+// (always when the file matches the pattern), Doc (when the file's
+// content is fresh relative to lastSync), and a periodic Checkpoint
+// on every N-th emission. seen is incremented via pointer so the
+// checkpoint cadence survives across WalkDir callback invocations.
+func (c *Connector) emitWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync, startedAt time.Time, seen *int, items chan<- model.FetchItem) error {
+	doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
+	if relPath != "" {
+		sid := relPath
+		if !fsEmit(ctx, items, model.FetchItem{SourceID: &sid}) {
+			return ctx.Err()
+		}
+		*seen++
+	}
+	if ok {
+		if !fsEmit(ctx, items, model.FetchItem{Doc: &doc}) {
+			return ctx.Err()
+		}
+	}
+	if *seen > 0 && *seen%filesystemCheckpointEvery == 0 {
+		if !fsEmit(ctx, items, model.FetchItem{Checkpoint: newFilesystemCursor(startedAt)}) {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// fsEmit sends an item on items, respecting context cancellation.
+// Matches the emitItem helper in the other connectors so cancellation
+// semantics stay uniform across the codebase.
+func fsEmit(ctx context.Context, items chan<- model.FetchItem, item model.FetchItem) bool {
+	select {
+	case items <- item:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // newFilesystemCursor builds a cursor payload with the run's start
