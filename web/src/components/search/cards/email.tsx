@@ -276,11 +276,13 @@ export function EmailCardBody({
 
       <MetaRow
         items={[
-          showFolder && {
-            key: "folder",
-            icon: Folder,
-            label: folder!,
-          },
+          showFolder && folder
+            ? {
+                key: "folder",
+                icon: Folder,
+                label: folder,
+              }
+            : false,
         ]}
       />
     </div>

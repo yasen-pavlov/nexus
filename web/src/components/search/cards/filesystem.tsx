@@ -55,11 +55,11 @@ function formatRelativeTime(iso: string): string {
     if (days === 1) return "yesterday";
     if (days < 7) return `${days}d ago`;
     if (days < 30) return `${Math.round(days / 7)}w ago`;
+    const sameYear = d.getFullYear() === new Date().getFullYear();
     return d.toLocaleDateString(undefined, {
       month: "short",
       day: "numeric",
-      year:
-        d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
+      year: sameYear ? undefined : "numeric",
     });
   } catch {
     return iso;

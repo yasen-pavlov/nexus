@@ -48,29 +48,47 @@ function extOf(name: string | undefined): string {
   return i > 0 ? name.slice(i + 1) : "";
 }
 
+// Exact-match table. Simple lookup kept separate from the fuzzy
+// substring/prefix rules below so the happy path stays one branch.
+const MIME_EXACT: Record<string, string> = {
+  "application/pdf": "PDF",
+  "application/zip": "ZIP",
+  "application/gzip": "GZIP",
+  "application/x-7z-compressed": "7Z",
+  "application/x-tar": "TAR",
+  "application/json": "JSON",
+  "application/xml": "XML",
+  "application/msword": "DOC",
+  "application/vnd.ms-excel": "XLS",
+  "application/vnd.ms-powerpoint": "PPT",
+  "text/plain": "TEXT",
+  "text/csv": "CSV",
+  "text/html": "HTML",
+  "text/markdown": "MD",
+};
+
+// Prefix/substring rules. Order matters — images/audio/video are
+// prefix matches, Office substrings are substring matches.
+const MIME_FUZZY: ReadonlyArray<{ test: (m: string) => boolean; label: string | ((m: string) => string) }> = [
+  { test: (m) => m.startsWith("image/"), label: (m) => m.slice(6).toUpperCase() },
+  { test: (m) => m.startsWith("audio/"), label: "AUDIO" },
+  { test: (m) => m.startsWith("video/"), label: "VIDEO" },
+  { test: (m) => m.includes("wordprocessingml"), label: "DOC" },
+  { test: (m) => m.includes("spreadsheetml"), label: "XLS" },
+  { test: (m) => m.includes("presentationml"), label: "PPT" },
+];
+
 // Short display label for the tile stamp. Falls back to the filename
 // extension when mime is generic (octet-stream is a common Tika miscast).
 function mimeStamp(mime: string | undefined, fallbackExt: string): string {
   const m = (mime ?? "").toLowerCase();
-  if (m === "application/pdf") return "PDF";
-  if (m.startsWith("image/")) return m.slice(6).toUpperCase();
-  if (m.startsWith("audio/")) return "AUDIO";
-  if (m.startsWith("video/")) return "VIDEO";
-  if (m === "application/zip") return "ZIP";
-  if (m === "application/gzip") return "GZIP";
-  if (m === "application/x-7z-compressed") return "7Z";
-  if (m === "application/x-tar") return "TAR";
-  if (m === "application/json") return "JSON";
-  if (m === "application/xml") return "XML";
-  if (m === "text/plain") return "TEXT";
-  if (m === "text/csv") return "CSV";
-  if (m === "text/html") return "HTML";
-  if (m === "text/markdown") return "MD";
-  if (m.includes("wordprocessingml") || m === "application/msword") return "DOC";
-  if (m.includes("spreadsheetml") || m === "application/vnd.ms-excel")
-    return "XLS";
-  if (m.includes("presentationml") || m === "application/vnd.ms-powerpoint")
-    return "PPT";
+  const exact = MIME_EXACT[m];
+  if (exact) return exact;
+  for (const rule of MIME_FUZZY) {
+    if (rule.test(m)) {
+      return typeof rule.label === "string" ? rule.label : rule.label(m);
+    }
+  }
   return fallbackExt.toUpperCase().slice(0, 6);
 }
 

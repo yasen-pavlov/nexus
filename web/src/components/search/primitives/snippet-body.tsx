@@ -12,19 +12,19 @@ interface Props {
 // server-provided `headline` (which includes <em>/<mark> highlight tags) and
 // falling back to raw content. Highlight spans get the marmalade-tinted
 // accent treatment shared with the card chassis.
+const CLAMP_CLASSES: Record<1 | 2 | 3 | 4, string> = {
+  1: "line-clamp-1",
+  2: "line-clamp-2",
+  3: "line-clamp-3",
+  4: "line-clamp-4",
+};
+
 export function SnippetBody({
   hit,
   lineClamp = 2,
   className,
 }: Readonly<Props>) {
-  const clampClass =
-    lineClamp === 1
-      ? "line-clamp-1"
-      : lineClamp === 2
-        ? "line-clamp-2"
-        : lineClamp === 3
-          ? "line-clamp-3"
-          : "line-clamp-4";
+  const clampClass = CLAMP_CLASSES[lineClamp];
 
   if (hit.headline) {
     return (
