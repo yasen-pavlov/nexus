@@ -6,16 +6,22 @@ import { SourceChip } from "@/components/source-chip";
 import { sourceMetaFor } from "@/components/source-meta";
 import { cn } from "@/lib/utils";
 import { EmailCardBody } from "./cards/email";
+import { AttachmentCardBody } from "./cards/attachment";
 import { TelegramCardBody } from "./cards/telegram";
 import { PaperlessCardBody } from "./cards/paperless";
 import { FilesystemCardBody } from "./cards/filesystem";
 import { DefaultCardBody } from "./cards/default";
 import { RelatedFooter } from "./related-footer";
 
+function isAttachmentHit(hit: DocumentHit): boolean {
+  return !!hit.relations?.some((r) => r.type === "attachment_of");
+}
+
 interface Props {
   hit: DocumentHit;
   onOpenChat: (hit: DocumentHit) => void;
   onDownload: (hit: DocumentHit) => void;
+  onAttachmentDownload: (att: { id: string; filename: string }) => void;
   onNavigateRelated: (doc: DocumentHit) => void;
 }
 
@@ -31,6 +37,7 @@ export function ResultCard({
   hit,
   onOpenChat,
   onDownload,
+  onAttachmentDownload,
   onNavigateRelated,
 }: Readonly<Props>) {
   const [relatedOpen, setRelatedOpen] = useState(false);
@@ -48,6 +55,16 @@ export function ResultCard({
     hit.source_type === "telegram" &&
     (!!hit.match_source_id ||
       Array.isArray(hit.metadata?.message_lines));
+
+  // Some redesigned cards render the snippet inside their own tinted
+  // layout (e.g. email's left-ruled excerpt block, attachment's
+  // content-preview box, paperless's restrained letterhead body,
+  // filesystem's neutral wash). Skip the chassis snippet for those so
+  // the same text doesn't render twice.
+  const cardOwnsSnippet =
+    hit.source_type === "imap" ||
+    hit.source_type === "paperless" ||
+    hit.source_type === "filesystem";
 
   let snippet: ReactNode = null;
   if (hit.headline) {
@@ -125,10 +142,22 @@ export function ResultCard({
         {!isTelegramCustomBody && (
           <>
             <h3 className="text-[15px] font-medium leading-[1.35] tracking-[-0.005em] text-foreground">
-              <span className="line-clamp-2">{titleText}</span>
+              {hasExternal ? (
+                <a
+                  href={hit.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="line-clamp-2 transition-colors hover:text-primary"
+                  title="Open original"
+                >
+                  {titleText}
+                </a>
+              ) : (
+                <span className="line-clamp-2">{titleText}</span>
+              )}
             </h3>
 
-            {snippet}
+            {!cardOwnsSnippet && snippet}
           </>
         )}
 
@@ -136,6 +165,7 @@ export function ResultCard({
           hit={hit}
           onOpenChat={onOpenChat}
           onDownload={onDownload}
+          onAttachmentDownload={onAttachmentDownload}
         />
       </div>
 
@@ -155,20 +185,26 @@ function CardBody({
   hit,
   onOpenChat,
   onDownload,
+  onAttachmentDownload,
 }: Readonly<{
   hit: DocumentHit;
   onOpenChat: (hit: DocumentHit) => void;
   onDownload: (hit: DocumentHit) => void;
+  onAttachmentDownload: (att: { id: string; filename: string }) => void;
 }>) {
   switch (hit.source_type) {
     case "imap":
-      return <EmailCardBody hit={hit} />;
+      return isAttachmentHit(hit) ? (
+        <AttachmentCardBody hit={hit} onDownload={onDownload} />
+      ) : (
+        <EmailCardBody hit={hit} onAttachmentClick={onAttachmentDownload} />
+      );
     case "telegram":
       return <TelegramCardBody hit={hit} onOpenChat={onOpenChat} />;
     case "paperless":
       return <PaperlessCardBody hit={hit} onDownload={onDownload} />;
     case "filesystem":
-      return <FilesystemCardBody hit={hit} />;
+      return <FilesystemCardBody hit={hit} onDownload={onDownload} />;
     default:
       return <DefaultCardBody hit={hit} />;
   }

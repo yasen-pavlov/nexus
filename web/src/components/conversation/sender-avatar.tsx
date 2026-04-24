@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { cn } from "@/lib/utils";
-import { hueFor, initialsFor } from "./avatar-utils";
+import { InitialsAvatar } from "@/components/search/primitives/initials-avatar";
 
 interface Props {
   blobUrl?: string | null;
@@ -33,26 +33,12 @@ export const SenderAvatar = memo(function SenderAvatar({
     );
   }
 
-  const hue = hueFor(seed);
-  const initials = initialsFor(senderName, seed);
-
   return (
-    <div
-      role="img"
-      aria-label={displayName}
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-full font-medium tracking-[-0.01em] select-none",
-        className,
-      )}
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.max(11, Math.round(size * 0.38)),
-        backgroundColor: `color-mix(in oklch, ${hue} 22%, var(--muted))`,
-        color: `color-mix(in oklch, ${hue} 65%, var(--foreground))`,
-      }}
-    >
-      {initials}
-    </div>
+    <InitialsAvatar
+      name={senderName}
+      seed={seed}
+      size={size}
+      className={className}
+    />
   );
 });
