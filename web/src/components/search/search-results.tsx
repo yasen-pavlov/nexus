@@ -96,6 +96,17 @@ export function SearchResults({ params }: Readonly<Props>) {
     );
   };
 
+  const doAttachmentDownload = (att: { id: string; filename: string }) => {
+    download.mutate(
+      { id: att.id, suggestedFilename: att.filename },
+      {
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "Download failed");
+        },
+      },
+    );
+  };
+
   const openRelated = (doc: DocumentHit) => {
     // Telegram docs with a conversation_id open the chat browser; others
     // rerun search with the doc's title as a fallback (no doc viewer yet).
@@ -158,6 +169,7 @@ export function SearchResults({ params }: Readonly<Props>) {
             hit={hit}
             onOpenChat={openChat}
             onDownload={doDownload}
+            onAttachmentDownload={doAttachmentDownload}
             onNavigateRelated={openRelated}
           />
         ))}

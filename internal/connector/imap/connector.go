@@ -687,6 +687,22 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 	decodedSubject := decodeHeader(env.Subject)
 	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
 	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
+
+	// Denormalize the {id, filename} of each attachment onto the parent
+	// email's metadata so the search UI can render clickable chips
+	// without an extra /related round trip per click.
+	if len(attachments) > 0 {
+		refs := make([]map[string]string, 0, len(attachments))
+		for i, att := range attachments {
+			attSourceID := fmt.Sprintf("%s:%d:attachment:%d", folder, msg.UID, i)
+			refs = append(refs, map[string]string{
+				"id":       model.DocumentID("imap", c.name, attSourceID).String(),
+				"filename": att.Filename,
+			})
+		}
+		metadata["attachments"] = refs
+	}
+
 	docs := []model.Document{{
 		ID:            emailDocID,
 		SourceType:    "imap",

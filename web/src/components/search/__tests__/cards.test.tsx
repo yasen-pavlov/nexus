@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { render as renderWithProviders } from "@/test/test-utils";
 import type { DocumentHit } from "@/lib/api-types";
 import { EmailCardBody } from "../cards/email";
+import { AttachmentCardBody } from "../cards/attachment";
 import { TelegramCardBody } from "../cards/telegram";
 import { PaperlessCardBody } from "../cards/paperless";
 import { FilesystemCardBody } from "../cards/filesystem";
@@ -26,23 +27,53 @@ function baseHit(overrides: Partial<DocumentHit>): DocumentHit {
 }
 
 describe("EmailCardBody", () => {
-  it("renders from/to with arrow", () => {
+  it("renders parsed sender name + address and recipient routing", () => {
     render(
       <EmailCardBody
         hit={baseHit({
           metadata: {
-            from: "Alice <alice@example.com>",
+            from: "Alice Smith <alice@example.com>",
             to: "bob@example.com",
           },
         })}
       />,
     );
-    expect(screen.getByText("Alice <alice@example.com>")).toBeInTheDocument();
+    expect(screen.getByText("Alice Smith")).toBeInTheDocument();
+    expect(screen.getByText("alice@example.com")).toBeInTheDocument();
     expect(screen.getByText("bob@example.com")).toBeInTheDocument();
     expect(screen.getByText("→")).toBeInTheDocument();
   });
 
-  it("renders attachment chips with filename", () => {
+  it("shows +N badge when there are multiple recipients", () => {
+    render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: {
+            from: "Alice <alice@example.com>",
+            to: "bob@example.com, carol@example.com, dave@example.com",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("+2")).toBeInTheDocument();
+  });
+
+  it("shows cc badge when cc is present", () => {
+    render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: {
+            from: "a@b.com",
+            to: "c@d.com",
+            cc: "e@f.com",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("cc")).toBeInTheDocument();
+  });
+
+  it("renders attachment chips with filenames", () => {
     render(
       <EmailCardBody
         hit={baseHit({
@@ -58,7 +89,66 @@ describe("EmailCardBody", () => {
     expect(screen.getByText("photo.jpg")).toBeInTheDocument();
   });
 
-  it("hides INBOX folder badge but shows custom folders", () => {
+  it("renders clickable attachment chips when `attachments` metadata has ids", async () => {
+    const onAttachmentClick = vi.fn();
+    render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: {
+            from: "a@b.com",
+            attachments: [
+              { id: "att-doc-1", filename: "invoice.pdf" },
+              { id: "att-doc-2", filename: "photo.jpg" },
+            ],
+          },
+        })}
+        onAttachmentClick={onAttachmentClick}
+      />,
+    );
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: /invoice\.pdf/i }));
+    expect(onAttachmentClick).toHaveBeenCalledWith({
+      id: "att-doc-1",
+      filename: "invoice.pdf",
+    });
+  });
+
+  it("falls back to static chips when only legacy `attachment_filenames` is present", () => {
+    const onAttachmentClick = vi.fn();
+    render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: {
+            from: "a@b.com",
+            attachment_filenames: ["legacy.pdf"],
+          },
+        })}
+        onAttachmentClick={onAttachmentClick}
+      />,
+    );
+    // No button, just a static span — legacy docs can't resolve to an ID.
+    expect(
+      screen.queryByRole("button", { name: /legacy\.pdf/i }),
+    ).toBeNull();
+    expect(screen.getByText("legacy.pdf")).toBeInTheDocument();
+  });
+
+  it("falls back to a 'has attachments' pill when only the flag is set", () => {
+    render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: {
+            from: "a@b.com",
+            has_attachments: true,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("has attachments")).toBeInTheDocument();
+  });
+
+  it("hides INBOX folder but shows custom folders", () => {
     const { rerender } = render(
       <EmailCardBody
         hit={baseHit({ metadata: { from: "a@b.com", folder: "INBOX" } })}
@@ -71,6 +161,97 @@ describe("EmailCardBody", () => {
       />,
     );
     expect(screen.getByText("Sent")).toBeInTheDocument();
+  });
+
+  it("renders highlighted snippet inside the excerpt block", () => {
+    const { container } = render(
+      <EmailCardBody
+        hit={baseHit({
+          metadata: { from: "a@b.com" },
+          headline: "hello <em>match</em>",
+        })}
+      />,
+    );
+    expect(container.querySelector("em")?.textContent).toBe("match");
+  });
+
+  it("returns null when the hit has nothing useful to show", () => {
+    const { container } = render(
+      <EmailCardBody hit={baseHit({ content: "", metadata: {} })} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("AttachmentCardBody", () => {
+  function attachmentHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
+    return baseHit({
+      title: "invoice.pdf",
+      mime_type: "application/pdf",
+      size: 35041,
+      metadata: {
+        parent_subject: "Your bill for April",
+        filename: "invoice.pdf",
+        content_type: "application/pdf",
+      },
+      headline: "Total amount <em>due</em>: $42",
+      ...overrides,
+    });
+  }
+
+  it("renders provenance line with parent subject", () => {
+    render(<AttachmentCardBody hit={attachmentHit()} />);
+    expect(screen.getByText("Your bill for April")).toBeInTheDocument();
+    expect(screen.getByText(/attached to/i)).toBeInTheDocument();
+  });
+
+  it("renders the mime stamp on the document tile", () => {
+    render(<AttachmentCardBody hit={attachmentHit()} />);
+    expect(screen.getByText("PDF")).toBeInTheDocument();
+  });
+
+  it("falls back to extension when mime is octet-stream", () => {
+    render(
+      <AttachmentCardBody
+        hit={attachmentHit({
+          mime_type: "application/octet-stream",
+          title: "bundle.tar.gz",
+          metadata: {
+            parent_subject: "archive",
+            filename: "bundle.tar.gz",
+            content_type: "application/octet-stream",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("GZ")).toBeInTheDocument();
+  });
+
+  it("renders the extracted snippet inside the content box", () => {
+    const { container } = render(<AttachmentCardBody hit={attachmentHit()} />);
+    expect(container.querySelector("em")?.textContent).toBe("due");
+  });
+
+  it("renders size in the meta row", () => {
+    render(<AttachmentCardBody hit={attachmentHit()} />);
+    expect(screen.getByText(/KB|MB|bytes|B$/)).toBeInTheDocument();
+  });
+
+  it("fires onDownload when the document tile is clicked", async () => {
+    const onDownload = vi.fn();
+    const hit = attachmentHit();
+    render(<AttachmentCardBody hit={hit} onDownload={onDownload} />);
+    // The tile itself is the download affordance — no separate button.
+    // Accessible name comes from the mime stamp ("PDF") text content.
+    await userEvent
+      .setup()
+      .click(screen.getByTitle(/download invoice\.pdf/i));
+    expect(onDownload).toHaveBeenCalledWith(hit);
+  });
+
+  it("renders a plain tile (no button) when no download handler is passed", () => {
+    render(<AttachmentCardBody hit={attachmentHit()} />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
 
@@ -202,7 +383,7 @@ describe("TelegramCardBody", () => {
 });
 
 describe("PaperlessCardBody", () => {
-  it("renders correspondent · document_type letterhead with tag pills", () => {
+  it("renders letterhead with correspondent, document type stamp, and tag pills", () => {
     render(
       <PaperlessCardBody
         hit={baseHit({
@@ -210,22 +391,38 @@ describe("PaperlessCardBody", () => {
           mime_type: "application/pdf",
           size: 102400,
           metadata: {
-            correspondent: "Hospital",
+            correspondent: "Hospital GmbH",
             document_type: "Invoice",
             tags: ["health", "2026"],
+            added: "2026-04-20T00:00:00Z",
           },
         })}
       />,
     );
-    expect(screen.getByText("Hospital")).toBeInTheDocument();
+    expect(screen.getByText("Hospital GmbH")).toBeInTheDocument();
+    expect(screen.getByText(/correspondent/i)).toBeInTheDocument();
     expect(screen.getByText("Invoice")).toBeInTheDocument();
-    expect(screen.getByText("·")).toBeInTheDocument();
     expect(screen.getByText("health")).toBeInTheDocument();
     expect(screen.getByText("2026")).toBeInTheDocument();
     expect(screen.getByText("100 KB")).toBeInTheDocument();
+    expect(screen.getByText(/filed/i)).toBeInTheDocument();
   });
 
-  it("shows download button when mime_type is set", async () => {
+  it("hides letterhead when correspondent is missing", () => {
+    render(
+      <PaperlessCardBody
+        hit={baseHit({
+          source_type: "paperless",
+          mime_type: "application/pdf",
+          metadata: { tags: ["misc"] },
+        })}
+      />,
+    );
+    expect(screen.queryByText(/correspondent/i)).toBeNull();
+    expect(screen.getByText("misc")).toBeInTheDocument();
+  });
+
+  it("fires onDownload when the Download button is clicked", async () => {
     const onDownload = vi.fn();
     const hit = baseHit({
       source_type: "paperless",
@@ -233,15 +430,46 @@ describe("PaperlessCardBody", () => {
       metadata: { correspondent: "Hospital" },
     });
     render(<PaperlessCardBody hit={hit} onDownload={onDownload} />);
-    await userEvent.setup().click(
-      screen.getByRole("button", { name: /download/i }),
-    );
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: /download/i }));
     expect(onDownload).toHaveBeenCalledWith(hit);
+  });
+
+  it("hides Download button when no handler is passed", () => {
+    render(
+      <PaperlessCardBody
+        hit={baseHit({
+          source_type: "paperless",
+          metadata: { correspondent: "Hospital" },
+        })}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
   });
 });
 
 describe("FilesystemCardBody", () => {
-  it("renders path with segmented slashes and extension badge", () => {
+  it("renders monospace path with segmented parent dirs and bold filename", () => {
+    render(
+      <FilesystemCardBody
+        hit={baseHit({
+          source_type: "filesystem",
+          mime_type: "text/markdown",
+          metadata: {
+            path: "notes/work/meeting.md",
+            size: 2048,
+            extension: ".md",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("notes")).toBeInTheDocument();
+    expect(screen.getByText("work")).toBeInTheDocument();
+    expect(screen.getByText("meeting.md")).toBeInTheDocument();
+  });
+
+  it("renders extension stamp in uppercase (DOM text is the raw key)", () => {
     render(
       <FilesystemCardBody
         hit={baseHit({
@@ -254,12 +482,50 @@ describe("FilesystemCardBody", () => {
         })}
       />,
     );
-    expect(screen.getByText("notes")).toBeInTheDocument();
-    expect(screen.getByText("work")).toBeInTheDocument();
-    expect(screen.getByText("meeting.md")).toBeInTheDocument();
-    // "md" is styled uppercase via Tailwind — the DOM text is lowercase.
-    expect(screen.getByText("md")).toBeInTheDocument();
+    expect(screen.getByText("MD")).toBeInTheDocument();
+  });
+
+  it("renders size and relative modified time in the meta row", () => {
+    render(
+      <FilesystemCardBody
+        hit={baseHit({
+          source_type: "filesystem",
+          created_at: new Date().toISOString(),
+          metadata: {
+            path: "a.md",
+            size: 2048,
+            extension: ".md",
+          },
+        })}
+      />,
+    );
     expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+    expect(screen.getByText(/today|ago|yesterday/)).toBeInTheDocument();
+  });
+
+  it("fires onDownload when the Download button is clicked", async () => {
+    const onDownload = vi.fn();
+    const hit = baseHit({
+      source_type: "filesystem",
+      metadata: { path: "x.md", size: 100, extension: ".md" },
+    });
+    render(<FilesystemCardBody hit={hit} onDownload={onDownload} />);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: /download/i }));
+    expect(onDownload).toHaveBeenCalledWith(hit);
+  });
+
+  it("hides Download button when no handler is passed", () => {
+    render(
+      <FilesystemCardBody
+        hit={baseHit({
+          source_type: "filesystem",
+          metadata: { path: "x.md", extension: ".md" },
+        })}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
   });
 });
 
