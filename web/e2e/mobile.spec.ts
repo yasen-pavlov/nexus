@@ -146,6 +146,28 @@ async function mockAuthedAdmin(page: Page) {
       body: JSON.stringify({ data: [] }),
     }),
   );
+  await page.route("**/api/settings/llm", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          default_model: "anthropic:claude-sonnet-4-6",
+          anthropic_api_key: "",
+          openai_api_key: "",
+          ollama_url: "http://ollama:11434",
+          allowlist: [],
+        },
+      }),
+    }),
+  );
+  await page.route("**/api/llm/models", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
 }
 
 test("/admin/users renders the mobile card stack at 375px", async ({

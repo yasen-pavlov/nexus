@@ -7,8 +7,11 @@ import type { SearchParams } from "@/lib/search-params";
 import { cn } from "@/lib/utils";
 
 // useNavigate without `from` can't narrow `search` to a route, so TS types
-// it as `never`. Cast at the boundary; payload stays typed via SearchParams.
+// it as `never`. Cast at the boundary; payload stays typed via SearchParams
+// for the search-mode commit. Ask-mode navigates to /ask with its own
+// search shape, so it gets a separate cast.
 type AnyNavigate = (opts: { search: SearchParams; replace?: boolean }) => void;
+type AskNavigate = (opts: { to: "/ask"; search: { q?: string } }) => void;
 
 interface Props {
   params: SearchParams;
@@ -24,7 +27,9 @@ type Mode = "search" | "ask";
  * without requiring it to ship today.
  */
 export function SearchBar({ params }: Readonly<Props>) {
-  const navigate = useNavigate() as unknown as AnyNavigate;
+  const rawNavigate = useNavigate();
+  const navigate = rawNavigate as unknown as AnyNavigate;
+  const askNavigate = rawNavigate as unknown as AskNavigate;
   const [value, setValue] = useState(params.q ?? "");
   const [mode, setMode] = useState<Mode>("search");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -70,13 +75,12 @@ export function SearchBar({ params }: Readonly<Props>) {
   }, [value, params, navigate, mode]);
 
   const submitAsk = () => {
-    // Stub: pass 2+ wires this to the RAG endpoint. For now, commit to the
-    // URL so the query survives a mode toggle.
     const next = value.trim();
-    navigate({
-      search: { ...params, q: next || undefined },
-      replace: true,
-    });
+    if (!next) return;
+    // Hand off to the Ask landing, which creates a chat and routes to
+    // /ask/{id}?q=… so the question fires immediately. Awaiting the
+    // create on the landing prevents a 404 on the detail-route loader.
+    askNavigate({ to: "/ask", search: { q: next } });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -146,8 +150,7 @@ export function SearchBar({ params }: Readonly<Props>) {
 
       {mode === "ask" && (
         <p className="px-1 text-[11px] text-muted-foreground/80">
-          Answers with citations. Not available yet — your query will be
-          handled as a regular search for now.
+          Grounded answers with citations from across your sources.
         </p>
       )}
     </div>

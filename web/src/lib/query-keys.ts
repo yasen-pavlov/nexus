@@ -81,3 +81,14 @@ export const storageKeys = {
   all: ["storage"] as const,
   stats: () => [...storageKeys.all, "stats"] as const,
 };
+
+export const chatKeys = {
+  all: ["chats"] as const,
+  list: (limit: number, offset: number) =>
+    [...chatKeys.all, "list", limit, offset] as const,
+  detail: (id: string) => [...chatKeys.all, "detail", id] as const,
+  // Streaming turn cache survives navigation away and back. Keyed per
+  // chat + per user-message content so a regenerate on the same content
+  // overwrites the prior in-flight state.
+  stream: (id: string) => [...chatKeys.all, "stream", id] as const,
+};

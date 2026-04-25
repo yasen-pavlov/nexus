@@ -879,6 +879,34 @@ const docTemplate = `{
                 }
             }
         },
+        "/llm/models": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the visible LLM models filtered by configured providers and admin allowlist. Non-admin users see the same list. Used by the per-message model picker in the Ask UI.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "llm"
+                ],
+                "summary": "List available LLM models",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_api.llmModelResponse"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/me/identities": {
             "get": {
                 "security": [
@@ -1081,6 +1109,74 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_api.embeddingSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/llm": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the configured LLM providers, default model, and allowlist. API keys are masked.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Get LLM settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.llmSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates the configured providers, default model, and allowlist. Masked API keys (****...) are preserved from the existing values. Hot-swaps the registry on success — no restart required.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Update LLM settings",
+                "parameters": [
+                    {
+                        "description": "LLM settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.llmSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.llmSettingsResponse"
                         }
                     },
                     "400": {
@@ -2355,6 +2451,10 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "scope": {
+                    "description": "Scope is a free-form label from the connector naming its\ncurrent sub-unit of work — the IMAP folder, the Telegram\nchat, the Paperless page. Surfaces in the UI alongside the\nprogress bar so \"Syncing Archive…\" beats a bare \"0/327\".\nEmpty when the connector hasn't declared a scope yet or\nthe sync has moved past the scoped portion.",
+                    "type": "string"
+                },
                 "started_at": {
                     "type": "string"
                 },
@@ -2551,6 +2651,93 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "source_type": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.llmModelResponse": {
+            "type": "object",
+            "properties": {
+                "bare_id": {
+                    "type": "string"
+                },
+                "context_window": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "input_cost_per_mtok": {
+                    "type": "number"
+                },
+                "output_cost_per_mtok": {
+                    "type": "number"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "supports_caching": {
+                    "type": "boolean"
+                },
+                "supports_citations": {
+                    "type": "boolean"
+                },
+                "supports_tools": {
+                    "type": "boolean"
+                },
+                "supports_vision": {
+                    "type": "boolean"
+                },
+                "typical_ttft_ms": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_api.llmSettingsRequest": {
+            "type": "object",
+            "properties": {
+                "allowlist": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "anthropic_api_key": {
+                    "type": "string"
+                },
+                "default_model": {
+                    "type": "string"
+                },
+                "ollama_url": {
+                    "type": "string"
+                },
+                "openai_api_key": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.llmSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "allowlist": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "anthropic_api_key": {
+                    "type": "string"
+                },
+                "default_model": {
+                    "type": "string"
+                },
+                "ollama_url": {
+                    "type": "string"
+                },
+                "openai_api_key": {
                     "type": "string"
                 }
             }

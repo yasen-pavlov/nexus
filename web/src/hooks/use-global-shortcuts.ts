@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-export type ChordKey = "s" | "c" | "a";
+export type ChordKey = "s" | "c" | "a" | "k";
 
 export interface GlobalShortcutHandlers {
   /** Cmd/Ctrl+K opens the command palette. */
@@ -9,7 +9,7 @@ export interface GlobalShortcutHandlers {
   onSearchFocus: () => void;
   /** `?` opens the shortcuts cheat sheet. */
   onCheatSheet: () => void;
-  /** vim chord: `g s` / `g c` / `g a`. */
+  /** vim chord: `g s` (search) / `g c` (connectors) / `g a` (admin) / `g k` (asK). */
   onChord: (key: ChordKey) => void;
   /** Set to false to silently disable while a higher-priority surface
    *  (login screen, modal etc.) wants the keyboard. */
@@ -101,7 +101,7 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
       // Chord state machine.
       if (chordPending) {
         const k = e.key.toLowerCase();
-        if (k === "s" || k === "c" || k === "a") {
+        if (k === "s" || k === "c" || k === "a" || k === "k") {
           e.preventDefault();
           cancelChord();
           h.onChord(k as ChordKey);

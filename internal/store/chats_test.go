@@ -103,6 +103,11 @@ func TestListChats_OrderingAndPagination(t *testing.T) {
 	if chats[0].Title != "third" || chats[2].Title != "first" {
 		t.Errorf("order wrong: %v", []string{chats[0].Title, chats[1].Title, chats[2].Title})
 	}
+	for _, c := range chats {
+		if c.FirstMessagePreview != "" {
+			t.Errorf("expected empty preview for chat %q with no messages, got %q", c.Title, c.FirstMessagePreview)
+		}
+	}
 
 	// Pagination
 	page2, total2, err := st.ListChats(ctx, userID, 2, 2)
@@ -441,6 +446,87 @@ func TestListChats_AppliesDefaultLimitAndOffset(t *testing.T) {
 	}
 	if len(chats) != 3 {
 		t.Errorf("chats=%d", len(chats))
+	}
+}
+
+func TestListChats_FirstMessagePreview(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	userID := seedUser(t, st, "chat-preview")
+
+	// Two chats: one with a user message, one without.
+	withMsg := newChat(userID)
+	if err := st.CreateChat(ctx, withMsg); err != nil {
+		t.Fatalf("create with-msg: %v", err)
+	}
+	bare := newChat(userID)
+	if err := st.CreateChat(ctx, bare); err != nil {
+		t.Fatalf("create bare: %v", err)
+	}
+
+	if err := st.AppendMessage(ctx, &model.ChatMessage{
+		ChatID:  withMsg.ID,
+		Role:    model.ChatRoleUser,
+		Content: "What did Anthropic invoice me last month?",
+	}); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	// Assistant turn arrives later — must NOT shadow the user preview.
+	if err := st.AppendMessage(ctx, &model.ChatMessage{
+		ChatID:  withMsg.ID,
+		Role:    model.ChatRoleAssistant,
+		Content: "I found three invoices...",
+	}); err != nil {
+		t.Fatalf("append assistant: %v", err)
+	}
+
+	chats, _, err := st.ListChats(ctx, userID, 10, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(chats) != 2 {
+		t.Fatalf("want 2, got %d", len(chats))
+	}
+	// Order is updated_at desc — the chat that just got messages bumped
+	// is now first.
+	if chats[0].ID != withMsg.ID {
+		t.Fatalf("expected with-msg first; got %v", chats[0].ID)
+	}
+	if chats[0].FirstMessagePreview != "What did Anthropic invoice me last month?" {
+		t.Errorf("preview=%q", chats[0].FirstMessagePreview)
+	}
+	if chats[1].FirstMessagePreview != "" {
+		t.Errorf("bare chat should have empty preview, got %q", chats[1].FirstMessagePreview)
+	}
+}
+
+func TestListChats_PreviewTruncatedToCap(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	userID := seedUser(t, st, "chat-preview-cap")
+	chat := newChat(userID)
+	if err := st.CreateChat(ctx, chat); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	long := make([]byte, chatPreviewMaxChars+50)
+	for i := range long {
+		long[i] = 'x'
+	}
+	if err := st.AppendMessage(ctx, &model.ChatMessage{
+		ChatID:  chat.ID,
+		Role:    model.ChatRoleUser,
+		Content: string(long),
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	chats, _, err := st.ListChats(ctx, userID, 10, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := len(chats[0].FirstMessagePreview); got != chatPreviewMaxChars {
+		t.Errorf("preview length=%d want=%d", got, chatPreviewMaxChars)
 	}
 }
 

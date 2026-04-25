@@ -15,7 +15,9 @@ import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/
 import { Route as AuthenticatedAccountRouteImport } from './routes/_authenticated/account'
 import { Route as AuthenticatedAdminRouteRouteImport } from './routes/_authenticated/admin/route'
 import { Route as AuthenticatedConnectorsIndexRouteImport } from './routes/_authenticated/connectors.index'
+import { Route as AuthenticatedAskIndexRouteImport } from './routes/_authenticated/ask.index'
 import { Route as AuthenticatedConnectorsIdRouteImport } from './routes/_authenticated/connectors.$id'
+import { Route as AuthenticatedAskChatIdRouteImport } from './routes/_authenticated/ask.$chatId'
 import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin/users'
 import { Route as AuthenticatedAdminStatsRouteImport } from './routes/_authenticated/admin/stats'
 import { Route as AuthenticatedAdminSettingsRouteImport } from './routes/_authenticated/admin/settings'
@@ -51,12 +53,22 @@ const AuthenticatedConnectorsIndexRoute =
     path: '/connectors/',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const AuthenticatedAskIndexRoute = AuthenticatedAskIndexRouteImport.update({
+  id: '/ask/',
+  path: '/ask/',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 const AuthenticatedConnectorsIdRoute =
   AuthenticatedConnectorsIdRouteImport.update({
     id: '/connectors/$id',
     path: '/connectors/$id',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
+const AuthenticatedAskChatIdRoute = AuthenticatedAskChatIdRouteImport.update({
+  id: '/ask/$chatId',
+  path: '/ask/$chatId',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
 const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -88,7 +100,9 @@ export interface FileRoutesByFullPath {
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/ask/$chatId': typeof AuthenticatedAskChatIdRoute
   '/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/ask/': typeof AuthenticatedAskIndexRoute
   '/connectors/': typeof AuthenticatedConnectorsIndexRoute
   '/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
@@ -100,7 +114,9 @@ export interface FileRoutesByTo {
   '/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/ask/$chatId': typeof AuthenticatedAskChatIdRoute
   '/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/ask': typeof AuthenticatedAskIndexRoute
   '/connectors': typeof AuthenticatedConnectorsIndexRoute
   '/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
@@ -114,7 +130,9 @@ export interface FileRoutesById {
   '/_authenticated/admin/settings': typeof AuthenticatedAdminSettingsRoute
   '/_authenticated/admin/stats': typeof AuthenticatedAdminStatsRoute
   '/_authenticated/admin/users': typeof AuthenticatedAdminUsersRoute
+  '/_authenticated/ask/$chatId': typeof AuthenticatedAskChatIdRoute
   '/_authenticated/connectors/$id': typeof AuthenticatedConnectorsIdRoute
+  '/_authenticated/ask/': typeof AuthenticatedAskIndexRoute
   '/_authenticated/connectors/': typeof AuthenticatedConnectorsIndexRoute
   '/_authenticated/conversations/$sourceType/$conversationId': typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
@@ -128,7 +146,9 @@ export interface FileRouteTypes {
     | '/admin/settings'
     | '/admin/stats'
     | '/admin/users'
+    | '/ask/$chatId'
     | '/connectors/$id'
+    | '/ask/'
     | '/connectors/'
     | '/conversations/$sourceType/$conversationId'
   fileRoutesByTo: FileRoutesByTo
@@ -140,7 +160,9 @@ export interface FileRouteTypes {
     | '/admin/settings'
     | '/admin/stats'
     | '/admin/users'
+    | '/ask/$chatId'
     | '/connectors/$id'
+    | '/ask'
     | '/connectors'
     | '/conversations/$sourceType/$conversationId'
   id:
@@ -153,7 +175,9 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/settings'
     | '/_authenticated/admin/stats'
     | '/_authenticated/admin/users'
+    | '/_authenticated/ask/$chatId'
     | '/_authenticated/connectors/$id'
+    | '/_authenticated/ask/'
     | '/_authenticated/connectors/'
     | '/_authenticated/conversations/$sourceType/$conversationId'
   fileRoutesById: FileRoutesById
@@ -207,11 +231,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedConnectorsIndexRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
+    '/_authenticated/ask/': {
+      id: '/_authenticated/ask/'
+      path: '/ask'
+      fullPath: '/ask/'
+      preLoaderRoute: typeof AuthenticatedAskIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
     '/_authenticated/connectors/$id': {
       id: '/_authenticated/connectors/$id'
       path: '/connectors/$id'
       fullPath: '/connectors/$id'
       preLoaderRoute: typeof AuthenticatedConnectorsIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/ask/$chatId': {
+      id: '/_authenticated/ask/$chatId'
+      path: '/ask/$chatId'
+      fullPath: '/ask/$chatId'
+      preLoaderRoute: typeof AuthenticatedAskChatIdRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/admin/users': {
@@ -267,7 +305,9 @@ interface AuthenticatedRouteChildren {
   AuthenticatedAdminRouteRoute: typeof AuthenticatedAdminRouteRouteWithChildren
   AuthenticatedAccountRoute: typeof AuthenticatedAccountRoute
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedAskChatIdRoute: typeof AuthenticatedAskChatIdRoute
   AuthenticatedConnectorsIdRoute: typeof AuthenticatedConnectorsIdRoute
+  AuthenticatedAskIndexRoute: typeof AuthenticatedAskIndexRoute
   AuthenticatedConnectorsIndexRoute: typeof AuthenticatedConnectorsIndexRoute
   AuthenticatedConversationsSourceTypeConversationIdRoute: typeof AuthenticatedConversationsSourceTypeConversationIdRoute
 }
@@ -276,7 +316,9 @@ const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedAdminRouteRoute: AuthenticatedAdminRouteRouteWithChildren,
   AuthenticatedAccountRoute: AuthenticatedAccountRoute,
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedAskChatIdRoute: AuthenticatedAskChatIdRoute,
   AuthenticatedConnectorsIdRoute: AuthenticatedConnectorsIdRoute,
+  AuthenticatedAskIndexRoute: AuthenticatedAskIndexRoute,
   AuthenticatedConnectorsIndexRoute: AuthenticatedConnectorsIndexRoute,
   AuthenticatedConversationsSourceTypeConversationIdRoute:
     AuthenticatedConversationsSourceTypeConversationIdRoute,

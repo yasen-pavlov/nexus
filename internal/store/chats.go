@@ -13,6 +13,7 @@ import (
 )
 
 const chatCols = `id, user_id, title, default_model, created_at, updated_at`
+const chatColsQualified = `c.id, c.user_id, c.title, c.default_model, c.created_at, c.updated_at`
 const chatMessageCols = `id, chat_id, role, seq, content, model, citations, tool_calls, usage, stop_reason, created_at`
 
 // ChatUpdate carries the fields a PATCH may set. Nil fields are left untouched.
@@ -67,9 +68,17 @@ func (s *Store) GetChat(ctx context.Context, id uuid.UUID) (*model.Chat, error) 
 	return c, nil
 }
 
+// chatPreviewMaxChars caps the first_message_preview substring at the SQL
+// boundary so a multi-MB pasted prompt doesn't fan out across the list
+// response. The FE truncates further for the recent-chats card; this is
+// just a defensive ceiling.
+const chatPreviewMaxChars = 240
+
 // ListChats returns chats owned by userID ordered by updated_at desc, plus
-// the total count for pagination.
-func (s *Store) ListChats(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.Chat, int, error) {
+// the total count for pagination. Each entry carries the first user
+// message as a preview (joined via LATERAL so it stays a single
+// round-trip, even when the chat has no user message yet).
+func (s *Store) ListChats(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.ChatListEntry, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -85,21 +94,32 @@ func (s *Store) ListChats(ctx context.Context, userID uuid.UUID, limit, offset i
 	}
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+chatCols+` FROM chats WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3`,
-		userID, limit, offset,
+		`SELECT `+chatColsQualified+`, COALESCE(LEFT(preview.content, $4), '') AS first_message_preview
+		 FROM chats c
+		 LEFT JOIN LATERAL (
+		     SELECT content FROM chat_messages
+		     WHERE chat_id = c.id AND role = 'user'
+		     ORDER BY seq ASC LIMIT 1
+		 ) AS preview ON true
+		 WHERE c.user_id = $1
+		 ORDER BY c.updated_at DESC LIMIT $2 OFFSET $3`,
+		userID, limit, offset, chatPreviewMaxChars,
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("store: list chats: %w", err)
 	}
 	defer rows.Close()
 
-	chats := []model.Chat{}
+	chats := []model.ChatListEntry{}
 	for rows.Next() {
-		c, err := scanChat(rows.Scan)
-		if err != nil {
-			return nil, 0, fmt.Errorf("store: scan chat: %w", err)
+		var entry model.ChatListEntry
+		if err := rows.Scan(
+			&entry.ID, &entry.UserID, &entry.Title, &entry.DefaultModel,
+			&entry.CreatedAt, &entry.UpdatedAt, &entry.FirstMessagePreview,
+		); err != nil {
+			return nil, 0, fmt.Errorf("store: scan chat list entry: %w", err)
 		}
-		chats = append(chats, *c)
+		chats = append(chats, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("store: list chats rows: %w", err)

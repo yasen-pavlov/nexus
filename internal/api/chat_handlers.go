@@ -37,8 +37,8 @@ type updateChatRequest struct {
 
 // listChatsResponse is the body of GET /api/chats.
 type listChatsResponse struct {
-	Chats []model.Chat `json:"chats"`
-	Total int          `json:"total"`
+	Chats []model.ChatListEntry `json:"chats"`
+	Total int                   `json:"total"`
 }
 
 // chatDetailResponse is the body of GET /api/chats/:id.

@@ -201,6 +201,11 @@ func TestListChats_OnlyOwnVisible(t *testing.T) {
 	if len(resp.Chats) != 2 {
 		t.Errorf("got %d chats", len(resp.Chats))
 	}
+	for _, c := range resp.Chats {
+		if c.FirstMessagePreview != "" {
+			t.Errorf("expected empty preview before any messages, got %q", c.FirstMessagePreview)
+		}
+	}
 }
 
 func TestGetChat_NonOwnerReturns404(t *testing.T) {

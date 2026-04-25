@@ -27,6 +27,16 @@ type Chat struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// ChatListEntry is the row shape returned by GET /api/chats. Carries the
+// first user message as a preview so the FE recent-chats list can show
+// "what is this chat about" without N+1ing /api/chats/{id} per row.
+// Empty until the chat has its first user turn (e.g. just after creation
+// but before the first message is appended).
+type ChatListEntry struct {
+	Chat
+	FirstMessagePreview string `json:"first_message_preview,omitempty"`
+}
+
 // ChatMessage is one persisted turn inside a chat. Seq is monotonic per
 // chat (assigned inside store.AppendMessage under a row lock).
 type ChatMessage struct {

@@ -186,7 +186,10 @@ export type SyncStatus =
 // refactor but not yet in the generated schema until the next
 // `npm run gen:types` sweep — surfaced here as optional so the
 // types stay honest in the meantime.
-export type SyncJob = Omit<Req<Schemas["internal_api.SyncJob"]>, "status"> & {
+export type SyncJob = Omit<
+  Req<Schemas["internal_api.SyncJob"]>,
+  "status" | "scope"
+> & {
   status: SyncStatus;
   scope?: string;
 };
@@ -323,4 +326,79 @@ export interface BinaryStoreStats {
 export interface StorageWipeResult {
   deleted_count: number;
   bytes_freed: number;
+}
+
+// Chat / RAG. Hand-curated because the swagger annotations aren't lifted
+// for the chat handlers — see internal/model/chat.go for the BE shape.
+
+export type ChatRole = "user" | "assistant" | "tool";
+
+export interface ChatCitation {
+  doc_id: string;
+  cited_text?: string;
+  span_start: number;
+  span_end: number;
+}
+
+export interface ChatToolCall {
+  name: string;
+  args: string;
+  result_id?: string;
+  result_summary?: string;
+}
+
+export interface ChatUsage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export interface Chat {
+  id: string;
+  user_id: string;
+  title: string;
+  default_model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatListEntry extends Chat {
+  // Empty when the chat has no user messages yet (just-created), or when
+  // the BE preview LATERAL join didn't find one.
+  first_message_preview?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  chat_id: string;
+  role: ChatRole;
+  seq: number;
+  content: string;
+  model?: string;
+  citations?: ChatCitation[];
+  tool_calls?: ChatToolCall[];
+  usage?: ChatUsage;
+  stop_reason?: string;
+  created_at: string;
+}
+
+export interface ListChatsResponse {
+  chats: ChatListEntry[];
+  total: number;
+}
+
+export interface ChatDetailResponse {
+  chat: Chat;
+  messages: ChatMessage[];
+}
+
+// ChunkPreview mirrors `internal/rag.ChunkPreview` — the minimal slice of
+// a retrieved chunk that the SSE evidence frame carries.
+export interface ChunkPreview {
+  id: string;
+  title: string;
+  source: string;
+  date?: string;
+  headline?: string;
 }
