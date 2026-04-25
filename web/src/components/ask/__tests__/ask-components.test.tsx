@@ -118,6 +118,45 @@ describe("AnswerStream", () => {
     expect(screen.getByText(/Sources/)).toBeInTheDocument();
   });
 
+  it("renders markdown — bold, ordered lists, headings", () => {
+    render(
+      <AnswerStream
+        text={"Here is what I found:\n\n1. **First** item\n2. **Second** item\n\n## Summary\n\nDone."}
+        citations={[]}
+        evidence={[]}
+        isStreaming={false}
+        onJumpToEvidence={() => {}}
+      />,
+    );
+    // Bold renders as <strong>
+    expect(screen.getByText("First").tagName.toLowerCase()).toBe("strong");
+    expect(screen.getByText("Second").tagName.toLowerCase()).toBe("strong");
+    // Ordered list with two items
+    const lis = document.querySelectorAll("ol > li");
+    expect(lis).toHaveLength(2);
+    // h2 heading
+    expect(document.querySelector("h2")?.textContent).toBe("Summary");
+  });
+
+  it("places a citation pill inside a list item, mid-prose", () => {
+    // span_end = 13 lands after "First item" in the list-item prose.
+    render(
+      <AnswerStream
+        text={"1. First item from the doc"}
+        citations={[{ doc_id: "doc-1", span_start: 3, span_end: 13 }]}
+        evidence={[sampleChunk]}
+        isStreaming={false}
+        onJumpToEvidence={() => {}}
+      />,
+    );
+    const li = document.querySelector("ol > li");
+    expect(li).not.toBeNull();
+    const inlinePills = li?.querySelectorAll(
+      'button[aria-label*="Citation 1"]',
+    );
+    expect(inlinePills?.length ?? 0).toBeGreaterThan(0);
+  });
+
   it("calls onJumpToEvidence when a sources-rail pill is clicked", async () => {
     const user = userEvent.setup();
     const onJump = vi.fn();
