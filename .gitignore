@@ -23,6 +23,9 @@ web/.playwright-mcp/
 web/test-results/
 ranking-verify*.png
 
+# Local-only design & planning notes — kept out of the tree on purpose.
+plans/
+
 # Runtime: local binary cache for `make dev` / go run ./cmd/nexus
 data/
 

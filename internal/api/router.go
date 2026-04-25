@@ -26,6 +26,7 @@ func NewRouter(
 	cm *ConnectorManager,
 	em *EmbeddingManager,
 	rm *RerankManager,
+	lm *LLMManager,
 	syncJobs *SyncJobManager,
 	binaryStore *storage.BinaryStore,
 	sweeper *syncruns.Sweeper,
@@ -59,6 +60,7 @@ func NewRouter(
 		pipeline:     pipeline,
 		em:           em,
 		rm:           rm,
+		lm:           lm,
 		cm:           cm,
 		syncJobs:     syncJobs,
 		binaryStore:  binaryStore,
@@ -95,6 +97,7 @@ func NewRouter(
 			r.Get("/auth/me", h.Me)
 			r.Get("/me/identities", h.GetMyIdentities)
 			r.Get("/search", h.Search)
+			r.Get("/llm/models", h.GetLLMModels)
 
 			r.Get("/documents/by-source", h.GetDocumentBySource)
 			r.Get("/documents/{id}/content", h.DownloadDocument)
@@ -141,6 +144,8 @@ func NewRouter(
 					r.Put("/embedding", h.UpdateEmbeddingSettings)
 					r.Get("/rerank", h.GetRerankSettings)
 					r.Put("/rerank", h.UpdateRerankSettings)
+					r.Get("/llm", h.GetLLMSettings)
+					r.Put("/llm", h.UpdateLLMSettings)
 					r.Get("/retention", h.GetRetentionSettings)
 					r.Put("/retention", h.UpdateRetentionSettings)
 					r.Post("/retention/sweep", h.RunRetentionSweep)

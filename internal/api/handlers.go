@@ -41,6 +41,7 @@ type handler struct {
 	pipeline    *pipeline.Pipeline
 	em          *EmbeddingManager
 	rm          *RerankManager
+	lm          *LLMManager
 	cm          *ConnectorManager
 	syncJobs    *SyncJobManager
 	binaryStore *storage.BinaryStore

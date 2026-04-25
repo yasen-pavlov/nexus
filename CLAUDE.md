@@ -107,6 +107,10 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_RERANK_PROVIDER` — `voyage`, `cohere` (empty = disabled)
 - `NEXUS_RERANK_MODEL` — reranking model name (provider-specific defaults apply)
 - `NEXUS_RERANK_API_KEY` — API key for reranking (falls back to embedding key if same provider)
+- `NEXUS_LLM_DEFAULT_MODEL` — provider-prefixed default model for the RAG ask flow (e.g. `anthropic:claude-sonnet-4-6`). Empty = first-boot picks the cheapest available across configured providers.
+- `NEXUS_LLM_ANTHROPIC_API_KEY` — Anthropic API key (enables Claude models)
+- `NEXUS_LLM_OPENAI_API_KEY` — OpenAI API key (enables GPT models)
+- `NEXUS_LLM_OLLAMA_URL` — dedicated LLM Ollama URL; falls back to `NEXUS_OLLAMA_URL` when empty
 - `NEXUS_ENCRYPTION_KEY` — 64-char hex string (32 bytes) for AES-256-GCM encryption of sensitive connector config fields (empty = disabled)
 - `NEXUS_JWT_SECRET` — secret used to sign JWT session tokens. If empty, a random one is generated on each boot (which logs everyone out on restart). Set explicitly for stable sessions across restarts.
 - `NEXUS_CORS_ORIGINS` — comma-separated list of allowed CORS origins (default: `http://localhost:5173`)

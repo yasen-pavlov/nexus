@@ -21,6 +21,7 @@ import (
 	"github.com/muty/nexus/internal/config"
 	"github.com/muty/nexus/internal/connector"
 	_ "github.com/muty/nexus/internal/connector/filesystem"
+	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
@@ -128,7 +129,7 @@ func newTestRouterWithJobs(t *testing.T) (*store.Store, *search.Client, *Connect
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, sjm, authWrap(router, token)
 }
@@ -450,7 +451,7 @@ func TestSearchOwnershipScoping(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
 		t.Helper()
@@ -1098,7 +1099,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1115,7 +1116,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1263,7 +1264,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -2316,7 +2317,7 @@ func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	// Index a shared chunk so the doc exists
 	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
@@ -2333,7 +2334,7 @@ func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
 	if err != nil {
@@ -2387,7 +2388,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	_ = sc.Refresh(context.Background())
 
 	// Build an unwrapped router so we can use a non-admin token
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
 	if err != nil {
@@ -2466,7 +2467,7 @@ func TestDeletionSync_Integration(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	jobs := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), jobs, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), jobs, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 
 	// Filesystem connector + temp dir. First sync indexes both files;
@@ -2640,7 +2641,7 @@ func newTestRouterWithBinaryStore(t *testing.T) (*store.Store, *search.Client, *
 	}
 	cm.SetBinaryStore(bs)
 
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, bs, authWrap(router, token)
 }
@@ -2676,7 +2677,7 @@ func TestStorageHandlers_NilBinaryStore(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	wrapped := authWrap(router, token)
 
@@ -2809,7 +2810,7 @@ func TestStorageStats_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	// Non-admin user.
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
@@ -2959,7 +2960,7 @@ func TestDeleteStorageCache_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	user, err := st.CreateUser(context.Background(), username, "hash", "user")
@@ -3462,5 +3463,284 @@ func TestConversations_ExcludesWindowsAndNonChatSources(t *testing.T) {
 	resp = decodeConversationResponse(t, w.Body)
 	if len(resp.Messages) != 0 {
 		t.Errorf("expected 0 messages for non-chat source, got %d", len(resp.Messages))
+	}
+}
+
+// --- LLM settings + models tests ---
+
+// llmRouter is a minimal router that wires only the LLMManager (no embedder
+// or sync stack), so LLM tests don't pay for OpenSearch + cleanup costs.
+func llmRouter(t *testing.T) (*store.Store, *LLMManager, http.Handler, string) {
+	t.Helper()
+	tdb := testutil.NewTestDB(t, "llm", migrations.FS)
+	st, err := store.New(context.Background(), tdb.URL, zap.NewNop())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	lm := NewLLMManager(st, zap.NewNop())
+	if err := lm.LoadFromDB(context.Background(), &config.Config{}); err != nil {
+		t.Fatalf("load llm settings: %v", err)
+	}
+
+	h := &handler{store: st, lm: lm, log: zap.NewNop()}
+
+	r := chi.NewRouter()
+	r.Use(auth.Middleware(testJWTSecret))
+	r.Get("/api/llm/models", h.GetLLMModels)
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireRole("admin"))
+		r.Get("/api/settings/llm", h.GetLLMSettings)
+		r.Put("/api/settings/llm", h.UpdateLLMSettings)
+	})
+
+	_, token := createTestAdmin(t, st)
+	return st, lm, r, token
+}
+
+func TestGetLLMSettings_AdminOK(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/llm", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if _, ok := data["allowlist"]; !ok {
+		t.Error("response missing allowlist field")
+	}
+}
+
+func TestGetLLMSettings_AnonRejected(t *testing.T) {
+	_, _, router, _ := llmRouter(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/llm", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestGetLLMSettings_NonAdminRejected(t *testing.T) {
+	st, _, router, _ := llmRouter(t)
+	_, userToken := createTestUser(t, st)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/settings/llm", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", w.Code)
+	}
+}
+
+func TestUpdateLLMSettings_PersistsAndHotSwaps(t *testing.T) {
+	st, lm, router, token := llmRouter(t)
+
+	body := `{"default_model":"anthropic:claude-sonnet-4-6","anthropic_api_key":"sk-ant-realkey-1234","openai_api_key":"","ollama_url":"","allowlist":["anthropic:claude-sonnet-4-6"]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Response should mask the key.
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["anthropic_api_key"] != "****1234" {
+		t.Errorf("expected masked key, got %v", data["anthropic_api_key"])
+	}
+
+	// Snapshot is hot-swapped — registry now resolves the model.
+	if _, _, err := lm.Get().Get("anthropic:claude-sonnet-4-6"); err != nil {
+		t.Errorf("registry didn't pick up new key: %v", err)
+	}
+
+	// DB stores the key (plaintext when no NEXUS_ENCRYPTION_KEY is set in
+	// tests; the encryption-at-rest path is exercised separately below).
+	stored, err := st.GetSetting(context.Background(), "llm_anthropic_api_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != "sk-ant-realkey-1234" {
+		t.Errorf("stored key = %q", stored)
+	}
+}
+
+func TestUpdateLLMSettings_MaskedKeyPreservesExisting(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	first := `{"default_model":"","anthropic_api_key":"sk-ant-original","openai_api_key":"","ollama_url":"","allowlist":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(first))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first put: %d; %s", w.Code, w.Body.String())
+	}
+
+	// Round-trip the masked value back; should preserve the original key.
+	second := `{"default_model":"","anthropic_api_key":"****inal","openai_api_key":"","ollama_url":"","allowlist":[]}`
+	req = httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(second))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second put: %d; %s", w.Code, w.Body.String())
+	}
+
+	// GET reflects the unchanged key (still masked but with the same suffix).
+	req = httptest.NewRequest(http.MethodGet, "/api/settings/llm", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["anthropic_api_key"] != "****inal" {
+		t.Errorf("masked key drift: %v", data["anthropic_api_key"])
+	}
+}
+
+func TestUpdateLLMSettings_BadBody(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestUpdateLLMSettings_DefaultModelMustBeReachable(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	// Default model on a provider with no key — should fail validation.
+	body := `{"default_model":"openai:gpt-5-mini","anthropic_api_key":"","openai_api_key":"","ollama_url":"","allowlist":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestGetLLMModels_FiltersByConfiguredProvider(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	// Configure Anthropic only; expect models() to return Anthropic catalog.
+	body := `{"default_model":"","anthropic_api_key":"sk-ant-test","openai_api_key":"","ollama_url":"","allowlist":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d; %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/llm/models", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: %d; %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	models := resp.Data.([]any)
+	if len(models) == 0 {
+		t.Fatal("expected at least one anthropic model in the response")
+	}
+	for _, m := range models {
+		mm := m.(map[string]any)
+		if mm["provider"] != "anthropic" {
+			t.Errorf("unexpected provider in models response: %v", mm["provider"])
+		}
+	}
+}
+
+func TestGetLLMModels_NonAdminCanRead(t *testing.T) {
+	st, _, router, token := llmRouter(t)
+
+	// Admin populates Ollama URL so there's something to surface.
+	body := `{"default_model":"","anthropic_api_key":"","openai_api_key":"","ollama_url":"http://localhost:11434","allowlist":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	_, userToken := createTestUser(t, st)
+	req = httptest.NewRequest(http.MethodGet, "/api/llm/models", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for regular user on /llm/models, got %d", w.Code)
+	}
+}
+
+func TestUpdateLLMSettings_EncryptedAtRest(t *testing.T) {
+	st, _, router, token := llmRouter(t)
+
+	// Arm encryption — sensitive keys (llm_anthropic_api_key,
+	// llm_openai_api_key) round-trip through encrypt/decrypt.
+	key, err := crypto.NewKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetEncryptionKey(key)
+
+	body := `{"default_model":"","anthropic_api_key":"sk-ant-encrypt-me","openai_api_key":"","ollama_url":"","allowlist":[]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d; %s", w.Code, w.Body.String())
+	}
+
+	// GetSetting decrypts; sensitive keys are encrypted on write per
+	// crypto.IsSensitiveSettingsKey, so a successful round-trip with the
+	// key armed proves the encryption path was exercised.
+	plain, err := st.GetSetting(context.Background(), "llm_anthropic_api_key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain != "sk-ant-encrypt-me" {
+		t.Errorf("decrypt round-trip mismatch: %q", plain)
+	}
+
+	if !crypto.IsSensitiveSettingsKey("llm_anthropic_api_key") {
+		t.Error("llm_anthropic_api_key is not flagged sensitive — keys would be plaintext at rest")
+	}
+	if !crypto.IsSensitiveSettingsKey("llm_openai_api_key") {
+		t.Error("llm_openai_api_key is not flagged sensitive")
 	}
 }

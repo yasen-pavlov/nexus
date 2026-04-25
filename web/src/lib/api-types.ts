@@ -252,6 +252,37 @@ export interface RerankSettings {
   min_score: number;
 }
 
+// LLM admin settings power the RAG ask flow. Provider keys are independent
+// (mix-and-match Anthropic + OpenAI + Ollama). API keys arrive masked
+// ("****abcd"); blank + "Replace" on the frontend asks for a new plaintext
+// key. The allowlist filters which catalog models the model-picker surfaces;
+// empty allowlist = expose every catalog model whose provider has a key.
+export interface LLMSettings {
+  default_model: string;
+  anthropic_api_key: string;
+  openai_api_key: string;
+  ollama_url: string;
+  allowlist: string[];
+}
+
+// LLMModelInfo mirrors the JSON returned by GET /api/llm/models. Capability
+// flags drive composer affordances (vision/tools/citations chips) and let
+// the orchestrator skip image attachments on non-vision models.
+export interface LLMModelInfo {
+  id: string;             // provider-prefixed: "anthropic:claude-sonnet-4-6"
+  provider: string;
+  bare_id: string;
+  display_name: string;
+  context_window: number;
+  supports_citations: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_caching: boolean;
+  input_cost_per_mtok: number;
+  output_cost_per_mtok: number;
+  typical_ttft_ms: number;
+}
+
 // Retention: the sweeper reads these three keys every tick. The BE reports
 // `min_sweep_interval_minutes` as a hard floor the admin can't submit below.
 export interface RetentionSettings {

@@ -105,6 +105,13 @@ func run() error {
 		log.Warn("failed to load rerank settings", zap.Error(err))
 	}
 
+	// Set up LLM provider layer for the RAG ask flow. Hot-reloads via
+	// PUT /api/settings/llm without restarting the process.
+	lm := api.NewLLMManager(st, log)
+	if err := lm.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load llm settings", zap.Error(err))
+	}
+
 	// Ranking config (per-source half-life, floor, trust weight, plus
 	// rerank min score + feature toggles). Overlays any persisted overrides
 	// on top of the compiled-in defaults.
@@ -120,7 +127,7 @@ func run() error {
 
 	revocationCache, loginLimiter := setupAuthCaches(st)
 
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
 	return serve(ctx, cfg.Port, router, sched, log)
 }

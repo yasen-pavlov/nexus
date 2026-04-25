@@ -64,6 +64,12 @@ export const settingsKeys = {
   rerank: () => [...settingsKeys.all, "rerank"] as const,
   retention: () => [...settingsKeys.all, "retention"] as const,
   ranking: () => [...settingsKeys.all, "ranking"] as const,
+  llm: () => [...settingsKeys.all, "llm"] as const,
+};
+
+export const llmKeys = {
+  all: ["llm"] as const,
+  models: () => [...llmKeys.all, "models"] as const,
 };
 
 export const userKeys = {
