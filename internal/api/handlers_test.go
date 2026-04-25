@@ -399,7 +399,7 @@ func TestRerankResults(t *testing.T) {
 		},
 	})
 
-	h := &handler{rm: rm, log: zap.NewNop()}
+	s := &SearchService{rm: rm, log: zap.NewNop()}
 
 	result := &model.SearchResult{
 		Documents: []model.DocumentHit{
@@ -409,7 +409,7 @@ func TestRerankResults(t *testing.T) {
 		},
 	}
 
-	reranked := h.rerankResults(context.Background(), "test", result)
+	reranked := s.rerankResults(context.Background(), "test", result)
 
 	if len(reranked.Documents) != 3 {
 		t.Fatalf("expected 3 docs, got %d", len(reranked.Documents))
@@ -424,7 +424,7 @@ func TestRerankResults(t *testing.T) {
 
 func TestRerankResults_NoReranker(t *testing.T) {
 	rm := NewRerankManager(nil, zap.NewNop())
-	h := &handler{rm: rm, log: zap.NewNop()}
+	s := &SearchService{rm: rm, log: zap.NewNop()}
 
 	result := &model.SearchResult{
 		Documents: []model.DocumentHit{
@@ -432,7 +432,7 @@ func TestRerankResults_NoReranker(t *testing.T) {
 		},
 	}
 
-	reranked := h.rerankResults(context.Background(), "test", result)
+	reranked := s.rerankResults(context.Background(), "test", result)
 	if reranked.Documents[0].Title != "A" {
 		t.Error("should return original order when no reranker")
 	}
@@ -455,7 +455,7 @@ func TestRerankResults_DedupesNearDuplicates(t *testing.T) {
 	rec := &recordingReranker{}
 	rm := NewRerankManager(nil, zap.NewNop())
 	rm.Set(rec)
-	h := &handler{rm: rm, log: zap.NewNop()}
+	s := &SearchService{rm: rm, log: zap.NewNop()}
 
 	// Three docs: 1 and 3 are exact duplicates (same title + same first 200
 	// chars of content). 2 is unique. After dedup, only 2 should reach the
@@ -469,7 +469,7 @@ func TestRerankResults_DedupesNearDuplicates(t *testing.T) {
 		},
 	}
 
-	reranked := h.rerankResults(context.Background(), "test", result)
+	reranked := s.rerankResults(context.Background(), "test", result)
 	if len(rec.received) != 2 {
 		t.Errorf("expected reranker to receive 2 deduped docs, got %d", len(rec.received))
 	}

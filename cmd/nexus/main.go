@@ -34,6 +34,7 @@ import (
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/rag"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
@@ -127,7 +128,20 @@ func run() error {
 
 	revocationCache, loginLimiter := setupAuthCaches(st)
 
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
+	// RAG orchestrator turns chat messages into streamed grounded answers.
+	// It calls the same hybrid retrieval pipeline as /api/search via the
+	// SearchService; here we construct an instance that the router will
+	// share with the HTTP handler.
+	searchService := api.NewSearchService(searchClient, em, rm, rankingMgr, log)
+	orchestrator := rag.NewOrchestrator(rag.Deps{
+		Registry: lm.Get,
+		Search:   api.NewRAGSearchProvider(searchService),
+		Chats:    st,
+		Cfg:      rag.DefaultConfig(),
+		Log:      log,
+	})
+
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
 	return serve(ctx, cfg.Port, router, sched, log)
 }

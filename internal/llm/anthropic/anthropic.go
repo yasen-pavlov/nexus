@@ -84,9 +84,14 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 	// blocks so Anthropic can emit citations bound to chunk titles. We
 	// prepend them to the conversation as a synthetic first user turn —
 	// this matches how the API expects retrieved-context to flow.
+	//
+	// Anthropic caps requests at 4 cache_control breakpoints. We only set
+	// cache_control on the LAST document — that single breakpoint marks the
+	// end of the cacheable docs prefix; everything before it gets cached too.
 	var leadingDocBlocks []sdk.ContentBlockParamUnion
-	for _, doc := range req.Documents {
-		block := docToBlock(doc, req.EnableCache)
+	for i, doc := range req.Documents {
+		isLast := i == len(req.Documents)-1
+		block := docToBlock(doc, req.EnableCache && isLast)
 		leadingDocBlocks = append(leadingDocBlocks, block)
 	}
 

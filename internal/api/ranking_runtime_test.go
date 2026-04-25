@@ -32,6 +32,7 @@ func TestRankingRuntimeWiring_RecencyOverrideShiftsResults(t *testing.T) {
 		st, sc, p, cm, em,
 		NewRerankManager(st, zap.NewNop()),
 		NewLLMManager(st, zap.NewNop()),
+		nil,
 		NewSyncJobManager(st, zap.NewNop()),
 		nil, nil, rankingMgr,
 		testJWTSecret, nil, nil, nil, zap.NewNop(),

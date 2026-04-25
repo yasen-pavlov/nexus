@@ -174,7 +174,7 @@ func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 		Provider: settings["rerank_provider"],
 		Model:    settings["rerank_model"],
 		APIKey:   maskAPIKey(settings["rerank_api_key"]),
-		MinScore: h.rankingConfig().RerankerMinScore,
+		MinScore: h.search2().rankingConfig().RerankerMinScore,
 	}
 
 	writeJSON(w, http.StatusOK, resp)

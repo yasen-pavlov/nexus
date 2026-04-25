@@ -176,6 +176,56 @@ func TestBuildParams_AssemblesSystemAndDocuments(t *testing.T) {
 	}
 }
 
+func TestBuildParams_OnlyLastDocumentHasCacheControl(t *testing.T) {
+	// Anthropic caps requests at 4 cache_control breakpoints. With many
+	// retrieved documents we'd exceed that if every doc carried a
+	// breakpoint — only the last document should be marked, acting as
+	// the cacheable-prefix boundary.
+	c := New("test-key", "", nil)
+	docs := []llm.Document{
+		{ID: "d1", Content: "a"},
+		{ID: "d2", Content: "b"},
+		{ID: "d3", Content: "c"},
+		{ID: "d4", Content: "d"},
+		{ID: "d5", Content: "e"},
+	}
+	params, err := c.buildParams(llm.GenerateRequest{
+		Model:       "claude-x",
+		System:      "sys",
+		Documents:   docs,
+		Messages:    []llm.Message{{Role: llm.RoleUser, Content: "q"}},
+		EnableCache: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// First message has [doc1, doc2, ..., docN, "q"]. Iterate the
+	// document blocks (everything except the trailing user text).
+	blocks := params.Messages[0].Content
+	docCount := 0
+	cached := 0
+	var lastCachedIdx int
+	for i, b := range blocks {
+		if b.OfDocument == nil {
+			continue
+		}
+		docCount++
+		if string(b.OfDocument.CacheControl.Type) != "" {
+			cached++
+			lastCachedIdx = i
+		}
+	}
+	if docCount != 5 {
+		t.Fatalf("doc blocks = %d want 5", docCount)
+	}
+	if cached != 1 {
+		t.Errorf("cache_control breakpoints on docs = %d want exactly 1", cached)
+	}
+	if lastCachedIdx != docCount-1 {
+		t.Errorf("cache_control on doc index %d, want last (%d)", lastCachedIdx, docCount-1)
+	}
+}
+
 func TestBuildParams_DefaultMaxTokens(t *testing.T) {
 	c := New("test-key", "", nil)
 	params, err := c.buildParams(llm.GenerateRequest{
