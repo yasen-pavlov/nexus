@@ -18,5 +18,9 @@ export const Route = createFileRoute("/_authenticated/ask/$chatId")({
 function ChatPage() {
   const { chatId } = Route.useParams();
   const { q } = Route.useSearch();
-  return <ChatThread chatID={chatId} initialContent={q} />;
+  return (
+    <div className="mx-auto w-full max-w-6xl p-4 md:p-6">
+      <ChatThread chatID={chatId} initialContent={q} />
+    </div>
+  );
 }
