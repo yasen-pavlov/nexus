@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/llm"
@@ -188,7 +189,72 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		// features can hop /api/documents/{id}, /related, /blob, etc.).
 		evidence []ChunkPreview
 		usage    *model.ChatUsage
+		// pendingCitations holds Anthropic citations that have arrived
+		// mid-sentence. Their span isn't assigned until we observe a
+		// sentence terminator in the streamed text, at which point each
+		// pending citation is anchored at the post-terminator position
+		// so pills land at clean sentence boundaries (Perplexity-style)
+		// instead of inside whichever word was being streamed when the
+		// citations_delta event interleaved.
+		pendingCitations []model.ChatCitation
 	)
+
+	// byteToRune converts a byte offset into accumulatedText to a rune
+	// (character) offset. The FE consumes these offsets as JS string
+	// positions, where every BMP code point counts as one — so we
+	// need char counts, not bytes, to keep multi-byte glyphs (€, —,
+	// curly quotes, ü) from drifting the pill placement past where
+	// the model actually emitted the citation.
+	byteToRune := func(byteOffset int) int {
+		s := accumulatedText.String()
+		if byteOffset > len(s) {
+			byteOffset = len(s)
+		}
+		return utf8.RuneCountInString(s[:byteOffset])
+	}
+
+	// flushAllPendingAt anchors every buffered citation at the same
+	// rune `anchor` and ships them. Used at EventDone / EventError
+	// when we need to drain whatever's still pending — there are no
+	// more sentence boundaries coming.
+	flushAllPendingAt := func(anchor int) {
+		if len(pendingCitations) == 0 {
+			return
+		}
+		for i := range pendingCitations {
+			pendingCitations[i].SpanStart = anchor
+			pendingCitations[i].SpanEnd = anchor
+			citations = append(citations, pendingCitations[i])
+			c := pendingCitations[i]
+			out <- Event{Kind: EvCitation, Citation: &c}
+		}
+		pendingCitations = pendingCitations[:0]
+	}
+
+	// distributePendingAtBoundaries scans `text` from `fromByte` for
+	// successive sentence boundaries and pops pending citations FIFO,
+	// anchoring each at the next boundary's rune offset. Multi-
+	// sentence deltas thus distribute pills one-per-sentence instead
+	// of clustering at the first boundary. Stops when either the
+	// pending list drains or no more boundaries exist in the new
+	// region; the remainder stays buffered for the next delta.
+	distributePendingAtBoundaries := func(text string, fromByte int) {
+		cursor := fromByte
+		for len(pendingCitations) > 0 {
+			b := nextSentenceBoundary(text, cursor)
+			if b == 0 {
+				return
+			}
+			runeAnchor := byteToRune(b)
+			head := pendingCitations[0]
+			head.SpanStart = runeAnchor
+			head.SpanEnd = runeAnchor
+			citations = append(citations, head)
+			out <- Event{Kind: EvCitation, Citation: &head}
+			pendingCitations = pendingCitations[1:]
+			cursor = b
+		}
+	}
 
 	persistAndDone := func(stop string, errMsg string) {
 		finalOnce.Do(func() {
@@ -287,8 +353,15 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 			switch ev.Kind {
 			case llm.EventText:
 				if useNativeCitations {
+					prevLen := accumulatedText.Len()
 					accumulatedText.WriteString(ev.TextDelta)
 					out <- Event{Kind: EvText, TextDelta: ev.TextDelta}
+					// Distribute pending citations across any sentence
+					// boundaries that fell inside the new region —
+					// FIFO, one citation per boundary — so multi-
+					// sentence deltas don't pile every pending pill at
+					// the same point.
+					distributePendingAtBoundaries(accumulatedText.String(), prevLen)
 				} else {
 					clean, cites := parser.Feed(ev.TextDelta)
 					if clean != "" {
@@ -305,20 +378,18 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				if ev.Citation != nil {
 					// Anthropic's citation spans are offsets WITHIN the
 					// cited source document — not within the assistant's
-					// emitted text. We need response-text offsets so the
-					// FE can anchor the pill at the position the model
-					// actually emitted the citation. Use the current
-					// length of accumulated response text as the anchor;
-					// span_end == span_start means "pill at this point".
-					anchor := accumulatedText.Len()
-					cite := model.ChatCitation{
+					// emitted text. We need response-text offsets, but
+					// citations_delta and text_delta events interleave
+					// token-by-token, so the byte cursor is usually
+					// mid-word when a citation fires. Buffer the
+					// citation; the next text delta that crosses a
+					// sentence terminator (`.`/`!`/`?`/`\n`) flushes
+					// the buffer with a post-terminator anchor, giving
+					// Perplexity-style end-of-sentence pill placement.
+					pendingCitations = append(pendingCitations, model.ChatCitation{
 						DocID:     ev.Citation.DocID,
 						CitedText: ev.Citation.CitedText,
-						SpanStart: anchor,
-						SpanEnd:   anchor,
-					}
-					citations = append(citations, cite)
-					out <- Event{Kind: EvCitation, Citation: &cite}
+					})
 				}
 			case llm.EventToolCall:
 				// Phase 5 wires this. For Phase 2 we don't include
@@ -332,6 +403,10 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 						out <- Event{Kind: EvText, TextDelta: tail}
 					}
 				}
+				// Any citations still pending at the end of the stream
+				// land at the final response length — covers cases
+				// where the answer ends without a trailing terminator.
+				flushAllPendingAt(byteToRune(accumulatedText.Len()))
 				if ev.Usage != nil {
 					usage = &model.ChatUsage{
 						Input:      ev.Usage.InputTokens,
@@ -348,6 +423,11 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				persistAndDone(stop, "")
 				return
 			case llm.EventError:
+				// Flush any pending citations at the error point so
+				// nothing is silently dropped. Anchor at the current
+				// response length — partial answers still get their
+				// pills.
+				flushAllPendingAt(byteToRune(accumulatedText.Len()))
 				msg := "generation failed"
 				if ev.Err != nil {
 					msg = ev.Err.Error()
@@ -460,4 +540,66 @@ func parserDocsFromLLM(docs []llm.Document) []ParserDoc {
 		out[i] = ParserDoc{DocID: d.ID}
 	}
 	return out
+}
+
+// nextSentenceBoundary scans text[start:] for the first sentence
+// terminator and returns the offset right after it — i.e. the position
+// the next sentence (if any) starts at. Pills anchor at this offset
+// so they render as `Sentence.[N] Next sentence` (the trailing space
+// stays in the prose, not before the pill). Returns 0 when no
+// boundary is found in the new region (zero also doubles as "no
+// anchor" since callers gate on a positive return).
+//
+// Heuristics tuned for streaming markdown chat output:
+//   - A bare `\n` is a hard boundary.
+//   - `.` / `!` / `?` only count as a sentence end when the NEXT
+//     character is whitespace (avoiding decimals `4.7`, money
+//     `€107.10`, version strings, ellipses).
+//   - For `.` specifically, the PRECEDING character must be a letter
+//     (not a digit). This rejects markdown list markers like `2. `
+//     and trailing-digit cases like `5. ` which the model rarely
+//     uses as actual sentence-ends. Slightly punts on rare prose
+//     like "Page 5." but those are not common in Claude responses.
+//   - When the terminator candidate is the last character we've seen
+//     so far, return 0 and wait — the next streamed delta might
+//     confirm (whitespace) or reject (non-space) the boundary.
+func nextSentenceBoundary(text string, start int) int {
+	if start >= len(text) {
+		return 0
+	}
+	for i := start; i < len(text); i++ {
+		c := text[i]
+		switch c {
+		case '\n':
+			return i + 1
+		case '!', '?':
+			if i+1 >= len(text) {
+				return 0
+			}
+			next := text[i+1]
+			if next == ' ' || next == '\t' || next == '\n' {
+				return i + 1
+			}
+		case '.':
+			if i+1 >= len(text) {
+				return 0
+			}
+			next := text[i+1]
+			if next != ' ' && next != '\t' && next != '\n' {
+				continue
+			}
+			// Skip when the period sits after a digit — this is
+			// almost always a list marker (`2. `) or a decimal cut
+			// off mid-stream (`Apr 6.`/`5x.`), not a real sentence
+			// terminator in the model's prose.
+			if i > 0 {
+				prev := text[i-1]
+				if prev >= '0' && prev <= '9' {
+					continue
+				}
+			}
+			return i + 1
+		}
+	}
+	return 0
 }

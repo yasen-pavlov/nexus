@@ -245,6 +245,117 @@ func TestRun_HappyPath_AnthropicNativeCitations(t *testing.T) {
 	}
 }
 
+func TestRun_AnthropicCitations_AnchoredAtSentenceBoundary(t *testing.T) {
+	// Citation arrives mid-stream (between "Hel" and "lo, world.") — it
+	// should buffer until the sentence terminator is observed and then
+	// anchor right after the period, NOT at the byte-cursor offset where
+	// it interleaved.
+	gen := &fakeGenerator{
+		events: []llm.Event{
+			{Kind: llm.EventText, TextDelta: "Hel"},
+			{Kind: llm.EventCitation, Citation: &llm.Citation{DocID: "doc-a", CitedText: "src", SpanStart: 0, SpanEnd: 0}},
+			{Kind: llm.EventText, TextDelta: "lo, world. Next sentence"},
+			{Kind: llm.EventDone, StopReason: llm.StopEnd},
+		},
+	}
+	info := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", Provider: "anthropic", SupportsCitations: true}
+	search := &fakeSearch{docs: []model.DocumentHit{
+		{Document: model.Document{ID: uuid.MustParse("00000000-0000-0000-0000-000000000003"), Title: "Doc A", SourceType: "filesystem", Content: "alpha"}, Headline: "alpha"},
+	}}
+	o, chats := newOrchTest(t, gen, info, search)
+	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
+
+	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	collectEvents(t, ch, 2*time.Second)
+
+	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages", len(msgs))
+	}
+	asst := msgs[1]
+	if asst.Content != "Hello, world. Next sentence" {
+		t.Errorf("content=%q", asst.Content)
+	}
+	if len(asst.Citations) != 1 {
+		t.Fatalf("citations=%+v", asst.Citations)
+	}
+	const wantAnchor = 13 // length of "Hello, world." (post-period)
+	if asst.Citations[0].SpanStart != wantAnchor || asst.Citations[0].SpanEnd != wantAnchor {
+		t.Errorf("anchor=[%d,%d] want=[%d,%d]", asst.Citations[0].SpanStart, asst.Citations[0].SpanEnd, wantAnchor, wantAnchor)
+	}
+}
+
+func TestRun_AnthropicCitations_FlushOnDoneWithoutTerminator(t *testing.T) {
+	// No sentence terminator anywhere — pending citation must still be
+	// persisted, anchored at the final response length.
+	gen := &fakeGenerator{
+		events: []llm.Event{
+			{Kind: llm.EventText, TextDelta: "abc"},
+			{Kind: llm.EventCitation, Citation: &llm.Citation{DocID: "doc-a", CitedText: "src", SpanStart: 0, SpanEnd: 0}},
+			{Kind: llm.EventText, TextDelta: " def"},
+			{Kind: llm.EventDone, StopReason: llm.StopEnd},
+		},
+	}
+	info := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", Provider: "anthropic", SupportsCitations: true}
+	search := &fakeSearch{docs: []model.DocumentHit{
+		{Document: model.Document{ID: uuid.MustParse("00000000-0000-0000-0000-000000000004"), Title: "Doc A", SourceType: "filesystem", Content: "alpha"}, Headline: "alpha"},
+	}}
+	o, chats := newOrchTest(t, gen, info, search)
+	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
+
+	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	collectEvents(t, ch, 2*time.Second)
+
+	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
+	asst := msgs[1]
+	if asst.Content != "abc def" {
+		t.Errorf("content=%q", asst.Content)
+	}
+	if len(asst.Citations) != 1 {
+		t.Fatalf("citations=%+v", asst.Citations)
+	}
+	if asst.Citations[0].SpanEnd != len(asst.Content) {
+		t.Errorf("anchor=%d want=%d", asst.Citations[0].SpanEnd, len(asst.Content))
+	}
+}
+
+func TestNextSentenceBoundary(t *testing.T) {
+	cases := []struct {
+		name  string
+		text  string
+		start int
+		want  int
+	}{
+		{"period", "Hello, world. Next", 0, 13},
+		{"newline", "First\nSecond", 0, 6},
+		{"question", "Right? Yes", 0, 6},
+		{"exclamation", "Wow! Ok", 0, 4},
+		{"none", "no terminator yet", 0, 0},
+		{"start past end", "abc", 5, 0},
+		{"start past first terminator", "Sentence one. Sentence two.", 14, 0},
+		{"decimal not boundary", "Claude Opus 4.7 launch", 0, 0},
+		{"money not boundary", "€107.10 was paid", 0, 0},
+		{"trailing period defers", "Claude Opus 4.", 0, 0},
+		{"period before newline", "End.\nNext", 0, 4},
+		{"list marker not boundary", "Done.\n\n2. Next item", 0, 5},
+		{"list marker scanned past", "2. First item\n", 0, 14},
+		{"digit period at sentence end punts", "Page 5. New section", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextSentenceBoundary(tc.text, tc.start); got != tc.want {
+				t.Errorf("got %d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRun_NonAnthropic_ParsesBracketCitations(t *testing.T) {
 	docID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
 	gen := &fakeGenerator{
