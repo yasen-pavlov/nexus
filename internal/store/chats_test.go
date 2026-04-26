@@ -530,6 +530,74 @@ func TestListChats_PreviewTruncatedToCap(t *testing.T) {
 	}
 }
 
+func TestAppendMessage_PersistsEvidence(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	userID := seedUser(t, st, "chat-evidence")
+	chat := newChat(userID)
+	if err := st.CreateChat(ctx, chat); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	want := []model.ChunkPreview{
+		{DocID: "os-chunk-1", Title: "Anthropic invoice", Source: "imap", Date: "2026-04-06"},
+		{DocID: "os-chunk-2", Title: "Wolt receipt", Source: "imap", Headline: "<em>order</em> #42"},
+	}
+	if err := st.AppendMessage(ctx, &model.ChatMessage{
+		ChatID:   chat.ID,
+		Role:     model.ChatRoleAssistant,
+		Content:  "answer",
+		Model:    "anthropic:claude-sonnet-4-6",
+		Evidence: want,
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	msgs, err := st.ListMessages(ctx, chat.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("want 1 msg, got %d", len(msgs))
+	}
+	got := msgs[0].Evidence
+	if len(got) != len(want) {
+		t.Fatalf("evidence len=%d want=%d", len(got), len(want))
+	}
+	for i, c := range want {
+		if got[i] != c {
+			t.Errorf("evidence[%d] = %+v want %+v", i, got[i], c)
+		}
+	}
+}
+
+func TestAppendMessage_EmptyEvidenceStoredAsNull(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	userID := seedUser(t, st, "chat-no-evidence")
+	chat := newChat(userID)
+	if err := st.CreateChat(ctx, chat); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// User turns never carry evidence; assistant turns may run before
+	// retrieval (e.g. Phase 5 tool-use round-trips). Either way, a
+	// nil/empty slice must round-trip as nil — not `[]`.
+	if err := st.AppendMessage(ctx, &model.ChatMessage{
+		ChatID:  chat.ID,
+		Role:    model.ChatRoleUser,
+		Content: "hi",
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	msgs, err := st.ListMessages(ctx, chat.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if msgs[0].Evidence != nil {
+		t.Errorf("want nil evidence, got %+v", msgs[0].Evidence)
+	}
+}
+
 func TestListMessages_EmptyChatReturnsEmptySlice(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

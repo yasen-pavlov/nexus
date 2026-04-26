@@ -377,6 +377,11 @@ export interface ChatMessage {
   content: string;
   model?: string;
   citations?: ChatCitation[];
+  // Evidence chunks the orchestrator retrieved for this assistant
+  // turn. ChunkPreview.id is the OpenSearch chunk handle, so the
+  // field doubles as a stable graph link from the chat back to the
+  // grounding sources (resolves via /api/documents/:id).
+  evidence?: ChunkPreview[];
   tool_calls?: ChatToolCall[];
   usage?: ChatUsage;
   stop_reason?: string;

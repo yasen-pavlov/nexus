@@ -47,10 +47,31 @@ type ChatMessage struct {
 	Content    string         `json:"content"`
 	Model      string         `json:"model,omitempty"`
 	Citations  []ChatCitation `json:"citations,omitempty"`
+	// Evidence is the chunks the orchestrator retrieved for THIS turn
+	// (the same payload that streamed in EvEvidence). Persisting them
+	// alongside citations preserves the citation→source link end-to-end:
+	// ChunkPreview.DocID is the OpenSearch chunk handle, so historical
+	// chats stay grounded — citations can render as numbered pills, the
+	// FE evidence rail repopulates, and any future feature can hop
+	// /api/documents/{id}, /related, /conversations, /blob from the
+	// stored handles.
+	Evidence   []ChunkPreview `json:"evidence,omitempty"`
 	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
 	Usage      *ChatUsage     `json:"usage,omitempty"`
 	StopReason string         `json:"stop_reason,omitempty"`
 	CreatedAt  time.Time      `json:"created_at"`
+}
+
+// ChunkPreview is the minimum a UI needs to render an evidence card. The
+// DocID field is the OpenSearch chunk handle — same id used by /api/search
+// hits and /api/documents/{id} — so it doubles as a stable graph pointer
+// from any persisted chat message back to its grounding sources.
+type ChunkPreview struct {
+	DocID    string `json:"id"`
+	Title    string `json:"title"`
+	Source   string `json:"source"`
+	Date     string `json:"date,omitempty"`
+	Headline string `json:"headline,omitempty"`
 }
 
 // ChatCitation pins an assistant claim to a retrieved document. SpanStart

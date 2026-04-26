@@ -180,7 +180,14 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		assistantID     uuid.UUID
 		accumulatedText strings.Builder
 		citations       []model.ChatCitation
-		usage           *model.ChatUsage
+		// evidence is captured once after retrieval so the closure below
+		// can persist it alongside the assistant message regardless of
+		// what stop_reason fires. ChunkPreview.DocID is the OpenSearch
+		// chunk handle — persisting it preserves the chat → source
+		// graph end-to-end (FE rail repopulates on reload, future
+		// features can hop /api/documents/{id}, /related, /blob, etc.).
+		evidence []ChunkPreview
+		usage    *model.ChatUsage
 	)
 
 	persistAndDone := func(stop string, errMsg string) {
@@ -195,6 +202,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				Content:    accumulatedText.String(),
 				Model:      modelID,
 				Citations:  citations,
+				Evidence:   evidence,
 				Usage:      usage,
 				StopReason: stop,
 			}
@@ -226,6 +234,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 	}
 	docs := buildLLMDocs(result.Documents, o.cfg.MaxEvidenceChunks)
 	previews := buildPreviews(result.Documents, o.cfg.MaxEvidenceChunks)
+	evidence = previews
 	out <- Event{Kind: EvEvidence, Evidence: previews}
 
 	// --- History packing ---

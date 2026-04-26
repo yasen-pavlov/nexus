@@ -14,7 +14,7 @@ import (
 
 const chatCols = `id, user_id, title, default_model, created_at, updated_at`
 const chatColsQualified = `c.id, c.user_id, c.title, c.default_model, c.created_at, c.updated_at`
-const chatMessageCols = `id, chat_id, role, seq, content, model, citations, tool_calls, usage, stop_reason, created_at`
+const chatMessageCols = `id, chat_id, role, seq, content, model, citations, evidence, tool_calls, usage, stop_reason, created_at`
 
 // ChatUpdate carries the fields a PATCH may set. Nil fields are left untouched.
 type ChatUpdate struct {
@@ -185,10 +185,10 @@ func (s *Store) DeleteChat(ctx context.Context, id uuid.UUID) error {
 func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	var m model.ChatMessage
 	var modelStr, stopReason *string
-	var citationsJSON, toolCallsJSON, usageJSON []byte
+	var citationsJSON, evidenceJSON, toolCallsJSON, usageJSON []byte
 	err := scan(
 		&m.ID, &m.ChatID, &m.Role, &m.Seq, &m.Content,
-		&modelStr, &citationsJSON, &toolCallsJSON, &usageJSON, &stopReason, &m.CreatedAt,
+		&modelStr, &citationsJSON, &evidenceJSON, &toolCallsJSON, &usageJSON, &stopReason, &m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -202,6 +202,11 @@ func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	if len(citationsJSON) > 0 {
 		if err := json.Unmarshal(citationsJSON, &m.Citations); err != nil {
 			return nil, fmt.Errorf("store: unmarshal citations: %w", err)
+		}
+	}
+	if len(evidenceJSON) > 0 {
+		if err := json.Unmarshal(evidenceJSON, &m.Evidence); err != nil {
+			return nil, fmt.Errorf("store: unmarshal evidence: %w", err)
 		}
 	}
 	if len(toolCallsJSON) > 0 {
@@ -257,6 +262,10 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 	if err != nil {
 		return fmt.Errorf("store: marshal citations: %w", err)
 	}
+	evidenceJSON, err := marshalNullable(msg.Evidence)
+	if err != nil {
+		return fmt.Errorf("store: marshal evidence: %w", err)
+	}
 	toolCallsJSON, err := marshalNullable(msg.ToolCalls)
 	if err != nil {
 		return fmt.Errorf("store: marshal tool_calls: %w", err)
@@ -293,9 +302,9 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		msg.ID, msg.ChatID, msg.Role, msg.Seq, msg.Content,
-		nullableString(msg.Model), citationsJSON, toolCallsJSON, usageJSON,
+		nullableString(msg.Model), citationsJSON, evidenceJSON, toolCallsJSON, usageJSON,
 		nullableString(msg.StopReason), msg.CreatedAt,
 	)
 	if err != nil {
@@ -325,6 +334,10 @@ func marshalNullable(v any) ([]byte, error) {
 			return nil, nil
 		}
 	case []model.ChatToolCall:
+		if len(t) == 0 {
+			return nil, nil
+		}
+	case []model.ChunkPreview:
 		if len(t) == 0 {
 			return nil, nil
 		}

@@ -124,8 +124,16 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   const lastUserSeq = lastSeqOfRole(persistedMessages, "user");
   const lastAssistantSeq = lastSeqOfRole(persistedMessages, "assistant");
 
-  // The evidence rail tracks whichever turn is currently most relevant.
-  const railEvidence = showStreaming ? turn.evidence : [];
+  // The evidence rail tracks whichever turn is currently most relevant:
+  // the in-flight stream when one's running, otherwise the most recent
+  // persisted assistant turn's stored evidence.
+  const lastAssistant = persistedMessages
+    .slice()
+    .reverse()
+    .find((m) => m.role === "assistant");
+  const railEvidence = showStreaming
+    ? turn.evidence
+    : (lastAssistant?.evidence ?? []);
 
   const isStreaming = turn.phase === "retrieving" || turn.phase === "streaming";
   const phaseLabel =
@@ -143,7 +151,7 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
             <Turn
               key={m.id}
               message={m}
-              evidence={[]}
+              evidence={m.evidence ?? []}
               onJumpToEvidence={onJumpToEvidence}
               isLastUser={m.role === "user" && m.seq === lastUserSeq}
               isLastAssistant={m.role === "assistant" && m.seq === lastAssistantSeq}

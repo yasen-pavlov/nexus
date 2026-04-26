@@ -35,16 +35,10 @@ const (
 	EvError
 )
 
-// ChunkPreview is the minimum a UI needs to render an evidence card —
-// stays decoupled from the heavier model.DocumentHit so the SSE payload
-// is small.
-type ChunkPreview struct {
-	DocID    string `json:"id"`
-	Title    string `json:"title"`
-	Source   string `json:"source"`
-	Date     string `json:"date,omitempty"`
-	Headline string `json:"headline,omitempty"`
-}
+// ChunkPreview is re-exported from internal/model for backwards-compat
+// inside the rag package. The canonical definition lives on the model
+// package because chat_messages.evidence persists this shape.
+type ChunkPreview = model.ChunkPreview
 
 // Event is the streamed payload type. Exactly one payload field is
 // populated per Kind.
