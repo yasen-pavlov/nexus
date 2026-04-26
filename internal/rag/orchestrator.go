@@ -303,11 +303,19 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				}
 			case llm.EventCitation:
 				if ev.Citation != nil {
+					// Anthropic's citation spans are offsets WITHIN the
+					// cited source document — not within the assistant's
+					// emitted text. We need response-text offsets so the
+					// FE can anchor the pill at the position the model
+					// actually emitted the citation. Use the current
+					// length of accumulated response text as the anchor;
+					// span_end == span_start means "pill at this point".
+					anchor := accumulatedText.Len()
 					cite := model.ChatCitation{
 						DocID:     ev.Citation.DocID,
 						CitedText: ev.Citation.CitedText,
-						SpanStart: ev.Citation.SpanStart,
-						SpanEnd:   ev.Citation.SpanEnd,
+						SpanStart: anchor,
+						SpanEnd:   anchor,
 					}
 					citations = append(citations, cite)
 					out <- Event{Kind: EvCitation, Citation: &cite}

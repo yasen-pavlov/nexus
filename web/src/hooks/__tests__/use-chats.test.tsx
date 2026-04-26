@@ -79,6 +79,6 @@ describe("useDeleteChat", () => {
     await act(async () => {
       await result.current.mutateAsync("c-1");
     });
-    expect(result.current.isSuccess).toBe(true);
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
   });
 });

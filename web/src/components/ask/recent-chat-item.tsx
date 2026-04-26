@@ -55,7 +55,15 @@ export function RecentChatItem({
         params={{ chatId: chat.id }}
         className="flex flex-col gap-1.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded-md"
       >
-        <div className="line-clamp-2 text-[14px] font-medium leading-[20px] text-foreground">
+        <div
+          className={cn(
+            "line-clamp-2 text-[14px] font-medium leading-[20px] text-foreground",
+            // Reserve room for the absolutely-positioned delete affordance
+            // in the top-right corner so 2-line titles never run under it.
+            // Wider on hover/confirm to accommodate the "Delete?" pill.
+            "pr-9 group-hover/recent:pr-24",
+          )}
+        >
           {title}
         </div>
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
