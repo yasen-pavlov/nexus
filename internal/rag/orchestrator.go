@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/llm"
@@ -199,18 +198,27 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		pendingCitations []model.ChatCitation
 	)
 
-	// byteToRune converts a byte offset into accumulatedText to a rune
-	// (character) offset. The FE consumes these offsets as JS string
-	// positions, where every BMP code point counts as one — so we
-	// need char counts, not bytes, to keep multi-byte glyphs (€, —,
-	// curly quotes, ü) from drifting the pill placement past where
-	// the model actually emitted the citation.
-	byteToRune := func(byteOffset int) int {
+	// byteToUTF16 converts a byte offset into accumulatedText to a
+	// UTF-16 code-unit offset. The FE consumes these offsets as
+	// JavaScript string positions, where BMP code points count as
+	// one unit and supplementary code points (most emoji like 🛠️
+	// 💬 🏠) count as TWO (surrogate pair). Plain rune counts would
+	// undershoot the JS position by one per emoji and drop the pill
+	// before the sentence terminator instead of after it.
+	byteToUTF16 := func(byteOffset int) int {
 		s := accumulatedText.String()
 		if byteOffset > len(s) {
 			byteOffset = len(s)
 		}
-		return utf8.RuneCountInString(s[:byteOffset])
+		n := 0
+		for _, r := range s[:byteOffset] {
+			if r >= 0x10000 {
+				n += 2
+			} else {
+				n++
+			}
+		}
+		return n
 	}
 
 	// flushAllPendingAt anchors every buffered citation at the same
@@ -245,7 +253,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 			if b == 0 {
 				return
 			}
-			runeAnchor := byteToRune(b)
+			runeAnchor := byteToUTF16(b)
 			head := pendingCitations[0]
 			head.SpanStart = runeAnchor
 			head.SpanEnd = runeAnchor
@@ -406,7 +414,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				// Any citations still pending at the end of the stream
 				// land at the final response length — covers cases
 				// where the answer ends without a trailing terminator.
-				flushAllPendingAt(byteToRune(accumulatedText.Len()))
+				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
 				if ev.Usage != nil {
 					usage = &model.ChatUsage{
 						Input:      ev.Usage.InputTokens,
@@ -427,7 +435,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				// nothing is silently dropped. Anchor at the current
 				// response length — partial answers still get their
 				// pills.
-				flushAllPendingAt(byteToRune(accumulatedText.Len()))
+				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
 				msg := "generation failed"
 				if ev.Err != nil {
 					msg = ev.Err.Error()
