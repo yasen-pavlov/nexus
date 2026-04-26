@@ -32,6 +32,7 @@ const seedSettings = {
   openai_api_key: "",
   ollama_url: "http://localhost:11434",
   allowlist: [],
+  rewriter_model: "",
 };
 
 const seedModels = [
@@ -187,6 +188,58 @@ describe("LLMForm", () => {
     expect(
       screen.getByDisplayValue("http://localhost:11434"),
     ).toBeInTheDocument();
+  });
+
+  it("renders the Refinement subsection with a Rewriter model field", async () => {
+    mount();
+    await waitFor(() =>
+      expect(screen.getByText("Refinement")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Rewriter model")).toBeInTheDocument();
+  });
+
+  it("PUTs the rewriter_model when the Refinement provider is set", async () => {
+    server.use(
+      http.get("*/api/settings/llm", () =>
+        HttpResponse.json({
+          data: { ...seedSettings, rewriter_model: "anthropic:claude-haiku-4-5" },
+        }),
+      ),
+    );
+
+    let captured: Record<string, unknown> | null = null;
+    server.use(
+      http.put("*/api/settings/llm", async ({ request }) => {
+        captured = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ data: seedSettings });
+      }),
+    );
+
+    mount();
+    // Wait for the Refinement section to load with the saved value.
+    await waitFor(() =>
+      expect(screen.getByText("Refinement")).toBeInTheDocument(),
+    );
+
+    // Touch the Ollama URL just to drive the form dirty (the Refinement
+    // section already has rewriter_model populated from the seed; we
+    // just want to verify the round-trip persists it).
+    const ollamaInput = screen.getByPlaceholderText("http://localhost:11434");
+    await userEvent.clear(ollamaInput);
+    await userEvent.type(ollamaInput, "http://localhost:11434/x");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /save changes/i }),
+      ).toBeInTheDocument(),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /save changes/i }),
+    );
+    await waitFor(() => expect(captured).not.toBeNull());
+
+    const body = captured as unknown as Record<string, unknown>;
+    expect(body.rewriter_model).toBe("anthropic:claude-haiku-4-5");
   });
 
   it("toggling off a model in the empty-allowlist state switches to a concrete allowlist", async () => {

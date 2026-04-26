@@ -104,6 +104,7 @@ func NewRouter(
 			r.Get("/me/identities", h.GetMyIdentities)
 			r.Get("/search", h.Search)
 			r.Get("/llm/models", h.GetLLMModels)
+			r.Get("/llm/default", h.GetLLMDefault)
 
 			r.Route("/chats", func(r chi.Router) {
 				r.Get("/", h.ListChats)

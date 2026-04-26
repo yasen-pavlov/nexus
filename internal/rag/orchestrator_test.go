@@ -3,7 +3,6 @@ package rag
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -13,170 +12,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// --- fakes ---
-
-type fakeChats struct {
-	mu       sync.Mutex
-	chats    map[uuid.UUID]*model.Chat
-	messages map[uuid.UUID][]model.ChatMessage
-}
-
-func newFakeChats() *fakeChats {
-	return &fakeChats{
-		chats:    map[uuid.UUID]*model.Chat{},
-		messages: map[uuid.UUID][]model.ChatMessage{},
-	}
-}
-
-func (f *fakeChats) seed(c *model.Chat) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.chats[c.ID] = c
-}
-
-func (f *fakeChats) GetChat(_ context.Context, id uuid.UUID) (*model.Chat, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	c, ok := f.chats[id]
-	if !ok {
-		return nil, nil
-	}
-	cp := *c
-	return &cp, nil
-}
-
-func (f *fakeChats) ListMessages(_ context.Context, chatID uuid.UUID) ([]model.ChatMessage, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]model.ChatMessage, len(f.messages[chatID]))
-	copy(out, f.messages[chatID])
-	return out, nil
-}
-
-func (f *fakeChats) AppendMessage(_ context.Context, msg *model.ChatMessage) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.chats[msg.ChatID]; !ok {
-		return errors.New("chat not found")
-	}
-	if msg.ID == uuid.Nil {
-		msg.ID = uuid.New()
-	}
-	if msg.CreatedAt.IsZero() {
-		msg.CreatedAt = time.Now()
-	}
-	msg.Seq = len(f.messages[msg.ChatID]) + 1
-	f.messages[msg.ChatID] = append(f.messages[msg.ChatID], *msg)
-	return nil
-}
-
-type fakeSearch struct {
-	docs []model.DocumentHit
-	err  error
-}
-
-func (f *fakeSearch) Run(_ context.Context, _ model.SearchRequest) (*model.SearchResult, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &model.SearchResult{Documents: f.docs, TotalCount: len(f.docs)}, nil
-}
-
-type fakeGenerator struct {
-	events []llm.Event
-	delay  time.Duration // optional per-event delay to exercise cancellation
-	err    error
-}
-
-func (f *fakeGenerator) Generate(ctx context.Context, _ llm.GenerateRequest) (<-chan llm.Event, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	out := make(chan llm.Event, len(f.events))
-	go func() {
-		defer close(out)
-		for _, ev := range f.events {
-			if f.delay > 0 {
-				select {
-				case <-ctx.Done():
-					out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-					return
-				case <-time.After(f.delay):
-				}
-			}
-			select {
-			case <-ctx.Done():
-				out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-				return
-			case out <- ev:
-			}
-		}
-	}()
-	return out, nil
-}
-
-type fakeRegistry struct {
-	gen  llm.Generator
-	info llm.ModelInfo
-	err  error
-}
-
-func (f *fakeRegistry) Get(_ string) (llm.Generator, llm.ModelInfo, error) {
-	return f.gen, f.info, f.err
-}
-
-func (f *fakeRegistry) Models() []llm.ModelInfo {
-	if f.err != nil {
-		return nil
-	}
-	return []llm.ModelInfo{f.info}
-}
-
-// --- helpers ---
-
-func newOrchTest(t *testing.T, gen *fakeGenerator, info llm.ModelInfo, search SearchProvider) (*Orchestrator, *fakeChats) {
-	t.Helper()
-	chats := newFakeChats()
-	reg := &fakeRegistry{gen: gen, info: info}
-	o := NewOrchestrator(Deps{
-		Registry: func() llm.Registry { return reg },
-		Search:   search,
-		Chats:    chats,
-		Cfg:      DefaultConfig(),
-		Log:      zap.NewNop(),
-	})
-	return o, chats
-}
-
-func collectEvents(t *testing.T, ch <-chan Event, timeout time.Duration) []Event {
-	t.Helper()
-	var events []Event
-	deadline := time.After(timeout)
-	for {
-		select {
-		case ev, ok := <-ch:
-			if !ok {
-				return events
-			}
-			events = append(events, ev)
-		case <-deadline:
-			t.Fatalf("timed out collecting events; got %d so far", len(events))
-		}
-	}
-}
-
-func makeChat(t *testing.T, chats *fakeChats, defaultModel string) *model.Chat {
-	t.Helper()
-	c := &model.Chat{
-		ID:           uuid.New(),
-		UserID:       uuid.New(),
-		DefaultModel: defaultModel,
-	}
-	chats.seed(c)
-	return c
-}
-
-// --- tests ---
+// Phase 2/3 baseline: turn-flow, citation anchoring, history packing,
+// error paths. Phase 4 cases live in orchestrator_rewrite_test.go and
+// orchestrator_title_test.go; shared fakes + helpers in
+// orchestrator_fakes_test.go.
 
 func TestRun_HappyPath_AnthropicNativeCitations(t *testing.T) {
 	gen := &fakeGenerator{
@@ -194,15 +33,11 @@ func TestRun_HappyPath_AnthropicNativeCitations(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{
+	events := runOrchAndDrain(t, o, RunInput{
 		ChatID:  chat.ID,
 		UserID:  chat.UserID,
 		Content: "ping",
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
 
 	// retrieving + evidence + 2x text + 1x citation + usage + done = 7
 	if len(events) < 6 {
@@ -219,7 +54,6 @@ func TestRun_HappyPath_AnthropicNativeCitations(t *testing.T) {
 		t.Errorf("last=%+v want EvDone/end_turn", last)
 	}
 
-	// Verify the assistant message was persisted
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages", len(msgs))
@@ -246,10 +80,6 @@ func TestRun_HappyPath_AnthropicNativeCitations(t *testing.T) {
 }
 
 func TestRun_AnthropicCitations_AnchoredAtSentenceBoundary(t *testing.T) {
-	// Citation arrives mid-stream (between "Hel" and "lo, world.") — it
-	// should buffer until the sentence terminator is observed and then
-	// anchor right after the period, NOT at the byte-cursor offset where
-	// it interleaved.
 	gen := &fakeGenerator{
 		events: []llm.Event{
 			{Kind: llm.EventText, TextDelta: "Hel"},
@@ -265,11 +95,7 @@ func TestRun_AnthropicCitations_AnchoredAtSentenceBoundary(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	collectEvents(t, ch, 2*time.Second)
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
 
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if len(msgs) != 2 {
@@ -282,15 +108,13 @@ func TestRun_AnthropicCitations_AnchoredAtSentenceBoundary(t *testing.T) {
 	if len(asst.Citations) != 1 {
 		t.Fatalf("citations=%+v", asst.Citations)
 	}
-	const wantAnchor = 13 // length of "Hello, world." (post-period)
+	const wantAnchor = 13
 	if asst.Citations[0].SpanStart != wantAnchor || asst.Citations[0].SpanEnd != wantAnchor {
 		t.Errorf("anchor=[%d,%d] want=[%d,%d]", asst.Citations[0].SpanStart, asst.Citations[0].SpanEnd, wantAnchor, wantAnchor)
 	}
 }
 
 func TestRun_AnthropicCitations_FlushOnDoneWithoutTerminator(t *testing.T) {
-	// No sentence terminator anywhere — pending citation must still be
-	// persisted, anchored at the final response length.
 	gen := &fakeGenerator{
 		events: []llm.Event{
 			{Kind: llm.EventText, TextDelta: "abc"},
@@ -306,11 +130,7 @@ func TestRun_AnthropicCitations_FlushOnDoneWithoutTerminator(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	collectEvents(t, ch, 2*time.Second)
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "ping"})
 
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	asst := msgs[1]
@@ -372,15 +192,11 @@ func TestRun_NonAnthropic_ParsesBracketCitations(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "openai:gpt-5-mini")
 
-	ch, err := o.Run(context.Background(), RunInput{
+	events := runOrchAndDrain(t, o, RunInput{
 		ChatID:  chat.ID,
 		UserID:  chat.UserID,
 		Content: "q",
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
 
 	var citationCount int
 	var textChunks []string
@@ -430,7 +246,6 @@ func TestRun_Cancellation_PersistsPartialMessage(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Read the first text event, then cancel.
 	var seenPartial bool
 	for ev := range ch {
 		if ev.Kind == EvText && ev.TextDelta == "partial" {
@@ -464,11 +279,7 @@ func TestRun_SearchFailure_PersistsErrorMessage(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 
 	var sawError bool
 	for _, ev := range events {
@@ -497,11 +308,7 @@ func TestRun_GenerateFailure_PersistsErrorMessage(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 
 	last := events[len(events)-1]
 	if last.Kind != EvDone || last.StopReason != "error" {
@@ -521,11 +328,7 @@ func TestRun_LLMEventError_StopsAndPersists(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "openai:gpt-5-mini")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 	last := events[len(events)-1]
 	if last.Kind != EvDone || last.StopReason != "error" {
 		t.Errorf("last=%+v", last)
@@ -559,17 +362,12 @@ func TestRun_ModelOverrideBeatsChatDefault(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{
+	runOrchAndDrain(t, o, RunInput{
 		ChatID:  chat.ID,
 		UserID:  chat.UserID,
 		Content: "q",
 		Model:   "anthropic:claude-haiku-4-5",
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	for range ch {
-	}
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if msgs[1].Model != "anthropic:claude-haiku-4-5" {
 		t.Errorf("persisted model=%q want override", msgs[1].Model)
@@ -578,16 +376,16 @@ func TestRun_ModelOverrideBeatsChatDefault(t *testing.T) {
 
 func TestRun_NoModelConfigured(t *testing.T) {
 	gen := &fakeGenerator{}
+	chats := newFakeChats()
+	chat := makeChat(t, chats, "")
 	o := NewOrchestrator(Deps{
 		Registry: func() llm.Registry { return &fakeRegistry{gen: gen, err: errors.New("no models")} },
+		Settings: func() Settings { return Settings{} },
 		Search:   &fakeSearch{},
-		Chats:    newFakeChats(),
+		Chats:    chats,
 		Cfg:      DefaultConfig(),
 		Log:      zap.NewNop(),
 	})
-	chats := newFakeChats()
-	chat := makeChat(t, chats, "")
-	o.chats = chats
 
 	_, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 	if err == nil {
@@ -602,7 +400,6 @@ func TestRun_HistoryPackedFromPriorMessages(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, search)
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	// Seed two prior turns
 	ctx := context.Background()
 	if err := chats.AppendMessage(ctx, &model.ChatMessage{ChatID: chat.ID, Role: model.ChatRoleUser, Content: "first"}); err != nil {
 		t.Fatal(err)
@@ -611,14 +408,8 @@ func TestRun_HistoryPackedFromPriorMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch, err := o.Run(ctx, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "follow up"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range ch {
-	}
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "follow up"})
 
-	// Expect 4 messages stored: 2 prior + new user + new assistant
 	msgs, _ := chats.ListMessages(ctx, chat.ID)
 	if len(msgs) != 4 {
 		t.Errorf("got %d msgs", len(msgs))
@@ -633,15 +424,8 @@ func TestRun_PacksHistoryWithoutCurrentDuplicate(t *testing.T) {
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
 	ctx := context.Background()
-	ch, err := o.Run(ctx, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "hello"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range ch {
-	}
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "hello"})
 
-	// First-turn case: history packing needs to NOT include the current
-	// user message twice. Verify by checking message count.
 	msgs, _ := chats.ListMessages(ctx, chat.ID)
 	if len(msgs) != 2 {
 		t.Errorf("got %d msgs", len(msgs))
@@ -659,6 +443,7 @@ func TestDefaultConfig_FillsZeros(t *testing.T) {
 
 	o := NewOrchestrator(Deps{
 		Registry: func() llm.Registry { return &fakeRegistry{} },
+		Settings: func() Settings { return Settings{} },
 		Search:   &fakeSearch{},
 		Chats:    newFakeChats(),
 		Cfg:      Config{}, // all zero
@@ -706,23 +491,16 @@ func TestBuildPreviews_Caps(t *testing.T) {
 }
 
 func TestRun_StreamClosedWithoutDone(t *testing.T) {
-	// scripted generator emits text then closes — no Done. Orchestrator
-	// must persist an error message and emit EvDone.
 	gen := &fakeGenerator{
 		events: []llm.Event{
 			{Kind: llm.EventText, TextDelta: "abrupt"},
-			// no EventDone — channel closes after this
 		},
 	}
 	info := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", SupportsCitations: true}
 	o, chats := newOrchTest(t, gen, info, &fakeSearch{})
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	events := collectEvents(t, ch, 2*time.Second)
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 	last := events[len(events)-1]
 	if last.Kind != EvDone || last.StopReason != "error" {
 		t.Errorf("last=%+v", last)
@@ -741,47 +519,12 @@ func TestRun_UnexpectedToolCallLogsAndContinues(t *testing.T) {
 	o, chats := newOrchTest(t, gen, info, &fakeSearch{})
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for ev := range ch {
-		_ = ev
-	}
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
+
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if msgs[1].Content != "ok" {
 		t.Errorf("content=%q", msgs[1].Content)
 	}
-}
-
-// failingChatStore wraps fakeChats but returns an error from
-// ListMessages so we can exercise the packHistory error path.
-type failingChatStore struct{ *fakeChats }
-
-func (f *failingChatStore) ListMessages(_ context.Context, _ uuid.UUID) ([]model.ChatMessage, error) {
-	return nil, errors.New("list-msgs failure")
-}
-
-// errChatStore returns an error from GetChat or AppendMessage as
-// configured.
-type errChatStore struct {
-	*fakeChats
-	getErr    error
-	appendErr error
-}
-
-func (e *errChatStore) GetChat(ctx context.Context, id uuid.UUID) (*model.Chat, error) {
-	if e.getErr != nil {
-		return nil, e.getErr
-	}
-	return e.fakeChats.GetChat(ctx, id)
-}
-
-func (e *errChatStore) AppendMessage(ctx context.Context, msg *model.ChatMessage) error {
-	if e.appendErr != nil {
-		return e.appendErr
-	}
-	return e.fakeChats.AppendMessage(ctx, msg)
 }
 
 func TestRun_GetChatErrorPropagates(t *testing.T) {
@@ -791,10 +534,11 @@ func TestRun_GetChatErrorPropagates(t *testing.T) {
 		Registry: func() llm.Registry {
 			return &fakeRegistry{gen: &fakeGenerator{}, info: llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6"}}
 		},
-		Search: &fakeSearch{},
-		Chats:  failing,
-		Cfg:    DefaultConfig(),
-		Log:    zap.NewNop(),
+		Settings: func() Settings { return Settings{} },
+		Search:   &fakeSearch{},
+		Chats:    failing,
+		Cfg:      DefaultConfig(),
+		Log:      zap.NewNop(),
 	})
 	_, err := o.Run(context.Background(), RunInput{ChatID: uuid.New(), UserID: uuid.New(), Content: "q"})
 	if err == nil {
@@ -810,10 +554,11 @@ func TestRun_AppendUserMessageErrorPropagates(t *testing.T) {
 		Registry: func() llm.Registry {
 			return &fakeRegistry{gen: &fakeGenerator{}, info: llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6"}}
 		},
-		Search: &fakeSearch{},
-		Chats:  failing,
-		Cfg:    DefaultConfig(),
-		Log:    zap.NewNop(),
+		Settings: func() Settings { return Settings{} },
+		Search:   &fakeSearch{},
+		Chats:    failing,
+		Cfg:      DefaultConfig(),
+		Log:      zap.NewNop(),
 	})
 	_, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 	if err == nil {
@@ -828,6 +573,7 @@ func TestRun_PackHistoryFailureFallsBackToEmptyHistory(t *testing.T) {
 	failing := &failingChatStore{fakeChats: chats}
 	o := NewOrchestrator(Deps{
 		Registry: func() llm.Registry { return &fakeRegistry{gen: gen, info: info} },
+		Settings: func() Settings { return Settings{} },
 		Search:   &fakeSearch{},
 		Chats:    failing,
 		Cfg:      DefaultConfig(),
@@ -835,13 +581,8 @@ func TestRun_PackHistoryFailureFallsBackToEmptyHistory(t *testing.T) {
 	})
 	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
 
-	ch, err := o.Run(context.Background(), RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	for range ch {
-	}
-	// Assistant message still persisted despite the history failure.
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
+
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if len(msgs) != 2 {
 		t.Errorf("got %d msgs", len(msgs))

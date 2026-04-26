@@ -39,6 +39,9 @@ export interface StreamingTurn {
   phase: StreamPhase;
   /** The user content that started this turn — useful for "Regenerate". */
   userContent: string;
+  /** The query that actually went to OpenSearch — equals userContent when
+   *  the rewriter didn't run, otherwise the rewriter's normalised form.
+   *  The phase chip shows "Searching for: <query>" when query !== userContent. */
   query?: string;
   evidence: ChunkPreview[];
   answer: string;
@@ -47,6 +50,39 @@ export interface StreamingTurn {
   stopReason?: string;
   messageID?: string;
   error?: StreamErrorInfo;
+  /** True when the rewriter judged the question answerable from chat
+   *  history alone — phase strip flips to "Answering from history" and
+   *  the evidence rail collapses for this turn. */
+  skippedRetrieval?: boolean;
+  /** Auto-title delivered via `event: title` between usage and done.
+   *  Consumed by chat-thread.tsx to invalidate chatKeys.list() so the
+   *  recent-chats grid catches the new title without a manual refetch. */
+  autoTitle?: string;
+  /** When set, the rewriter ran but couldn't produce a usable result
+   *  (timeout / empty / parse_failed / error). The phase chip renders
+   *  a quiet diagnostic glyph so users know the search ran with their
+   *  literal phrasing rather than a coreference-resolved rewrite. */
+  rewriterFailureReason?: string;
+  /** When set, the auto-title path attempted but failed. Surfaced to
+   *  the same diagnostic affordance so admins can see why titles
+   *  aren't appearing on chats they expected to see auto-titled. */
+  titleFailureReason?: string;
+  /** Wall-clock timestamp (ms since epoch) when the turn started.
+   *  PhaseChip uses it to render an elapsed counter during streaming
+   *  ("Generating answer · 0:23"); unset on idle. */
+  startedAt?: number;
+  /** Wall-clock timestamp (ms since epoch) when the turn completed
+   *  (done or error frame received). Paired with startedAt so the
+   *  streaming AssistantTurn footer can show a final duration label
+   *  the instant the turn ends — without waiting for the chat-detail
+   *  refetch that would surface persisted timestamps. */
+  completedAt?: number;
+  /** Server-measured runTurn duration in milliseconds, carried on the
+   *  `done` SSE frame. Preferred over (completedAt − startedAt) for
+   *  display because it matches the persisted value: the FE pair
+   *  includes network + SSE-flush latency and would drift after a
+   *  page refresh. */
+  durationMs?: number;
 }
 
 const INITIAL: StreamingTurn = {
@@ -71,12 +107,14 @@ function reducer(state: StreamingTurn, action: Action): StreamingTurn {
         ...INITIAL,
         userContent: action.userContent,
         phase: "retrieving",
+        startedAt: Date.now(),
       };
     case "transport_error":
       return {
         ...state,
         phase: "error",
         error: { kind: "transport", message: action.message },
+        completedAt: Date.now(),
       };
     case "reset":
       return INITIAL;
@@ -104,6 +142,17 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
         ...state,
         phase: "retrieving",
         query: (payload as { query?: string }).query ?? state.query,
+      };
+    case "skipped_retrieval":
+      // Rewriter decided retrieval is unnecessary (greeting, meta
+      // question, history-only follow-up). Skip straight to streaming;
+      // the evidence rail will hide for this turn.
+      return {
+        ...state,
+        phase: "streaming",
+        skippedRetrieval: true,
+        query: (payload as { query?: string }).query ?? state.query,
+        evidence: [],
       };
     case "evidence": {
       const chunks = (payload as { chunks?: ChunkPreview[] }).chunks ?? [];
@@ -134,13 +183,38 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
     }
     case "usage":
       return { ...state, usage: payload as ChatUsage };
+    case "title": {
+      // Auto-title arrives between usage and done on the first
+      // successful end_turn assistant message. chat-thread.tsx watches
+      // the field and invalidates chatKeys.list() on done.
+      const t = (payload as { title?: string }).title;
+      if (!t) return state;
+      return { ...state, autoTitle: t };
+    }
+    case "rewriter_status": {
+      // Only emitted when the rewriter fell back. Reason values:
+      // "timeout"|"empty"|"parse_failed"|"error". Stored on the turn
+      // so PhaseChip can render the diagnostic glyph.
+      const reason = (payload as { reason?: string }).reason ?? "error";
+      return { ...state, rewriterFailureReason: reason };
+    }
+    case "title_status": {
+      const reason = (payload as { reason?: string }).reason ?? "error";
+      return { ...state, titleFailureReason: reason };
+    }
     case "done": {
-      const d = payload as { stop_reason?: string; message_id?: string };
+      const d = payload as {
+        stop_reason?: string;
+        message_id?: string;
+        duration_ms?: number;
+      };
       return {
         ...state,
         phase: "done",
         stopReason: d.stop_reason,
         messageID: d.message_id,
+        completedAt: Date.now(),
+        durationMs: typeof d.duration_ms === "number" ? d.duration_ms : state.durationMs,
       };
     }
     case "error": {
@@ -150,6 +224,7 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
         ...state,
         phase: "error",
         error: { kind: "protocol", message },
+        completedAt: Date.now(),
       };
     }
     default:

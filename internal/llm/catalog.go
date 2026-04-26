@@ -77,7 +77,12 @@ var catalog = []ModelInfo{
 		SupportsCaching:   true,
 		InputCostPerMtok:  1.25,
 		OutputCostPerMtok: 10.0,
-		TypicalTTFTms:     900,
+		// GPT-5 is a reasoning model — the OpenAI Chat Completions
+		// API runs medium-effort reasoning before emitting tokens, so
+		// real-world TTFT on long-context grounded answers (10+ docs)
+		// runs 15-30s. Catalog value reflects observed median; admins
+		// who need faster responses should pick gpt-4.1.
+		TypicalTTFTms: 18000,
 	},
 	{
 		ID:                "openai:gpt-4.1",
@@ -105,7 +110,11 @@ var catalog = []ModelInfo{
 		SupportsCaching:   true,
 		InputCostPerMtok:  0.25,
 		OutputCostPerMtok: 2.0,
-		TypicalTTFTms:     400,
+		// Reasoning-family model — same caveat as gpt-5. Lighter
+		// effort than the full model but still spends a few seconds
+		// thinking before any visible output. NOT suitable as the
+		// rewriter (3s budget); use gpt-4.1 or claude-haiku-4-5.
+		TypicalTTFTms: 6000,
 	},
 
 	// Ollama — local models. Tools support varies; streaming+tools is

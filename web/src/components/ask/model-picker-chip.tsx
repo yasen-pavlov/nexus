@@ -14,8 +14,20 @@ export interface ModelPickerChipProps {
 
 const LABEL_TRUNCATE = 24;
 
-function priceHint(m: LLMModelInfo): string {
-  return `$${m.input_cost_per_mtok.toFixed(2)} / 1M in · $${m.output_cost_per_mtok.toFixed(2)} / 1M out`;
+/** Format `typical_ttft_ms` as a short, human caption. Sub-second
+ *  values render in milliseconds; multi-second values round to
+ *  whole seconds so reasoning models like GPT-5 read clearly as
+ *  "~18s first token" rather than "~17890 ms first token". */
+function ttftCaption(ms: number): string {
+  if (!ms || ms <= 0) return "";
+  if (ms < 1000) return `~${ms}ms first token`;
+  return `~${Math.round(ms / 1000)}s first token`;
+}
+
+function modelHint(m: LLMModelInfo): string {
+  const price = `$${m.input_cost_per_mtok.toFixed(2)}/1M in · $${m.output_cost_per_mtok.toFixed(2)}/1M out`;
+  const ttft = ttftCaption(m.typical_ttft_ms);
+  return ttft ? `${ttft} · ${price}` : price;
 }
 
 function deriveLabel(value: string, models: LLMModelInfo[]): string {
@@ -37,7 +49,7 @@ export function ModelPickerChip({ value, onChange, models }: Readonly<ModelPicke
   const options = models.map((m) => ({
     value: m.id,
     label: m.display_name,
-    notes: priceHint(m),
+    notes: modelHint(m),
   }));
 
   return (
@@ -87,12 +99,21 @@ export function ModelPickerChip({ value, onChange, models }: Readonly<ModelPicke
               />
             </div>
             {selected && (
-              <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
-                <CapPill label={`${(selected.context_window / 1000).toFixed(0)}k ctx`} />
-                {selected.supports_citations && <CapPill label="cites" />}
-                {selected.supports_vision && <CapPill label="vision" />}
-                {selected.supports_caching && <CapPill label="cached" />}
-              </div>
+              <>
+                <div className="mt-3 flex flex-wrap gap-1.5 text-[10px]">
+                  <CapPill
+                    label={`${(selected.context_window / 1000).toFixed(0)}k ctx`}
+                  />
+                  {selected.supports_citations && <CapPill label="cites" />}
+                  {selected.supports_vision && <CapPill label="vision" />}
+                  {selected.supports_caching && <CapPill label="cached" />}
+                </div>
+                {ttftCaption(selected.typical_ttft_ms) && (
+                  <div className="mt-2 text-[10.5px] text-muted-foreground/80">
+                    {ttftCaption(selected.typical_ttft_ms)}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </>

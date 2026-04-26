@@ -5,7 +5,7 @@ import { toast } from "sonner";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { useChats, useCreateChat, useDeleteChat } from "@/hooks/use-chats";
-import { useLLMModels } from "@/hooks/use-llm-models";
+import { useLLMDefault, useLLMModels } from "@/hooks/use-llm-models";
 import { cn } from "@/lib/utils";
 
 import { AskComposer } from "./ask-composer";
@@ -39,6 +39,8 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
   const del = useDeleteChat();
   const modelsQuery = useLLMModels();
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
+  const defaultQuery = useLLMDefault();
+  const systemDefault = defaultQuery.data?.default_model ?? null;
   const chats = useChats(RECENT_LIMIT, 0);
 
   const [model, setModel] = useState("");
@@ -53,14 +55,15 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
   // Initialise the default model during render once we have data —
   // matches the search-bar URL-mirror pattern and avoids the
   // setState-in-effect lint.
-  const [defaultsKey, setDefaultsKey] = useState<number>(-1);
-  if (defaultsKey !== models.length && models.length > 0) {
-    setDefaultsKey(models.length);
+  const [defaultsKey, setDefaultsKey] = useState<string>("");
+  const nextDefaultsKey = `${models.length}|${systemDefault ?? ""}`;
+  if (defaultsKey !== nextDefaultsKey && models.length > 0) {
+    setDefaultsKey(nextDefaultsKey);
     const lastUsed =
       typeof globalThis.localStorage !== "undefined"
         ? globalThis.localStorage.getItem(LAST_MODEL_KEY)
         : null;
-    setModel(pickInitialModel(undefined, models, lastUsed));
+    setModel(pickInitialModel(undefined, models, lastUsed, systemDefault));
   }
 
   // Search-bar handoff: create a chat + navigate immediately.
@@ -73,7 +76,12 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
       typeof globalThis.localStorage !== "undefined"
         ? globalThis.localStorage.getItem(LAST_MODEL_KEY)
         : null;
-    const chosen = pickInitialModel(undefined, models, lastUsed);
+    const chosen = pickInitialModel(
+      undefined,
+      models,
+      lastUsed,
+      systemDefault,
+    );
 
     void (async () => {
       try {
@@ -89,7 +97,7 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
         handedOff.current = false;
       }
     })();
-  }, [initialQuery, models, create, navigate]);
+  }, [initialQuery, models, systemDefault, create, navigate]);
 
   const onSubmit = async (content: string) => {
     if (!model) return;

@@ -267,11 +267,16 @@ func (h *handler) loadOwnedChat(w http.ResponseWriter, r *http.Request) (*model.
 	return chat, true
 }
 
-// writeRagEvent serializes one rag.Event as an SSE frame.
+// writeRagEvent serializes one rag.Event as an SSE frame. Phase 4 added
+// the skipped_retrieval and title kinds; the FE state machine treats
+// the first as a peer of retrieving (mutually exclusive) and the second
+// as an out-of-band metadata frame that piggybacks on the same stream.
 func writeRagEvent(w http.ResponseWriter, ev rag.Event) {
 	switch ev.Kind {
 	case rag.EvRetrieving:
 		writeNamedSSEFrame(w, "retrieving", map[string]string{"query": ev.Query})
+	case rag.EvSkippedRetrieval:
+		writeNamedSSEFrame(w, "skipped_retrieval", map[string]string{"query": ev.Query})
 	case rag.EvEvidence:
 		writeNamedSSEFrame(w, "evidence", map[string]any{"chunks": ev.Evidence})
 	case rag.EvText:
@@ -288,10 +293,17 @@ func writeRagEvent(w http.ResponseWriter, ev rag.Event) {
 		if ev.Usage != nil {
 			writeNamedSSEFrame(w, "usage", ev.Usage)
 		}
+	case rag.EvTitle:
+		writeNamedSSEFrame(w, "title", map[string]string{"title": ev.Title})
+	case rag.EvRewriterStatus:
+		writeNamedSSEFrame(w, "rewriter_status", map[string]string{"reason": ev.StatusReason})
+	case rag.EvTitleStatus:
+		writeNamedSSEFrame(w, "title_status", map[string]string{"reason": ev.StatusReason})
 	case rag.EvDone:
 		writeNamedSSEFrame(w, "done", map[string]any{
 			"stop_reason": ev.StopReason,
 			"message_id":  ev.MessageID,
+			"duration_ms": ev.DurationMs,
 		})
 	case rag.EvError:
 		writeNamedSSEFrame(w, "error", map[string]string{"message": ev.Err})

@@ -89,38 +89,49 @@ func (r *staticRegistry) Get(id string) (Generator, ModelInfo, error) {
 // + allowlist passes). The slice is sorted by provider then DisplayName for
 // stable UI rendering.
 func (r *staticRegistry) Models() []ModelInfo {
-	visible := make([]ModelInfo, 0)
+	return r.collectModels(true)
+}
+
+// AllConfiguredModels returns every catalog/extras model whose provider has
+// a Generator, ignoring the allowlist. Used by the admin allowlist editor:
+// deselecting a row must NOT remove it from the editor itself.
+func (r *staticRegistry) AllConfiguredModels() []ModelInfo {
+	return r.collectModels(false)
+}
+
+func (r *staticRegistry) collectModels(applyAllowlist bool) []ModelInfo {
+	out := make([]ModelInfo, 0)
 	for _, m := range catalog {
-		if r.isVisible(m.ID) {
-			visible = append(visible, m)
+		if r.providerConfigured(m.ID) && (!applyAllowlist || r.allowlistAllows(m.ID)) {
+			out = append(out, m)
 		}
 	}
 	for _, m := range r.extras {
-		// extras override catalog rows (admin may relabel) — only add if
-		// the catalog didn't already contribute this id.
 		if _, inCatalog := LookupModel(m.ID); inCatalog {
 			continue
 		}
-		if r.isVisible(m.ID) {
-			visible = append(visible, m)
+		if r.providerConfigured(m.ID) && (!applyAllowlist || r.allowlistAllows(m.ID)) {
+			out = append(out, m)
 		}
 	}
-	sortModels(visible)
-	return visible
+	sortModels(out)
+	return out
 }
 
-func (r *staticRegistry) isVisible(id string) bool {
+func (r *staticRegistry) providerConfigured(id string) bool {
 	provider, _, err := splitID(id)
 	if err != nil {
 		return false
 	}
-	if gen, ok := r.generators[provider]; !ok || gen == nil {
-		return false
+	gen, ok := r.generators[provider]
+	return ok && gen != nil
+}
+
+func (r *staticRegistry) allowlistAllows(id string) bool {
+	if len(r.allowlist) == 0 {
+		return true
 	}
-	if len(r.allowlist) > 0 && !r.allowlist[id] {
-		return false
-	}
-	return true
+	return r.allowlist[id]
 }
 
 func (r *staticRegistry) lookup(id string) (ModelInfo, bool) {

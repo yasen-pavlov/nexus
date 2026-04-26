@@ -15,7 +15,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { useLLMSettings, type UseLLMSettings } from "@/hooks/use-llm-settings";
-import { useLLMModels } from "@/hooks/use-llm-models";
+import { useLLMCatalog } from "@/hooks/use-llm-models";
 import type { LLMSettings } from "@/lib/api-types";
 import {
   DEFAULT_LLM_BARE_MODEL,
@@ -57,6 +57,7 @@ function fingerprint(s: LLMSettings | null): string {
     s.openai_api_key,
     s.ollama_url,
     s.allowlist.join(","),
+    s.rewriter_model,
   ].join("|");
 }
 
@@ -68,6 +69,7 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
     openai_api_key: "",
     ollama_url: "",
     allowlist: [],
+    rewriter_model: "",
   };
 
   const [form, setForm] = useState<LLMSettings>(saved);
@@ -80,9 +82,16 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
   const defaultProvider: LLMProvider | "" = split.provider;
   const defaultBare = split.bare;
 
+  // Rewriter model uses the same (provider, bareID) edit shape. Empty
+  // provider IS the disable — no separate toggle.
+  const splitRew = splitModelID(form.rewriter_model);
+  const rewriterProvider: LLMProvider | "" = splitRew.provider;
+  const rewriterBare = splitRew.bare;
+
   const dirty =
     form.default_model !== saved.default_model ||
     form.ollama_url !== saved.ollama_url ||
+    form.rewriter_model !== saved.rewriter_model ||
     JSON.stringify(form.allowlist) !== JSON.stringify(saved.allowlist) ||
     (replacingAnthropic &&
       form.anthropic_api_key !== "" &&
@@ -105,6 +114,23 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
     setForm((f) => ({
       ...f,
       default_model: bare ? joinModelID(defaultProvider, bare) : "",
+    }));
+  };
+
+  const handleRewriterProviderChange = (next: LLMProvider | "") => {
+    if (next === "") {
+      setForm((f) => ({ ...f, rewriter_model: "" }));
+      return;
+    }
+    const bare = DEFAULT_LLM_BARE_MODEL[next] ?? "";
+    setForm((f) => ({ ...f, rewriter_model: joinModelID(next, bare) }));
+  };
+
+  const handleRewriterBareChange = (bare: string) => {
+    if (rewriterProvider === "") return;
+    setForm((f) => ({
+      ...f,
+      rewriter_model: bare ? joinModelID(rewriterProvider, bare) : "",
     }));
   };
 
@@ -154,6 +180,56 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
                 options={LLM_BARE_MODELS[defaultProvider] ?? []}
                 placeholder={
                   DEFAULT_LLM_BARE_MODEL[defaultProvider] ?? "model id"
+                }
+                showDimensions={false}
+              />
+            )}
+          </div>
+        </Field>
+
+        {/* Refinement — optional cheap-model used for query rewriting +
+            auto-titles. Hairline divider with uppercase label is the
+            "you're entering optional territory" mark; the field row
+            itself mirrors the Default-model row exactly so muscle
+            memory transfers. Empty provider = disabled. */}
+        <div className="mt-1 flex items-center gap-3 border-t border-border/50 pt-3">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
+            Refinement
+          </span>
+          <span className="h-px flex-1 bg-border/40" aria-hidden />
+        </div>
+
+        <Field
+          label="Rewriter model"
+          hint="Cheap model used to refine multi-turn questions before search and to summarise chats into titles. Pick something fast and inexpensive — Haiku, GPT-mini, or a small Ollama model. Leave the provider unset to disable refinement."
+        >
+          <div className="grid grid-cols-[200px_1fr] gap-2">
+            <Select
+              value={rewriterProvider}
+              onValueChange={(v) =>
+                handleRewriterProviderChange(v as LLMProvider | "")
+              }
+            >
+              <SelectTrigger className="h-10">
+                <SelectValue placeholder="Pick a provider" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Disabled</SelectItem>
+                {LLM_PROVIDERS.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {rewriterProvider !== "" && (
+              <ModelCombobox
+                key={rewriterProvider}
+                value={rewriterBare}
+                onChange={handleRewriterBareChange}
+                options={LLM_BARE_MODELS[rewriterProvider] ?? []}
+                placeholder={
+                  DEFAULT_LLM_BARE_MODEL[rewriterProvider] ?? "model id"
                 }
                 showDimensions={false}
               />
@@ -336,10 +412,11 @@ function ApiKeyField({
   );
 }
 
-// AllowlistField renders one toggle row per visible model returned by
-// /api/llm/models. Empty allowlist = expose every model whose provider has
-// a key (the BE intersects with the configured-providers set, so unticking
-// a row is opt-out without listing every provider's catalog manually).
+// AllowlistField renders one toggle row per configured-provider model.
+// Pulls the PRE-allowlist catalog so deselecting a model leaves the row
+// in place (otherwise unticking would remove the row from its own editor
+// and the admin couldn't re-tick it). Empty allowlist = expose every
+// model whose provider has a key.
 function AllowlistField({
   allowlist,
   onChange,
@@ -347,7 +424,7 @@ function AllowlistField({
   allowlist: string[];
   onChange: (next: string[]) => void;
 }>) {
-  const models = useLLMModels();
+  const models = useLLMCatalog();
 
   const isAllowed = (id: string) =>
     allowlist.length === 0 || allowlist.includes(id);

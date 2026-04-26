@@ -211,3 +211,59 @@ test("submitting on the landing creates a chat and navigates", async ({ page }) 
   await expect(page.getByRole("button", { name: /Citation 1/ }).first())
     .toBeVisible();
 });
+
+test("skipped_retrieval hides the evidence rail and shows the muted phase chip", async ({ page }) => {
+  await mockAuthed(page);
+  await page.route("**/api/chats?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { chats: [], total: 0 } }),
+    }),
+  );
+  await page.route("**/api/chats", (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ data: SAMPLE_CHAT }),
+      });
+    }
+    return route.fallback();
+  });
+  await page.route("**/api/chats/chat-1", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { chat: SAMPLE_CHAT, messages: [] } }),
+    }),
+  );
+  await page.route("**/api/chats/chat-1/messages", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: [
+        // No retrieving / evidence frames — the rewriter judged that
+        // history alone could answer this turn.
+        `event: skipped_retrieval\ndata: {"query":"thanks"}`,
+        `event: text\ndata: {"delta":"You're welcome."}`,
+        `event: usage\ndata: {"input":12,"output":4,"cache_read":0,"cache_write":0}`,
+        `event: done\ndata: {"stop_reason":"end_turn","message_id":"m1"}`,
+        ``,
+      ].join("\n\n"),
+    }),
+  );
+
+  await page.goto("/ask");
+  const composer = page.getByPlaceholder(/Ask anything/);
+  await composer.fill("thanks!");
+  await composer.press("Control+Enter");
+
+  await expect(page).toHaveURL(/\/ask\/chat-1/);
+  // The muted "Answering from history" chip appears.
+  await expect(page.getByText("Answering from history")).toBeVisible({
+    timeout: 10_000,
+  });
+  // Answer body is reachable.
+  await expect(page.getByText("You're welcome.")).toBeVisible();
+});

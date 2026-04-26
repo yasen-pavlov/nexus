@@ -10,6 +10,7 @@ import { CitationPill } from "../citation-pill";
 import { EvidenceCard } from "../evidence-card";
 import { EvidenceRail } from "../evidence-rail";
 import { ExamplePill } from "../example-pill";
+import { PhaseChip } from "../phase-chip";
 import { UserTurn } from "../user-turn";
 import { buildCopyText } from "../copy-text";
 
@@ -239,6 +240,133 @@ describe("UserTurn", () => {
     render(<UserTurn message={msg} />);
     expect(screen.getByText(/Line 1/)).toBeInTheDocument();
     expect(screen.getByText(/Line 2/)).toBeInTheDocument();
+  });
+
+  it("renders the 'searched as' footnote when the next assistant turn was rewritten", () => {
+    const userMsg: ChatMessage = {
+      id: "u",
+      chat_id: "c",
+      role: "user",
+      seq: 2,
+      content: "which one was largest?",
+      created_at: "2026-04-26T00:00:00Z",
+    };
+    const asstMsg: ChatMessage = {
+      id: "a",
+      chat_id: "c",
+      role: "assistant",
+      seq: 3,
+      content: "...",
+      rewritten_query: "largest Anthropic invoice from April 2026",
+      created_at: "2026-04-26T00:00:01Z",
+    };
+    render(<UserTurn message={userMsg} nextMessage={asstMsg} />);
+    expect(
+      screen.getByText("largest Anthropic invoice from April 2026"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/searched as/i)).toBeInTheDocument();
+  });
+
+  it("does not render the footnote when rewritten_query equals user content", () => {
+    const userMsg: ChatMessage = {
+      id: "u",
+      chat_id: "c",
+      role: "user",
+      seq: 0,
+      content: "literal question",
+      created_at: "2026-04-26T00:00:00Z",
+    };
+    const asstMsg: ChatMessage = {
+      id: "a",
+      chat_id: "c",
+      role: "assistant",
+      seq: 1,
+      content: "...",
+      rewritten_query: "literal question",
+      created_at: "2026-04-26T00:00:01Z",
+    };
+    render(<UserTurn message={userMsg} nextMessage={asstMsg} />);
+    expect(screen.queryByText(/searched as/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("PhaseChip", () => {
+  it("renders nothing when phase is idle and no skip-retrieval signal", () => {
+    const { container } = render(
+      <PhaseChip phase="idle" userContent="hi" />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders the default 'Searching your corpus' label during retrieving", () => {
+    render(<PhaseChip phase="retrieving" userContent="hi" />);
+    expect(screen.getByText("Searching your corpus")).toBeInTheDocument();
+  });
+
+  it("renders the default 'Generating answer' label during streaming", () => {
+    render(<PhaseChip phase="streaming" userContent="hi" />);
+    expect(screen.getByText("Generating answer")).toBeInTheDocument();
+  });
+
+  it("falls back to default label when query equals userContent", () => {
+    // Equal query is NOT a rewrite — show the plain "Searching your
+    // corpus" label, not the rewritten variant.
+    render(<PhaseChip phase="retrieving" userContent="hi" query="hi" />);
+    expect(screen.getByText("Searching your corpus")).toBeInTheDocument();
+  });
+
+  it("renders the rewritten variant when query differs from userContent", () => {
+    render(
+      <PhaseChip
+        phase="retrieving"
+        userContent="which one was largest?"
+        query="largest Anthropic invoice from April 2026"
+      />,
+    );
+    expect(screen.getByText("Searching")).toBeInTheDocument();
+    expect(
+      screen.getByText("largest Anthropic invoice from April 2026"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an elapsed-time counter when startedAtMs is set", () => {
+    const startedAtMs = Date.now() - 23_000; // 23 seconds ago
+    render(
+      <PhaseChip
+        phase="streaming"
+        userContent="hi"
+        startedAtMs={startedAtMs}
+      />,
+    );
+    // Match the formatted "0:23" string emitted by formatElapsed.
+    expect(screen.getByText(/0:2\d/)).toBeInTheDocument();
+  });
+
+  it("renders the rewriter-fallback diagnostic glyph when failure reason is set", () => {
+    render(
+      <PhaseChip
+        phase="retrieving"
+        userContent="follow up"
+        rewriterFailureReason="timeout"
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /rewriter status/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the muted 'Answering from history' variant on skipped retrieval", () => {
+    render(
+      <PhaseChip
+        phase="streaming"
+        userContent="thanks!"
+        query="thanks"
+        skippedRetrieval
+      />,
+    );
+    expect(screen.getByText("Answering from history")).toBeInTheDocument();
+    expect(screen.queryByText("Generating answer")).not.toBeInTheDocument();
+    expect(screen.queryByText("Searching")).not.toBeInTheDocument();
   });
 });
 

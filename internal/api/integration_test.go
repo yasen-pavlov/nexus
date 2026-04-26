@@ -3649,6 +3649,56 @@ func TestUpdateLLMSettings_DefaultModelMustBeReachable(t *testing.T) {
 	}
 }
 
+func TestUpdateLLMSettings_RewriterModelRoundTrip(t *testing.T) {
+	_, lm, router, token := llmRouter(t)
+
+	body := `{"default_model":"anthropic:claude-sonnet-4-6","anthropic_api_key":"sk-ant-key1","openai_api_key":"","ollama_url":"","allowlist":[],"rewriter_model":"anthropic:claude-haiku-4-5"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d; %s", w.Code, w.Body.String())
+	}
+
+	// Snapshot reflects the rewriter id.
+	if got := lm.RewriterModel(); got != "anthropic:claude-haiku-4-5" {
+		t.Errorf("RewriterModel()=%q", got)
+	}
+
+	// GET round-trips the rewriter_model field.
+	req = httptest.NewRequest(http.MethodGet, "/api/settings/llm", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: %d; %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["rewriter_model"] != "anthropic:claude-haiku-4-5" {
+		t.Errorf("rewriter_model=%v", data["rewriter_model"])
+	}
+}
+
+func TestUpdateLLMSettings_RewriterMustBeReachable(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	// Rewriter pointed at a provider with no key — must 400.
+	body := `{"default_model":"anthropic:claude-sonnet-4-6","anthropic_api_key":"sk-ant-key2","openai_api_key":"","ollama_url":"","allowlist":[],"rewriter_model":"openai:gpt-5-mini"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unreachable rewriter, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestGetLLMModels_FiltersByConfiguredProvider(t *testing.T) {
 	_, _, router, token := llmRouter(t)
 
@@ -3681,6 +3731,64 @@ func TestGetLLMModels_FiltersByConfiguredProvider(t *testing.T) {
 		if mm["provider"] != "anthropic" {
 			t.Errorf("unexpected provider in models response: %v", mm["provider"])
 		}
+	}
+}
+
+func TestGetLLMModels_IncludeDisallowedReturnsPreAllowlist(t *testing.T) {
+	st, _, router, token := llmRouter(t)
+	_ = st
+
+	// Configure Anthropic + tight allowlist (only haiku) — sonnet/opus
+	// are catalog rows the admin has hidden. The pre-allowlist endpoint
+	// must still surface them.
+	body := `{"default_model":"","anthropic_api_key":"sk-ant-test","openai_api_key":"","ollama_url":"","allowlist":["anthropic:claude-haiku-4-5"]}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/llm", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d; %s", w.Code, w.Body.String())
+	}
+
+	// Default endpoint applies the allowlist.
+	req = httptest.NewRequest(http.MethodGet, "/api/llm/models", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	allowed := resp.Data.([]any)
+	if len(allowed) != 1 {
+		t.Fatalf("post-allowlist returned %d models, want 1", len(allowed))
+	}
+
+	// include_disallowed=true returns the full Anthropic catalog.
+	req = httptest.NewRequest(http.MethodGet, "/api/llm/models?include_disallowed=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: %d; %s", w.Code, w.Body.String())
+	}
+	var resp2 APIResponse
+	json.NewDecoder(w.Body).Decode(&resp2) //nolint:errcheck // test
+	all := resp2.Data.([]any)
+	if len(all) <= len(allowed) {
+		t.Errorf("pre-allowlist returned %d models, want more than the post-allowlist count %d", len(all), len(allowed))
+	}
+}
+
+func TestGetLLMModels_IncludeDisallowedRejectsNonAdmin(t *testing.T) {
+	st, _, router, _ := llmRouter(t)
+
+	_, userToken := createTestUser(t, st)
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/models?include_disallowed=true", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status=%d want 403", w.Code)
 	}
 }
 

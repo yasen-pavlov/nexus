@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	"github.com/muty/nexus/internal/config"
@@ -22,6 +23,10 @@ const (
 	llmKeyOllamaURL       = "llm_ollama_url"
 	// llm_models_allowlist is a JSON array of provider-prefixed ids.
 	llmKeyModelsAllowlist = "llm_models_allowlist"
+	// llm_rewriter_model is the cheap model used for query rewriting and
+	// auto-titling. Empty = both features disabled. Stored as the same
+	// provider-prefixed id format as the default model.
+	llmKeyRewriterModel = "llm_rewriter_model"
 )
 
 // LLMManager owns the per-provider Generators and the model registry, with
@@ -36,6 +41,7 @@ type LLMManager struct {
 	openaiAPIKey    string
 	ollamaURL       string
 	allowlist       []string
+	rewriterModel   string
 
 	store *store.Store
 	log   *zap.Logger
@@ -65,6 +71,14 @@ func (m *LLMManager) DefaultModel() string {
 	return m.defaultModel
 }
 
+// RewriterModel returns the configured cheap-model id used for query
+// rewriting and auto-titling. Empty when unset (both features disabled).
+func (m *LLMManager) RewriterModel() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.rewriterModel
+}
+
 // LLMSnapshot is the active settings the admin GET handler reads back. API
 // keys are returned in plaintext so the handler can decide on masking — the
 // manager itself does not assume the caller wants masking.
@@ -74,6 +88,7 @@ type LLMSnapshot struct {
 	OpenAIAPIKey    string
 	OllamaURL       string
 	Allowlist       []string
+	RewriterModel   string
 }
 
 // Snapshot returns a copy of the current settings.
@@ -88,12 +103,20 @@ func (m *LLMManager) Snapshot() LLMSnapshot {
 		OpenAIAPIKey:    m.openaiAPIKey,
 		OllamaURL:       m.ollamaURL,
 		Allowlist:       allow,
+		RewriterModel:   m.rewriterModel,
 	}
 }
 
 // Models returns the visible models per the active allowlist + provider keys.
 func (m *LLMManager) Models() []llm.ModelInfo {
 	return m.Get().Models()
+}
+
+// AllConfiguredModels returns the catalog/extras for every configured
+// provider, ignoring the allowlist. Used by the admin allowlist editor:
+// deselected models must stay in the editor so the admin can re-tick them.
+func (m *LLMManager) AllConfiguredModels() []llm.ModelInfo {
+	return m.Get().AllConfiguredModels()
 }
 
 // LoadFromDB reads LLM settings from the DB and constructs the registry.
@@ -105,6 +128,7 @@ func (m *LLMManager) LoadFromDB(ctx context.Context, appCfg *config.Config) erro
 		llmKeyOpenAIAPIKey,
 		llmKeyOllamaURL,
 		llmKeyModelsAllowlist,
+		llmKeyRewriterModel,
 	}
 	settings, err := m.store.GetSettings(ctx, keys)
 	if err != nil {
@@ -117,8 +141,9 @@ func (m *LLMManager) LoadFromDB(ctx context.Context, appCfg *config.Config) erro
 		openaiAPIKey:    or(settings[llmKeyOpenAIAPIKey], appCfg.LLMOpenAIAPIKey),
 		// Ollama URL chain: dedicated LLM setting → dedicated env →
 		// shared Ollama URL (kept in sync with the embedding side).
-		ollamaURL: orMany(settings[llmKeyOllamaURL], appCfg.LLMOllamaURL, appCfg.OllamaURL),
-		allowlist: parseAllowlist(settings[llmKeyModelsAllowlist]),
+		ollamaURL:     orMany(settings[llmKeyOllamaURL], appCfg.LLMOllamaURL, appCfg.OllamaURL),
+		allowlist:     parseAllowlist(settings[llmKeyModelsAllowlist]),
+		rewriterModel: settings[llmKeyRewriterModel],
 	}
 
 	m.swap(defaults)
@@ -135,14 +160,21 @@ func (m *LLMManager) UpdateFromSettings(ctx context.Context, snap LLMSnapshot) e
 		openaiAPIKey:    snap.OpenAIAPIKey,
 		ollamaURL:       snap.OllamaURL,
 		allowlist:       snap.Allowlist,
+		rewriterModel:   snap.RewriterModel,
 	}
 
-	// Validate the default model resolves under the new config — fast
-	// failure beats a confusing "provider not configured" later.
+	// Validate the default + rewriter models both resolve under the new
+	// config — fast failure beats a confusing "provider not configured"
+	// later when the orchestrator first tries to dispatch the model.
 	registry := buildRegistry(defaults, m.log)
 	if defaults.defaultModel != "" {
 		if _, _, err := registry.Get(defaults.defaultModel); err != nil {
 			return err
+		}
+	}
+	if defaults.rewriterModel != "" {
+		if _, _, err := registry.Get(defaults.rewriterModel); err != nil {
+			return fmt.Errorf("rewriter model: %w", err)
 		}
 	}
 
@@ -156,6 +188,7 @@ func (m *LLMManager) UpdateFromSettings(ctx context.Context, snap LLMSnapshot) e
 		llmKeyOpenAIAPIKey:    defaults.openaiAPIKey,
 		llmKeyOllamaURL:       defaults.ollamaURL,
 		llmKeyModelsAllowlist: string(allowlistJSON),
+		llmKeyRewriterModel:   defaults.rewriterModel,
 	}
 	if err := m.store.SetSettings(ctx, persisted); err != nil {
 		return err
@@ -164,6 +197,7 @@ func (m *LLMManager) UpdateFromSettings(ctx context.Context, snap LLMSnapshot) e
 	m.swap(defaults)
 	m.log.Info("llm settings updated",
 		zap.String("default_model", defaults.defaultModel),
+		zap.String("rewriter_model", defaults.rewriterModel),
 		zap.Bool("anthropic", defaults.anthropicAPIKey != ""),
 		zap.Bool("openai", defaults.openaiAPIKey != ""),
 		zap.Bool("ollama", defaults.ollamaURL != ""),
@@ -179,6 +213,7 @@ type llmDefaults struct {
 	openaiAPIKey    string
 	ollamaURL       string
 	allowlist       []string
+	rewriterModel   string
 }
 
 // swap atomically replaces the registry + snapshot.
@@ -191,6 +226,7 @@ func (m *LLMManager) swap(d llmDefaults) {
 	m.openaiAPIKey = d.openaiAPIKey
 	m.ollamaURL = d.ollamaURL
 	m.allowlist = append([]string(nil), d.allowlist...)
+	m.rewriterModel = d.rewriterModel
 	m.mu.Unlock()
 }
 

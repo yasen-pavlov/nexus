@@ -243,4 +243,127 @@ describe("useChatStream", () => {
     });
     await waitFor(() => expect(second.result.current.turn.answer).toBe("stored"));
   });
+
+  // --- Phase 4: skipped_retrieval and title frames ---
+
+  it("captures skipped_retrieval into the turn state and clears evidence", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      // Note: no retrieving / evidence frames on a skipped turn — the
+      // BE goes straight from skipped_retrieval to the answer stream.
+      {
+        event: "skipped_retrieval",
+        data: JSON.stringify({ query: "thanks" }),
+      },
+      { event: "text", data: JSON.stringify({ delta: "you're welcome" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "thanks!" });
+    });
+    expect(result.current.turn.skippedRetrieval).toBe(true);
+    expect(result.current.turn.query).toBe("thanks");
+    expect(result.current.turn.evidence).toEqual([]);
+    expect(result.current.turn.phase).toBe("done");
+    expect(result.current.turn.answer).toBe("you're welcome");
+  });
+
+  it("captures auto-title from the title frame and orders before done", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "retrieving", data: JSON.stringify({ query: "find invoices" }) },
+      {
+        event: "evidence",
+        data: JSON.stringify({ chunks: [] }),
+      },
+      { event: "text", data: JSON.stringify({ delta: "here" }) },
+      {
+        event: "title",
+        data: JSON.stringify({ title: "Anthropic invoice summary" }),
+      },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "find invoices" });
+    });
+    expect(result.current.turn.autoTitle).toBe("Anthropic invoice summary");
+    expect(result.current.turn.phase).toBe("done");
+  });
+
+  it("captures rewriter_status fallback reason on the turn", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      // Rewriter ran but timed out — orchestrator emits this BEFORE
+      // retrieving so the FE knows the search was issued with the
+      // user's literal phrasing.
+      { event: "rewriter_status", data: JSON.stringify({ reason: "timeout" }) },
+      { event: "retrieving", data: JSON.stringify({ query: "literal text" }) },
+      { event: "evidence", data: JSON.stringify({ chunks: [] }) },
+      { event: "text", data: JSON.stringify({ delta: "answer" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "literal text" });
+    });
+    expect(result.current.turn.rewriterFailureReason).toBe("timeout");
+  });
+
+  it("captures title_status failure reason", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "text", data: JSON.stringify({ delta: "ok" }) },
+      { event: "title_status", data: JSON.stringify({ reason: "empty" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "hi" });
+    });
+    expect(result.current.turn.titleFailureReason).toBe("empty");
+  });
+
+  it("records startedAt on `start` so PhaseChip can render an elapsed counter", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    const before = Date.now();
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    const after = Date.now();
+    const ts = result.current.turn.startedAt;
+    expect(ts).toBeDefined();
+    expect(ts!).toBeGreaterThanOrEqual(before);
+    expect(ts!).toBeLessThanOrEqual(after);
+  });
+
+  it("ignores empty title frames", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "title", data: JSON.stringify({ title: "" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    expect(result.current.turn.autoTitle).toBeUndefined();
+  });
 });

@@ -69,7 +69,14 @@ export const settingsKeys = {
 
 export const llmKeys = {
   all: ["llm"] as const,
+  // Visible models (post-allowlist) — used by the per-message picker.
   models: () => [...llmKeys.all, "models"] as const,
+  // Pre-allowlist catalog — admin-only, used by the allowlist editor so
+  // deselected rows stay rendered and re-tickable.
+  catalog: () => [...llmKeys.all, "catalog"] as const,
+  // System-wide default model id — picker fallback so admin choices
+  // propagate to existing browsers without a localStorage clear.
+  defaultModel: () => [...llmKeys.all, "default"] as const,
 };
 
 export const userKeys = {
@@ -84,8 +91,13 @@ export const storageKeys = {
 
 export const chatKeys = {
   all: ["chats"] as const,
+  // lists() is the prefix for any paginated list query — useful for
+  // invalidating "every paginated list of chats" as one operation
+  // (e.g. after auto-title fires we want the recent-chats grid to
+  // refetch regardless of which limit/offset it's currently on).
+  lists: () => [...chatKeys.all, "list"] as const,
   list: (limit: number, offset: number) =>
-    [...chatKeys.all, "list", limit, offset] as const,
+    [...chatKeys.lists(), limit, offset] as const,
   detail: (id: string) => [...chatKeys.all, "detail", id] as const,
   // Streaming turn cache survives navigation away and back. Keyed per
   // chat + per user-message content so a regenerate on the same content

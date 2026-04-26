@@ -19,6 +19,11 @@ export interface AssistantTurnProps {
   evidence: ChunkPreview[];
   onJumpToEvidence: (docID: string) => void;
   onRegenerate?: () => void;
+  /** ISO timestamp of the user message this assistant turn answered.
+   *  Used to derive a wall-clock duration for the metadata footer
+   *  ("13.4s · 1.2k in · 477 out") so users can compare model latency
+   *  across turns. Optional — when absent the duration is omitted. */
+  prevTurnCreatedAt?: string;
 }
 
 interface Resolved {
@@ -75,10 +80,36 @@ export function AssistantTurn({
   evidence,
   onJumpToEvidence,
   onRegenerate,
+  prevTurnCreatedAt,
 }: Readonly<AssistantTurnProps>) {
   const [copied, setCopied] = useState(false);
   const r = useMemo(() => resolve({ message, streaming }), [message, streaming]);
   const modelLabel = r.modelID ? splitModelID(r.modelID).bare || r.modelID : "";
+  // Wall-clock duration. Prefers the server-measured duration_ms
+  // (carried on the `done` SSE frame for streaming, persisted on the
+  // chat_messages row for refreshed views) so the label is stable
+  // across page reload. Falls back to FE-side timestamps for messages
+  // that predate migration 019. The phase chip handles the live ticker
+  // DURING streaming; we only show this label after the turn finishes.
+  let durationLabel = "";
+  if (streaming) {
+    if (typeof streaming.durationMs === "number") {
+      durationLabel = formatDuration(streaming.durationMs);
+    } else if (streaming.startedAt && streaming.completedAt) {
+      durationLabel = formatDuration(
+        streaming.completedAt - streaming.startedAt,
+      );
+    }
+  } else if (!r.isStreaming && message) {
+    if (typeof message.duration_ms === "number") {
+      durationLabel = formatDuration(message.duration_ms);
+    } else if (prevTurnCreatedAt) {
+      durationLabel = formatDuration(
+        new Date(message.created_at).getTime() -
+          new Date(prevTurnCreatedAt).getTime(),
+      );
+    }
+  }
 
   const onCopy = async () => {
     const txt = buildCopyText(r.text, r.citations, evidence);
@@ -143,6 +174,12 @@ export function AssistantTurn({
           <span className="font-medium text-foreground/80">{modelLabel}</span>
         ) : null}
 
+        {durationLabel && (
+          <span className="tabular-nums" title="Wall-clock from your message to the assistant's done event">
+            {durationLabel}
+          </span>
+        )}
+
         {(r.inputTokens !== undefined || r.outputTokens !== undefined) && (
           <span className="tabular-nums">
             {formatTokens(r.inputTokens)} in · {formatTokens(r.outputTokens)} out
@@ -186,4 +223,20 @@ function formatTokens(n: number | undefined): string {
   if (n === undefined) return "—";
   if (n < 1000) return String(n);
   return `${(n / 1000).toFixed(1)}k`;
+}
+
+/** Format a millisecond duration as a tight humanised string:
+ *  - sub-second values render as ms ("420ms")
+ *  - sub-minute values render as decimal seconds ("13.4s")
+ *  - minute-or-more values render as "m:ss" ("1:23")
+ *  Returns empty string for non-positive values so the metadata row
+ *  doesn't render a misleading "0ms". */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
 }

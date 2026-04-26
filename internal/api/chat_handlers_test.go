@@ -23,17 +23,34 @@ import (
 )
 
 // fakeLLMRegistry is the test bridge that lets us drive the SSE
-// endpoint without hitting a real provider.
+// endpoint without hitting a real provider. When the rewriter slot is
+// populated, Get(rewriter.ID) returns the rewriter; everything else
+// falls through to the main generator.
 type fakeLLMRegistry struct {
-	gen  llm.Generator
-	info llm.ModelInfo
+	gen          llm.Generator
+	info         llm.ModelInfo
+	rewriterGen  llm.Generator
+	rewriterInfo llm.ModelInfo
 }
 
-func (f *fakeLLMRegistry) Get(_ string) (llm.Generator, llm.ModelInfo, error) {
+func (f *fakeLLMRegistry) Get(id string) (llm.Generator, llm.ModelInfo, error) {
+	if f.rewriterGen != nil && id == f.rewriterInfo.ID {
+		return f.rewriterGen, f.rewriterInfo, nil
+	}
 	return f.gen, f.info, nil
 }
 
-func (f *fakeLLMRegistry) Models() []llm.ModelInfo { return []llm.ModelInfo{f.info} }
+func (f *fakeLLMRegistry) Models() []llm.ModelInfo {
+	out := []llm.ModelInfo{f.info}
+	if f.rewriterGen != nil {
+		out = append(out, f.rewriterInfo)
+	}
+	return out
+}
+
+func (f *fakeLLMRegistry) AllConfiguredModels() []llm.ModelInfo {
+	return f.Models()
+}
 
 // scriptedGenerator emits a fixed sequence of llm.Events.
 type scriptedGenerator struct{ events []llm.Event }
@@ -45,6 +62,17 @@ func (g *scriptedGenerator) Generate(_ context.Context, _ llm.GenerateRequest) (
 	}
 	close(out)
 	return out, nil
+}
+
+// rewriterScript builds a scripted-generator that emits a single
+// directive line + body so the orchestrator's rewriter parser captures
+// it. Used by the SSE-drain tests below to exercise the rewriter +
+// skip-retrieval flows end-to-end through the HTTP handler.
+func rewriterScript(directive, body string) *scriptedGenerator {
+	return &scriptedGenerator{events: []llm.Event{
+		{Kind: llm.EventText, TextDelta: directive + "\n" + body},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}}
 }
 
 // chatTestEnv groups the deps + tokens for a chat handler test.
@@ -65,6 +93,21 @@ type chatTestEnv struct {
 // every test then drives the LLM-side via the scripted generator.
 func newChatTestEnv(t *testing.T, events []llm.Event) chatTestEnv {
 	t.Helper()
+	return newChatTestEnvWith(t, events, chatTestOpts{})
+}
+
+// chatTestOpts plumb optional rewriter + settings into the test env.
+type chatTestOpts struct {
+	// rewriterGen / rewriterInfo populate the registry's rewriter slot.
+	// settings is the live snapshot the orchestrator reads per turn —
+	// pass an empty Settings{} to disable the rewriter step.
+	rewriterGen  llm.Generator
+	rewriterInfo llm.ModelInfo
+	settings     rag.Settings
+}
+
+func newChatTestEnvWith(t *testing.T, events []llm.Event, opts chatTestOpts) chatTestEnv {
+	t.Helper()
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	rm := NewRerankManager(st, zap.NewNop())
@@ -80,11 +123,18 @@ func newChatTestEnv(t *testing.T, events []llm.Event) chatTestEnv {
 		BareID:            "claude-sonnet-4-6",
 		SupportsCitations: true,
 	}
-	registry := &fakeLLMRegistry{gen: gen, info: info}
+	registry := &fakeLLMRegistry{
+		gen:          gen,
+		info:         info,
+		rewriterGen:  opts.rewriterGen,
+		rewriterInfo: opts.rewriterInfo,
+	}
 
 	searchService := NewSearchService(sc, em, rm, rankingMgr, zap.NewNop())
+	settings := opts.settings
 	orchestrator := rag.NewOrchestrator(rag.Deps{
 		Registry: func() llm.Registry { return registry },
+		Settings: func() rag.Settings { return settings },
 		Search:   NewRAGSearchProvider(searchService),
 		Chats:    st,
 		Cfg:      rag.DefaultConfig(),
@@ -667,7 +717,8 @@ type brokenRegistry struct{}
 func (b *brokenRegistry) Get(_ string) (llm.Generator, llm.ModelInfo, error) {
 	return nil, llm.ModelInfo{}, errFromString("provider not configured")
 }
-func (b *brokenRegistry) Models() []llm.ModelInfo { return nil }
+func (b *brokenRegistry) Models() []llm.ModelInfo              { return nil }
+func (b *brokenRegistry) AllConfiguredModels() []llm.ModelInfo { return nil }
 
 func TestPostMessage_RegistryError_Returns400(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
@@ -785,5 +836,177 @@ func TestPostMessage_OrchestratorNilReturns503(t *testing.T) {
 	router.ServeHTTP(rw, req)
 	if rw.Code != http.StatusServiceUnavailable {
 		t.Errorf("status=%d want 503", rw.Code)
+	}
+}
+
+// --- Phase 4 SSE drains: rewriter + skip-retrieval + auto-title ---
+
+// streamMessage helper drives one POST /api/chats/:id/messages and
+// returns the parsed SSE frame slice.
+func streamMessage(t *testing.T, env chatTestEnv, chatID, content string) []sseFrame {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"content": content})
+	req := httptest.NewRequest(http.MethodPost, "/api/chats/"+chatID+"/messages", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer "+env.ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rw := httptest.NewRecorder()
+	env.router.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("stream message status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	return parseSSE(t, rw.Body.String())
+}
+
+func findFrame(frames []sseFrame, event string) (sseFrame, bool) {
+	for _, f := range frames {
+		if f.event == event {
+			return f, true
+		}
+	}
+	return sseFrame{}, false
+}
+
+func TestPostMessage_RewriterRewritesAndStreamsRetrievingFrame(t *testing.T) {
+	// Two-turn flow: turn 1 (no rewriter), turn 2 (rewriter fires +
+	// retrieving frame carries the rewritten query).
+	rewriterInfo := llm.ModelInfo{ID: "anthropic:claude-haiku-4-5", BareID: "claude-haiku-4-5"}
+	rewriter := rewriterScript("RETRIEVE: yes", "largest Anthropic invoice from April 2026")
+
+	mainEvents := []llm.Event{
+		{Kind: llm.EventText, TextDelta: "answer"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}
+	env := newChatTestEnvWith(t, mainEvents, chatTestOpts{
+		rewriterGen:  rewriter,
+		rewriterInfo: rewriterInfo,
+		settings:     rag.Settings{RewriterModel: rewriterInfo.ID},
+	})
+
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken,
+		map[string]string{"default_model": "anthropic:claude-sonnet-4-6", "title": "preset"})
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+
+	// Turn 1.
+	streamMessage(t, env, chat.ID.String(), "find Anthropic invoices")
+
+	// Turn 2 — must surface the rewritten query in the retrieving frame.
+	frames2 := streamMessage(t, env, chat.ID.String(), "which one was largest?")
+	rf, ok := findFrame(frames2, "retrieving")
+	if !ok {
+		t.Fatalf("no retrieving frame in turn 2: %+v", frames2)
+	}
+	var retrieving struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal([]byte(rf.data), &retrieving); err != nil {
+		t.Fatalf("decode retrieving: %v", err)
+	}
+	if retrieving.Query != "largest Anthropic invoice from April 2026" {
+		t.Errorf("retrieving.query=%q want rewritten", retrieving.Query)
+	}
+
+	// Persisted message carries the rewritten query.
+	msgs, _ := env.st.ListMessages(context.Background(), chat.ID)
+	turn2Asst := msgs[len(msgs)-1]
+	if turn2Asst.RewrittenQuery != "largest Anthropic invoice from April 2026" {
+		t.Errorf("persisted RewrittenQuery=%q", turn2Asst.RewrittenQuery)
+	}
+}
+
+func TestPostMessage_SkipRetrieval_EmitsSkippedFrameNoEvidence(t *testing.T) {
+	rewriterInfo := llm.ModelInfo{ID: "anthropic:claude-haiku-4-5", BareID: "claude-haiku-4-5"}
+	rewriter := rewriterScript("RETRIEVE: no", "greeting")
+
+	mainEvents := []llm.Event{
+		{Kind: llm.EventText, TextDelta: "hello!"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}
+	env := newChatTestEnvWith(t, mainEvents, chatTestOpts{
+		rewriterGen:  rewriter,
+		rewriterInfo: rewriterInfo,
+		settings:     rag.Settings{RewriterModel: rewriterInfo.ID},
+	})
+
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken,
+		map[string]string{"default_model": "anthropic:claude-sonnet-4-6", "title": "preset"})
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+
+	// Seed a prior assistant turn so the rewriter gate fires.
+	streamMessage(t, env, chat.ID.String(), "first question")
+
+	// Replace the main events for turn 2.
+	// (The scripted generator has been drained; rebuild env with fresh
+	// events isn't ideal but cleanest.)
+	frames := streamMessage(t, env, chat.ID.String(), "thanks")
+	if _, ok := findFrame(frames, "skipped_retrieval"); !ok {
+		t.Errorf("expected skipped_retrieval frame: %+v", frames)
+	}
+	if _, ok := findFrame(frames, "retrieving"); ok {
+		t.Errorf("retrieving frame should not appear on skipped turn")
+	}
+	if _, ok := findFrame(frames, "evidence"); ok {
+		t.Errorf("evidence frame should not appear on skipped turn")
+	}
+
+	msgs, _ := env.st.ListMessages(context.Background(), chat.ID)
+	turn2Asst := msgs[len(msgs)-1]
+	if !turn2Asst.SkippedRetrieval {
+		t.Errorf("persisted SkippedRetrieval=false; want true")
+	}
+}
+
+func TestPostMessage_AutoTitle_FiresOnFirstEndTurnAndPrecedesDone(t *testing.T) {
+	rewriterInfo := llm.ModelInfo{ID: "anthropic:claude-haiku-4-5", BareID: "claude-haiku-4-5"}
+	titleGen := &scriptedGenerator{events: []llm.Event{
+		{Kind: llm.EventText, TextDelta: "Anthropic invoice summary"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}}
+	mainEvents := []llm.Event{
+		{Kind: llm.EventText, TextDelta: "answer"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}
+	env := newChatTestEnvWith(t, mainEvents, chatTestOpts{
+		rewriterGen:  titleGen,
+		rewriterInfo: rewriterInfo,
+		settings:     rag.Settings{RewriterModel: rewriterInfo.ID},
+	})
+
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken,
+		map[string]string{"default_model": "anthropic:claude-sonnet-4-6"})
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	// Sanity: chat ships untitled.
+	if chat.Title != "" {
+		t.Fatalf("expected untitled chat at create, got %q", chat.Title)
+	}
+
+	frames := streamMessage(t, env, chat.ID.String(), "find Anthropic invoices")
+
+	// title frame must appear, ordered before done.
+	titleIdx, doneIdx := -1, -1
+	for i, f := range frames {
+		switch f.event {
+		case "title":
+			titleIdx = i
+		case "done":
+			doneIdx = i
+		}
+	}
+	if titleIdx < 0 {
+		t.Fatalf("no title frame: %+v", frames)
+	}
+	if titleIdx >= doneIdx {
+		t.Errorf("title (%d) must precede done (%d)", titleIdx, doneIdx)
+	}
+
+	// chat row got the title persisted.
+	loaded, err := env.st.GetChat(context.Background(), chat.ID)
+	if err != nil {
+		t.Fatalf("reload chat: %v", err)
+	}
+	if loaded.Title != "Anthropic invoice summary" {
+		t.Errorf("chat.Title=%q", loaded.Title)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/muty/nexus/internal/auth"
+	"github.com/muty/nexus/internal/llm"
 	"go.uber.org/zap"
 )
 
@@ -16,6 +18,9 @@ type llmSettingsResponse struct {
 	OpenAIAPIKey    string   `json:"openai_api_key"`
 	OllamaURL       string   `json:"ollama_url"`
 	Allowlist       []string `json:"allowlist"`
+	// RewriterModel is the cheap model used for query rewriting and
+	// auto-titling. Empty disables both features.
+	RewriterModel string `json:"rewriter_model"`
 }
 
 type llmSettingsRequest struct {
@@ -24,6 +29,15 @@ type llmSettingsRequest struct {
 	OpenAIAPIKey    string   `json:"openai_api_key"`
 	OllamaURL       string   `json:"ollama_url"`
 	Allowlist       []string `json:"allowlist"`
+	RewriterModel   string   `json:"rewriter_model"`
+}
+
+// llmDefaultResponse is the shape served by GET /api/llm/default. The
+// frontend composer uses the value as the system-wide fallback for the
+// per-message model picker (chat-level default still wins; this beats
+// the user's localStorage `lastUsed` so admin choices propagate).
+type llmDefaultResponse struct {
+	DefaultModel string `json:"default_model"`
 }
 
 // llmModelResponse is the shape served by GET /api/llm/models. The frontend
@@ -64,6 +78,7 @@ func (h *handler) GetLLMSettings(w http.ResponseWriter, _ *http.Request) {
 		OpenAIAPIKey:    maskAPIKey(snap.OpenAIAPIKey),
 		OllamaURL:       snap.OllamaURL,
 		Allowlist:       snap.Allowlist,
+		RewriterModel:   snap.RewriterModel,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -111,6 +126,7 @@ func (h *handler) UpdateLLMSettings(w http.ResponseWriter, r *http.Request) {
 		OpenAIAPIKey:    openaiKey,
 		OllamaURL:       req.OllamaURL,
 		Allowlist:       req.Allowlist,
+		RewriterModel:   req.RewriterModel,
 	}
 
 	if err := h.lm.UpdateFromSettings(r.Context(), snap); err != nil {
@@ -125,6 +141,7 @@ func (h *handler) UpdateLLMSettings(w http.ResponseWriter, r *http.Request) {
 		OpenAIAPIKey:    maskAPIKey(snap.OpenAIAPIKey),
 		OllamaURL:       snap.OllamaURL,
 		Allowlist:       snap.Allowlist,
+		RewriterModel:   snap.RewriterModel,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -132,18 +149,31 @@ func (h *handler) UpdateLLMSettings(w http.ResponseWriter, r *http.Request) {
 // GetLLMModels godoc
 //
 //	@Summary	List available LLM models
-//	@Description	Returns the visible LLM models filtered by configured providers and admin allowlist. Non-admin users see the same list. Used by the per-message model picker in the Ask UI.
+//	@Description	Returns LLM models filtered by configured providers and (by default) admin allowlist. The per-message picker uses the default response. Pass `?include_disallowed=true` (admin-only) to get the pre-allowlist set — used by the admin allowlist editor so deselected rows stay visible for re-ticking.
 //	@Tags		llm
 //	@Produce	json
+//	@Param		include_disallowed	query	bool	false	"When true, ignore the allowlist filter (admin-only)"
 //	@Success	200	{array}	llmModelResponse
 //	@Security	BearerAuth
 //	@Router		/llm/models [get]
-func (h *handler) GetLLMModels(w http.ResponseWriter, _ *http.Request) {
+func (h *handler) GetLLMModels(w http.ResponseWriter, r *http.Request) {
 	if h.lm == nil {
 		writeJSON(w, http.StatusOK, []llmModelResponse{})
 		return
 	}
-	models := h.lm.Models()
+	var models []llm.ModelInfo
+	if r.URL.Query().Get("include_disallowed") == "true" {
+		// Pre-allowlist set is admin-only — non-admins should never see
+		// catalog rows the admin has deliberately hidden.
+		claims := auth.UserFromContext(r.Context())
+		if claims == nil || claims.Role != "admin" {
+			writeError(w, http.StatusForbidden, "admin only")
+			return
+		}
+		models = h.lm.AllConfiguredModels()
+	} else {
+		models = h.lm.Models()
+	}
 	resp := make([]llmModelResponse, 0, len(models))
 	for _, m := range models {
 		resp = append(resp, llmModelResponse{
@@ -162,4 +192,21 @@ func (h *handler) GetLLMModels(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetLLMDefault godoc
+//
+//	@Summary	Get the system-wide default LLM model
+//	@Description	Returns the configured default model id (provider-prefixed). The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.
+//	@Tags		llm
+//	@Produce	json
+//	@Success	200	{object}	llmDefaultResponse
+//	@Security	BearerAuth
+//	@Router		/llm/default [get]
+func (h *handler) GetLLMDefault(w http.ResponseWriter, _ *http.Request) {
+	if h.lm == nil {
+		writeJSON(w, http.StatusOK, llmDefaultResponse{})
+		return
+	}
+	writeJSON(w, http.StatusOK, llmDefaultResponse{DefaultModel: h.lm.DefaultModel()})
 }

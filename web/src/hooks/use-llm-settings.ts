@@ -33,7 +33,10 @@ export function useLLMSettings() {
       }),
     onSuccess: (data) => {
       qc.setQueryData(settingsKeys.llm(), data);
-      qc.invalidateQueries({ queryKey: llmKeys.models() });
+      // Bust every llm-prefixed query: post-allowlist models, the
+      // pre-allowlist catalog, and the system default. Save can change
+      // any of them so a single prefix invalidation is the safest path.
+      qc.invalidateQueries({ queryKey: llmKeys.all });
       toast.success("LLM settings saved");
     },
     onError: (err: Error) => toast.error(err.message || "Save failed"),

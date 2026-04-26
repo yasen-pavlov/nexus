@@ -194,8 +194,12 @@ type ModelInfo struct {
 }
 
 // Registry routes provider-prefixed model ids to a Generator + ModelInfo.
-// Models() returns the post-allowlist set the UI surfaces.
+// Models() returns the post-allowlist set the UI surfaces. AllConfiguredModels()
+// returns the pre-allowlist set (every catalog/extras model whose provider
+// has a Generator) — used by the admin allowlist editor so deselected models
+// don't disappear from the UI.
 type Registry interface {
 	Get(model string) (Generator, ModelInfo, error)
 	Models() []ModelInfo
+	AllConfiguredModels() []ModelInfo
 }

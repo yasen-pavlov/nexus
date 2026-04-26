@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useChat } from "@/hooks/use-chats";
 import { useChatStream } from "@/hooks/use-chat-stream";
-import { useLLMModels } from "@/hooks/use-llm-models";
+import { useLLMDefault, useLLMModels } from "@/hooks/use-llm-models";
 import type { ChatMessage, ChunkPreview } from "@/lib/api-types";
 import { chatKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { AskComposer } from "./ask-composer";
 import { AssistantTurn } from "./assistant-turn";
 import { EvidenceRail } from "./evidence-rail";
+import { PhaseChip } from "./phase-chip";
 import { pickInitialModel } from "./pick-initial-model";
 import { UserTurn } from "./user-turn";
 
@@ -40,6 +41,8 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   const detail = useChat(chatID);
   const modelsQuery = useLLMModels();
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
+  const defaultQuery = useLLMDefault();
+  const systemDefault = defaultQuery.data?.default_model ?? null;
 
   const [model, setModel] = useState<string>("");
   const autoFiredRef = useRef(false);
@@ -52,10 +55,17 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   // search-bar's URL-mirror pattern. The chat-id key prevents stale
   // model selection when the route swaps to a different chat.
   const [defaultsKey, setDefaultsKey] = useState<string>("");
-  const nextKey = `${chatID}|${detail.data?.chat.id ?? ""}|${models.length}`;
+  const nextKey = `${chatID}|${detail.data?.chat.id ?? ""}|${models.length}|${systemDefault ?? ""}`;
   if (defaultsKey !== nextKey && models.length > 0) {
     setDefaultsKey(nextKey);
-    setModel(pickInitialModel(detail.data?.chat, models, readLastUsedModel()));
+    setModel(
+      pickInitialModel(
+        detail.data?.chat,
+        models,
+        readLastUsedModel(),
+        systemDefault,
+      ),
+    );
   }
 
   const stream = useChatStream(chatID);
@@ -64,10 +74,16 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   // After the BE persists the assistant message, refetch the chat
   // detail so the streaming card transitions into a normal persisted
   // turn (and the streaming reducer resets next time start() fires).
+  // When the auto-title path fired this turn, also invalidate the
+  // chat list so the recent-chats grid catches the new title without
+  // a manual refetch.
   useEffect(() => {
     if (turn.phase !== "done" || !turn.messageID) return;
     queryClient.invalidateQueries({ queryKey: chatKeys.detail(chatID) });
-  }, [turn.phase, turn.messageID, chatID, queryClient]);
+    if (turn.autoTitle) {
+      queryClient.invalidateQueries({ queryKey: chatKeys.lists() });
+    }
+  }, [turn.phase, turn.messageID, turn.autoTitle, chatID, queryClient]);
 
   const handleSubmit = (content: string) => {
     if (!model) return;
@@ -136,18 +152,24 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
     : (lastAssistant?.evidence ?? []);
 
   const isStreaming = turn.phase === "retrieving" || turn.phase === "streaming";
-  const phaseLabel =
-    turn.phase === "retrieving"
-      ? "Searching your corpus"
-      : turn.phase === "streaming"
-        ? "Generating answer"
-        : "";
+
+  // The rail collapses for skip-retrieval turns when there's no
+  // fallback evidence to show. We keep the rail visible if a prior
+  // assistant turn has evidence that can stand in.
+  const showRail =
+    !showStreaming || !turn.skippedRetrieval || (lastAssistant?.evidence?.length ?? 0) > 0;
 
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_360px]">
+    <div
+      className={
+        showRail
+          ? "grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_360px]"
+          : "grid grid-cols-1 gap-6"
+      }
+    >
       <div className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-col gap-8">
-          {persistedMessages.map((m) => (
+          {persistedMessages.map((m, idx) => (
             <Turn
               key={m.id}
               message={m}
@@ -156,6 +178,14 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
               isLastUser={m.role === "user" && m.seq === lastUserSeq}
               isLastAssistant={m.role === "assistant" && m.seq === lastAssistantSeq}
               onRegenerate={undefined}
+              prevTurnCreatedAt={
+                idx > 0 ? persistedMessages[idx - 1].created_at : undefined
+              }
+              nextMessage={
+                idx + 1 < persistedMessages.length
+                  ? persistedMessages[idx + 1]
+                  : undefined
+              }
             />
           ))}
 
@@ -167,16 +197,17 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
                   message={syntheticUserMessage(chatID, turn.userContent)}
                 />
               )}
-              {phaseLabel && (
-                <div
-                  role="status"
-                  aria-live="polite"
-                  className="inline-flex items-center gap-2 self-start rounded-full bg-primary/10 px-3 py-1 text-[11px] font-medium text-primary"
-                >
-                  <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
-                  {phaseLabel}
-                </div>
-              )}
+
+              <PhaseChip
+                phase={turn.phase}
+                userContent={turn.userContent}
+                query={turn.query}
+                skippedRetrieval={turn.skippedRetrieval}
+                startedAtMs={turn.startedAt}
+                rewriterFailureReason={turn.rewriterFailureReason}
+              />
+
+
               <AssistantTurn
                 streaming={turn}
                 evidence={turn.evidence}
@@ -204,11 +235,13 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
         </div>
       </div>
 
-      <EvidenceRail
-        chunks={railEvidence}
-        highlightedDocID={flashedDocID}
-        onActivate={onJumpToEvidence}
-      />
+      {showRail && (
+        <EvidenceRail
+          chunks={railEvidence}
+          highlightedDocID={flashedDocID}
+          onActivate={onJumpToEvidence}
+        />
+      )}
     </div>
   );
 }
@@ -220,11 +253,25 @@ interface TurnProps {
   isLastUser: boolean;
   isLastAssistant: boolean;
   onRegenerate?: () => void;
+  /** ISO timestamp of the immediately preceding message — used by
+   *  AssistantTurn to derive a wall-clock duration label. */
+  prevTurnCreatedAt?: string;
+  /** The immediately-following message in the thread. UserTurn uses
+   *  this to surface the assistant's persisted `rewritten_query` as a
+   *  retroactive footnote ("rewritten as: …") under the user bubble. */
+  nextMessage?: ChatMessage;
 }
 
-function Turn({ message, evidence, onJumpToEvidence, onRegenerate }: Readonly<TurnProps>) {
+function Turn({
+  message,
+  evidence,
+  onJumpToEvidence,
+  onRegenerate,
+  prevTurnCreatedAt,
+  nextMessage,
+}: Readonly<TurnProps>) {
   if (message.role === "user") {
-    return <UserTurn message={message} />;
+    return <UserTurn message={message} nextMessage={nextMessage} />;
   }
   return (
     <AssistantTurn
@@ -232,6 +279,7 @@ function Turn({ message, evidence, onJumpToEvidence, onRegenerate }: Readonly<Tu
       evidence={evidence}
       onJumpToEvidence={onJumpToEvidence}
       onRegenerate={onRegenerate}
+      prevTurnCreatedAt={prevTurnCreatedAt}
     />
   );
 }

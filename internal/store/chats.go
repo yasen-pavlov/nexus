@@ -14,7 +14,7 @@ import (
 
 const chatCols = `id, user_id, title, default_model, created_at, updated_at`
 const chatColsQualified = `c.id, c.user_id, c.title, c.default_model, c.created_at, c.updated_at`
-const chatMessageCols = `id, chat_id, role, seq, content, model, citations, evidence, tool_calls, usage, stop_reason, created_at`
+const chatMessageCols = `id, chat_id, role, seq, content, model, citations, evidence, tool_calls, usage, stop_reason, rewritten_query, skipped_retrieval, duration_ms, created_at`
 
 // ChatUpdate carries the fields a PATCH may set. Nil fields are left untouched.
 type ChatUpdate struct {
@@ -184,20 +184,26 @@ func (s *Store) DeleteChat(ctx context.Context, id uuid.UUID) error {
 
 func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	var m model.ChatMessage
-	var modelStr, stopReason *string
+	var modelStr, stopReason, rewrittenQuery *string
+	var durationMs *int
 	var citationsJSON, evidenceJSON, toolCallsJSON, usageJSON []byte
 	err := scan(
 		&m.ID, &m.ChatID, &m.Role, &m.Seq, &m.Content,
-		&modelStr, &citationsJSON, &evidenceJSON, &toolCallsJSON, &usageJSON, &stopReason, &m.CreatedAt,
+		&modelStr, &citationsJSON, &evidenceJSON, &toolCallsJSON, &usageJSON, &stopReason,
+		&rewrittenQuery, &m.SkippedRetrieval, &durationMs, &m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	m.DurationMs = durationMs
 	if modelStr != nil {
 		m.Model = *modelStr
 	}
 	if stopReason != nil {
 		m.StopReason = *stopReason
+	}
+	if rewrittenQuery != nil {
+		m.RewrittenQuery = *rewrittenQuery
 	}
 	if len(citationsJSON) > 0 {
 		if err := json.Unmarshal(citationsJSON, &m.Citations); err != nil {
@@ -302,10 +308,11 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		msg.ID, msg.ChatID, msg.Role, msg.Seq, msg.Content,
 		nullableString(msg.Model), citationsJSON, evidenceJSON, toolCallsJSON, usageJSON,
-		nullableString(msg.StopReason), msg.CreatedAt,
+		nullableString(msg.StopReason), nullableString(msg.RewrittenQuery), msg.SkippedRetrieval,
+		msg.DurationMs, msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert chat message: %w", err)

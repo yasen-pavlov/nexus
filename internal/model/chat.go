@@ -40,13 +40,13 @@ type ChatListEntry struct {
 // ChatMessage is one persisted turn inside a chat. Seq is monotonic per
 // chat (assigned inside store.AppendMessage under a row lock).
 type ChatMessage struct {
-	ID         uuid.UUID      `json:"id"`
-	ChatID     uuid.UUID      `json:"chat_id"`
-	Role       ChatRole       `json:"role"`
-	Seq        int            `json:"seq"`
-	Content    string         `json:"content"`
-	Model      string         `json:"model,omitempty"`
-	Citations  []ChatCitation `json:"citations,omitempty"`
+	ID        uuid.UUID      `json:"id"`
+	ChatID    uuid.UUID      `json:"chat_id"`
+	Role      ChatRole       `json:"role"`
+	Seq       int            `json:"seq"`
+	Content   string         `json:"content"`
+	Model     string         `json:"model,omitempty"`
+	Citations []ChatCitation `json:"citations,omitempty"`
 	// Evidence is the chunks the orchestrator retrieved for THIS turn
 	// (the same payload that streamed in EvEvidence). Persisting them
 	// alongside citations preserves the citation→source link end-to-end:
@@ -55,11 +55,29 @@ type ChatMessage struct {
 	// FE evidence rail repopulates, and any future feature can hop
 	// /api/documents/{id}, /related, /conversations, /blob from the
 	// stored handles.
-	Evidence   []ChunkPreview `json:"evidence,omitempty"`
-	ToolCalls  []ChatToolCall `json:"tool_calls,omitempty"`
-	Usage      *ChatUsage     `json:"usage,omitempty"`
-	StopReason string         `json:"stop_reason,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
+	Evidence  []ChunkPreview `json:"evidence,omitempty"`
+	ToolCalls []ChatToolCall `json:"tool_calls,omitempty"`
+	Usage     *ChatUsage     `json:"usage,omitempty"`
+	// RewrittenQuery is the rewriter's normalised search query when the
+	// rewriter ran on this turn. Empty when the rewriter was disabled
+	// or this was the first user turn (rewriter only runs when prior
+	// assistant turns exist). Persisted so the FE phase strip can
+	// repopulate "Searching for: <rewritten>" on chat reload, and so
+	// the Phase 7 eval harness knows which query actually hit OpenSearch.
+	RewrittenQuery string `json:"rewritten_query,omitempty"`
+	// SkippedRetrieval is true when the rewriter judged the question
+	// answerable from chat history alone (greetings, meta questions,
+	// history-only follow-ups). On these turns no OpenSearch call ran
+	// and Evidence is empty.
+	SkippedRetrieval bool `json:"skipped_retrieval,omitempty"`
+	// DurationMs is the wall-clock time the orchestrator's runTurn
+	// took, in milliseconds. Persisted at orchestrator-side so the FE
+	// can render a consistent label across the live (in-flight) view
+	// and the post-refresh persisted view. Nil for messages written
+	// before migration 019 and for user messages.
+	DurationMs *int      `json:"duration_ms,omitempty"`
+	StopReason string    `json:"stop_reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ChunkPreview is the minimum a UI needs to render an evidence card. The

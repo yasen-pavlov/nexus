@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/llm"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
 )
 
@@ -25,6 +27,21 @@ type SearchProvider interface {
 // without restart.
 type RegistryFunc func() llm.Registry
 
+// Settings carries the runtime knobs the orchestrator reads per turn.
+// SettingsFunc returns the live snapshot so admin saves to settings
+// (e.g. swapping the rewriter model) take effect without restart —
+// mirrors the RegistryFunc pattern.
+type Settings struct {
+	// RewriterModel is the cheap-model id (provider-prefixed) used for
+	// query rewriting AND auto-titling. Empty disables both features.
+	RewriterModel string
+}
+
+// SettingsFunc is read once per turn from runTurn so orchestrator
+// behaviour reflects the latest admin settings without a process
+// restart.
+type SettingsFunc func() Settings
+
 // ChatStore is the persistence surface the orchestrator needs. Mirrors
 // the methods on *store.Store; defined as an interface so tests fake
 // it in-memory.
@@ -32,21 +49,21 @@ type ChatStore interface {
 	GetChat(ctx context.Context, id uuid.UUID) (*model.Chat, error)
 	ListMessages(ctx context.Context, chatID uuid.UUID) ([]model.ChatMessage, error)
 	AppendMessage(ctx context.Context, msg *model.ChatMessage) error
+	UpdateChat(ctx context.Context, id uuid.UUID, fields store.ChatUpdate) error
 }
 
 // Config tunes the orchestrator. DefaultConfig() is the right starting
-// point; Phase 4 adds admin-tunable knobs as a `/api/settings/rag`
-// endpoint.
+// point.
 type Config struct {
 	// MaxEvidenceChunks caps the number of retrieved chunks fed to the
-	// LLM. Default 10. Larger values trade context budget for recall.
+	// LLM. Default 10.
 	MaxEvidenceChunks int
 	// HistoryTurns caps how many prior user+assistant pairs are
 	// resent on each turn. Default 3 (= 6 messages).
 	HistoryTurns int
 	// MaxTokens is the per-turn output cap. Default 4096.
 	MaxTokens int
-	// SystemPrompt is the static instruction prefix; Default systemPromptDefault.
+	// SystemPrompt is the static instruction prefix; default systemPromptDefault.
 	SystemPrompt string
 }
 
@@ -64,6 +81,7 @@ func DefaultConfig() Config {
 // site (cmd/nexus/main.go).
 type Deps struct {
 	Registry RegistryFunc
+	Settings SettingsFunc
 	Search   SearchProvider
 	Chats    ChatStore
 	Cfg      Config
@@ -71,9 +89,16 @@ type Deps struct {
 }
 
 // Orchestrator runs a single user turn end-to-end: persist user message
-// → retrieve → call LLM → fan events → persist assistant message.
+// → retrieve → call LLM → fan events → persist assistant message. As of
+// Phase 4 it also runs a turn-aware query rewriter (Haiku-class cheap
+// model) before retrieval, may skip retrieval entirely on the
+// rewriter's recommendation, and writes an auto-title on the first
+// assistant turn. Rewriter and title token usage is aggregated into the
+// turn's persisted Usage so cost reporting includes the supporting
+// calls.
 type Orchestrator struct {
 	registry RegistryFunc
+	settings SettingsFunc
 	search   SearchProvider
 	chats    ChatStore
 	cfg      Config
@@ -81,7 +106,9 @@ type Orchestrator struct {
 }
 
 // NewOrchestrator wires the orchestrator. All Deps fields must be
-// non-nil; missing Cfg fields fall back to DefaultConfig values.
+// non-nil; missing Cfg fields fall back to DefaultConfig values. A nil
+// Settings closure is treated as "no rewriter, no auto-title" — the
+// orchestrator still runs the legacy single-shot flow.
 func NewOrchestrator(d Deps) *Orchestrator {
 	cfg := d.Cfg
 	def := DefaultConfig()
@@ -97,8 +124,13 @@ func NewOrchestrator(d Deps) *Orchestrator {
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = def.SystemPrompt
 	}
+	settings := d.Settings
+	if settings == nil {
+		settings = func() Settings { return Settings{} }
+	}
 	return &Orchestrator{
 		registry: d.Registry,
+		settings: settings,
 		search:   d.Search,
 		chats:    d.Chats,
 		cfg:      cfg,
@@ -131,15 +163,12 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (<-chan Event, erro
 		return nil, ErrChatNotFound
 	}
 
-	// Resolve model: per-request → chat default → registry default.
 	modelID := strings.TrimSpace(in.Model)
 	if modelID == "" {
 		modelID = strings.TrimSpace(chat.DefaultModel)
 	}
 	registry := o.registry()
 	if modelID == "" {
-		// Pick the first visible model as a fallback; if none are
-		// configured we fail fast.
 		visible := registry.Models()
 		if len(visible) == 0 {
 			return nil, errors.New("rag: no LLM models configured")
@@ -151,8 +180,6 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (<-chan Event, erro
 		return nil, fmt.Errorf("rag: resolve model: %w", err)
 	}
 
-	// Persist the user turn before any retrieval — the user message is
-	// part of history for the next turn even if generation fails.
 	userMsg := &model.ChatMessage{
 		ChatID:  in.ChatID,
 		Role:    model.ChatRoleUser,
@@ -162,49 +189,49 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (<-chan Event, erro
 		return nil, fmt.Errorf("rag: persist user message: %w", err)
 	}
 
-	_ = chat // reserved for Phase 4 title generation
 	out := make(chan Event, 32)
-	go o.runTurn(ctx, in, modelID, info, gen, out)
+	go o.runTurn(ctx, in, chat, modelID, info, gen, out)
 	return out, nil
 }
 
 // runTurn owns the output channel and is responsible for closing it
 // after exactly one EvDone.
-func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string, info llm.ModelInfo, gen llm.Generator, out chan<- Event) {
+func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Chat, modelID string, info llm.ModelInfo, gen llm.Generator, out chan<- Event) {
 	defer close(out)
 
-	// Helper that always persists an assistant message at the end. We
-	// run it via a sync.Once so cancellation + error paths can't double-write.
+	// Server-measured turn start. Captured here (after user persist,
+	// before retrieval/generation) so the persisted duration_ms is the
+	// orchestrator's wall-clock and stays stable across page refreshes
+	// — the FE's live "completedAt − startedAt" timer captures network
+	// + SSE-flush latency too and would drift after refresh.
+	turnStart := time.Now()
+
 	var (
 		finalOnce       sync.Once
 		assistantID     uuid.UUID
 		accumulatedText strings.Builder
 		citations       []model.ChatCitation
-		// evidence is captured once after retrieval so the closure below
-		// can persist it alongside the assistant message regardless of
-		// what stop_reason fires. ChunkPreview.DocID is the OpenSearch
-		// chunk handle — persisting it preserves the chat → source
-		// graph end-to-end (FE rail repopulates on reload, future
-		// features can hop /api/documents/{id}, /related, /blob, etc.).
-		evidence []ChunkPreview
+		evidence        []ChunkPreview
+		// usage is the LLM call's reported tokens. auxUsage accumulates
+		// rewriter + title costs so the persisted total reflects the
+		// full turn cost (plan §"Token cost accounting").
 		usage    *model.ChatUsage
-		// pendingCitations holds Anthropic citations that have arrived
-		// mid-sentence. Their span isn't assigned until we observe a
-		// sentence terminator in the streamed text, at which point each
-		// pending citation is anchored at the post-terminator position
-		// so pills land at clean sentence boundaries (Perplexity-style)
-		// instead of inside whichever word was being streamed when the
-		// citations_delta event interleaved.
+		auxUsage model.ChatUsage
+		// rewriterRan tracks whether the rewriter modified the search
+		// query so the persisted message can carry the original
+		// rewritten form for post-hoc inspection (FE phase strip on
+		// reload, eval harness, debug).
+		rewrittenQuery   string
+		skippedRetrieval bool
+		// pendingCitations buffers Anthropic citations until the next
+		// sentence terminator so pills land at clean sentence
+		// boundaries instead of mid-word.
 		pendingCitations []model.ChatCitation
 	)
 
-	// byteToUTF16 converts a byte offset into accumulatedText to a
-	// UTF-16 code-unit offset. The FE consumes these offsets as
-	// JavaScript string positions, where BMP code points count as
-	// one unit and supplementary code points (most emoji like 🛠️
-	// 💬 🏠) count as TWO (surrogate pair). Plain rune counts would
-	// undershoot the JS position by one per emoji and drop the pill
-	// before the sentence terminator instead of after it.
+	settings := o.settings()
+	rewriterModelID := strings.TrimSpace(settings.RewriterModel)
+
 	byteToUTF16 := func(byteOffset int) int {
 		s := accumulatedText.String()
 		if byteOffset > len(s) {
@@ -221,10 +248,6 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		return n
 	}
 
-	// flushAllPendingAt anchors every buffered citation at the same
-	// rune `anchor` and ships them. Used at EventDone / EventError
-	// when we need to drain whatever's still pending — there are no
-	// more sentence boundaries coming.
 	flushAllPendingAt := func(anchor int) {
 		if len(pendingCitations) == 0 {
 			return
@@ -239,13 +262,6 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		pendingCitations = pendingCitations[:0]
 	}
 
-	// distributePendingAtBoundaries scans `text` from `fromByte` for
-	// successive sentence boundaries and pops pending citations FIFO,
-	// anchoring each at the next boundary's rune offset. Multi-
-	// sentence deltas thus distribute pills one-per-sentence instead
-	// of clustering at the first boundary. Stops when either the
-	// pending list drains or no more boundaries exist in the new
-	// region; the remainder stays buffered for the next delta.
 	distributePendingAtBoundaries := func(text string, fromByte int) {
 		cursor := fromByte
 		for len(pendingCitations) > 0 {
@@ -264,65 +280,202 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 		}
 	}
 
-	persistAndDone := func(stop string, errMsg string) {
+	// addUsage merges a per-call llm.Usage into the running auxUsage
+	// accumulator. Tolerates nil. Used for both rewriter and title
+	// calls so a single Generate boundary doesn't lose tokens.
+	addUsage := func(u *llm.Usage) {
+		if u == nil {
+			return
+		}
+		auxUsage.Input += u.InputTokens
+		auxUsage.Output += u.OutputTokens
+		auxUsage.CacheRead += u.CacheReadTokens
+		auxUsage.CacheWrite += u.CacheWriteTokens
+	}
+
+	// mergeUsage produces the final ChatUsage for persistence by adding
+	// auxUsage on top of the streamed-LLM usage. Returns nil when both
+	// are zero (no LLM calls were billed).
+	mergeUsage := func() *model.ChatUsage {
+		if usage == nil && auxUsage == (model.ChatUsage{}) {
+			return nil
+		}
+		merged := model.ChatUsage{}
+		if usage != nil {
+			merged = *usage
+		}
+		merged.Input += auxUsage.Input
+		merged.Output += auxUsage.Output
+		merged.CacheRead += auxUsage.CacheRead
+		merged.CacheWrite += auxUsage.CacheWrite
+		return &merged
+	}
+
+	// persistAssistant writes the assistant message row. Idempotent via
+	// finalOnce so the title + done emission below can't double-write
+	// on the cancellation/error path. Captures the wall-clock duration
+	// from the runTurn start so the FE can render a stable label that
+	// agrees across the live view and the post-refresh persisted view.
+	var persistedDurationMs int
+	persistAssistant := func(stop string) {
+		persistCtx := context.Background()
+		duration := int(time.Since(turnStart) / time.Millisecond)
+		persistedDurationMs = duration
+		msg := &model.ChatMessage{
+			ID:               uuid.New(),
+			ChatID:           in.ChatID,
+			Role:             model.ChatRoleAssistant,
+			Content:          accumulatedText.String(),
+			Model:            modelID,
+			Citations:        citations,
+			Evidence:         evidence,
+			Usage:            mergeUsage(),
+			StopReason:       stop,
+			RewrittenQuery:   rewrittenQuery,
+			SkippedRetrieval: skippedRetrieval,
+			DurationMs:       &duration,
+		}
+		if err := o.chats.AppendMessage(persistCtx, msg); err != nil {
+			o.log.Error("rag: persist assistant message", zap.Error(err))
+		}
+		assistantID = msg.ID
+	}
+
+	// persistAndDone runs persist + auto-title + emit-done as a single
+	// idempotent finalisation. Auto-title only runs on the first
+	// successful end_turn assistant message AND when the rewriter model
+	// is configured (the title and rewriter share one cheap-model setting).
+	persistAndDone := func(stop string, errMsg string, isFirstAssistantTurn bool, userQuestion string) {
 		finalOnce.Do(func() {
-			// Always use the parent's request context for persistence —
-			// this is bounded work and important even on cancel.
-			persistCtx := context.Background()
-			msg := &model.ChatMessage{
-				ID:         uuid.New(),
-				ChatID:     in.ChatID,
-				Role:       model.ChatRoleAssistant,
-				Content:    accumulatedText.String(),
-				Model:      modelID,
-				Citations:  citations,
-				Evidence:   evidence,
-				Usage:      usage,
-				StopReason: stop,
+			persistAssistant(stop)
+
+			// Auto-title — best-effort, fire only on the first
+			// successful end_turn. parentCtx is intentionally
+			// context.Background(): if the SSE was just cancelled
+			// we won't be here (stop != end_turn). If the parent
+			// was healthy when we arrived but happens to die
+			// during the 2s title call, we still want the title
+			// to land — auto-title is supportive infrastructure.
+			if rewriterModelID != "" &&
+				stop == string(llm.StopEnd) &&
+				isFirstAssistantTurn &&
+				strings.TrimSpace(chat.Title) == "" &&
+				strings.TrimSpace(accumulatedText.String()) != "" {
+
+				registry := o.registry()
+				if titleGen, titleInfo, err := registry.Get(rewriterModelID); err == nil {
+					title, tu, titleReason := summarizeForTitle(context.Background(), titleGen, titleInfo, userQuestion, accumulatedText.String(), o.log)
+					addUsage(tu)
+					switch {
+					case title != "":
+						if err := o.chats.UpdateChat(context.Background(), in.ChatID, store.ChatUpdate{Title: &title}); err != nil {
+							o.log.Warn("rag: persist auto-title", zap.Error(err))
+							out <- Event{Kind: EvTitleStatus, StatusReason: titleFailureError}
+						} else {
+							out <- Event{Kind: EvTitle, Title: title}
+						}
+					case titleReason != "":
+						// Title attempt failed (timeout / empty / error)
+						// — surface to the FE diagnostic glyph so admins
+						// know titles aren't silently disabled.
+						out <- Event{Kind: EvTitleStatus, StatusReason: titleReason}
+					}
+				} else {
+					o.log.Info("rag: skipping auto-title; rewriter model not resolvable", zap.Error(err))
+					out <- Event{Kind: EvTitleStatus, StatusReason: titleFailureError}
+				}
 			}
-			if err := o.chats.AppendMessage(persistCtx, msg); err != nil {
-				o.log.Error("rag: persist assistant message", zap.Error(err))
-				// Don't crash — we still want EvDone downstream.
-			}
-			assistantID = msg.ID
+
 			if errMsg != "" {
 				out <- Event{Kind: EvError, Err: errMsg}
 			}
-			out <- Event{Kind: EvDone, StopReason: stop, MessageID: assistantID}
+			out <- Event{Kind: EvDone, StopReason: stop, MessageID: assistantID, DurationMs: persistedDurationMs}
 		})
 	}
 
-	// --- Retrieval ---
-	out <- Event{Kind: EvRetrieving, Query: in.Content}
-
-	searchReq := model.SearchRequest{
-		Query:   in.Content,
-		Limit:   o.cfg.MaxEvidenceChunks,
-		OwnerID: in.UserID.String(),
-	}
-	result, err := o.search.Run(ctx, searchReq)
-	if err != nil {
-		o.log.Warn("rag: retrieval failed", zap.Error(err))
-		persistAndDone("error", "retrieval failed: "+err.Error())
-		return
-	}
-	docs := buildLLMDocs(result.Documents, o.cfg.MaxEvidenceChunks)
-	previews := buildPreviews(result.Documents, o.cfg.MaxEvidenceChunks)
-	evidence = previews
-	out <- Event{Kind: EvEvidence, Evidence: previews}
-
-	// --- History packing ---
+	// --- History packing (moved BEFORE retrieval in Phase 4 so the
+	// rewriter has history to consume) ---
 	history, err := o.packHistory(ctx, in.ChatID, o.cfg.HistoryTurns, in.Content)
 	if err != nil {
 		o.log.Warn("rag: history packing failed", zap.Error(err))
-		// Non-fatal — proceed with no history rather than fail the turn.
 		history = nil
 	}
 
+	// Count prior assistant turns. Gate the rewriter and the auto-title
+	// on this rather than raw history length: a regenerate-of-first-turn
+	// has non-empty history (user message + failed assistant), but
+	// rewriting and titling are still meaningless there.
+	priorAssistantTurns := 0
+	for _, m := range history {
+		if m.Role == llm.RoleAssistant {
+			priorAssistantTurns++
+		}
+	}
+	isFirstAssistantTurn := priorAssistantTurns == 0
+
+	// Cancellation check before doing anything expensive — if the SSE
+	// already disconnected, abort cleanly without touching retrieval.
+	if err := ctx.Err(); err != nil {
+		persistAndDone("cancelled", "", isFirstAssistantTurn, in.Content)
+		return
+	}
+
+	// --- Rewriter step (Phase 4) ---
+	searchQuery := in.Content
+	needsRetrieval := true
+	if rewriterModelID != "" && priorAssistantTurns > 0 {
+		registry := o.registry()
+		if rewriterGen, rewriterInfo, err := registry.Get(rewriterModelID); err != nil {
+			o.log.Warn("rag: rewriter model not resolvable; skipping rewrite", zap.Error(err))
+			out <- Event{Kind: EvRewriterStatus, StatusReason: rewriterFailureError}
+		} else {
+			res := rewriteQuery(ctx, rewriterGen, rewriterInfo, history, in.Content, o.log)
+			addUsage(res.Usage)
+			if strings.TrimSpace(res.Rewritten) != "" {
+				searchQuery = res.Rewritten
+				rewrittenQuery = res.Rewritten
+			}
+			needsRetrieval = res.NeedsRetrieval
+			if res.FailureReason != "" {
+				// Surface the rewriter fallback to the FE so the phase
+				// chip can render a quiet diagnostic glyph instead of
+				// silently looking like "no rewrite was needed".
+				out <- Event{Kind: EvRewriterStatus, StatusReason: res.FailureReason}
+			}
+		}
+	}
+
+	// Cancellation check after rewriter, before retrieval.
+	if err := ctx.Err(); err != nil {
+		persistAndDone("cancelled", "", isFirstAssistantTurn, in.Content)
+		return
+	}
+
+	// --- Retrieval (only when the rewriter said yes) ---
+	var docs []llm.Document
+	if needsRetrieval {
+		out <- Event{Kind: EvRetrieving, Query: searchQuery}
+		searchReq := model.SearchRequest{
+			Query:   searchQuery,
+			Limit:   o.cfg.MaxEvidenceChunks,
+			OwnerID: in.UserID.String(),
+		}
+		result, err := o.search.Run(ctx, searchReq)
+		if err != nil {
+			o.log.Warn("rag: retrieval failed", zap.Error(err))
+			persistAndDone("error", "retrieval failed: "+err.Error(), isFirstAssistantTurn, in.Content)
+			return
+		}
+		docs = buildLLMDocs(result.Documents, o.cfg.MaxEvidenceChunks)
+		previews := buildPreviews(result.Documents, o.cfg.MaxEvidenceChunks)
+		evidence = previews
+		out <- Event{Kind: EvEvidence, Evidence: previews}
+	} else {
+		skippedRetrieval = true
+		out <- Event{Kind: EvSkippedRetrieval, Query: searchQuery}
+	}
+
 	// --- Build LLM request ---
-	// The adapter expects the BARE model id ("claude-sonnet-4-6"), not the
-	// provider-prefixed id we use for routing ("anthropic:claude-sonnet-4-6").
-	// Anthropic's SDK 404s on the prefixed form.
 	bareModel := info.BareID
 	if bareModel == "" {
 		bareModel = modelID
@@ -338,24 +491,21 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 
 	events, err := gen.Generate(ctx, llmReq)
 	if err != nil {
-		persistAndDone("error", "generate failed: "+err.Error())
+		persistAndDone("error", "generate failed: "+err.Error(), isFirstAssistantTurn, in.Content)
 		return
 	}
 
-	// --- Fan events ---
 	parser := NewCitationParser(parserDocsFromLLM(docs))
 	useNativeCitations := info.SupportsCitations
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Drain best-effort: emit Done and persist what we have.
-			persistAndDone("cancelled", "")
+			persistAndDone("cancelled", "", isFirstAssistantTurn, in.Content)
 			return
 		case ev, ok := <-events:
 			if !ok {
-				// Channel closed without an EventDone — treat as error.
-				persistAndDone("error", "stream closed unexpectedly")
+				persistAndDone("error", "stream closed unexpectedly", isFirstAssistantTurn, in.Content)
 				return
 			}
 			switch ev.Kind {
@@ -364,11 +514,6 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 					prevLen := accumulatedText.Len()
 					accumulatedText.WriteString(ev.TextDelta)
 					out <- Event{Kind: EvText, TextDelta: ev.TextDelta}
-					// Distribute pending citations across any sentence
-					// boundaries that fell inside the new region —
-					// FIFO, one citation per boundary — so multi-
-					// sentence deltas don't pile every pending pill at
-					// the same point.
 					distributePendingAtBoundaries(accumulatedText.String(), prevLen)
 				} else {
 					clean, cites := parser.Feed(ev.TextDelta)
@@ -384,36 +529,20 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 				}
 			case llm.EventCitation:
 				if ev.Citation != nil {
-					// Anthropic's citation spans are offsets WITHIN the
-					// cited source document — not within the assistant's
-					// emitted text. We need response-text offsets, but
-					// citations_delta and text_delta events interleave
-					// token-by-token, so the byte cursor is usually
-					// mid-word when a citation fires. Buffer the
-					// citation; the next text delta that crosses a
-					// sentence terminator (`.`/`!`/`?`/`\n`) flushes
-					// the buffer with a post-terminator anchor, giving
-					// Perplexity-style end-of-sentence pill placement.
 					pendingCitations = append(pendingCitations, model.ChatCitation{
 						DocID:     ev.Citation.DocID,
 						CitedText: ev.Citation.CitedText,
 					})
 				}
 			case llm.EventToolCall:
-				// Phase 5 wires this. For Phase 2 we don't include
-				// any tools so this should never fire — log and skip.
-				o.log.Warn("rag: unexpected tool call delta in Phase 2")
+				o.log.Warn("rag: unexpected tool call delta in Phase 4")
 			case llm.EventDone:
-				// Flush any trailing partial marker as plain text.
 				if !useNativeCitations {
 					if tail := parser.Flush(); tail != "" {
 						accumulatedText.WriteString(tail)
 						out <- Event{Kind: EvText, TextDelta: tail}
 					}
 				}
-				// Any citations still pending at the end of the stream
-				// land at the final response length — covers cases
-				// where the answer ends without a trailing terminator.
 				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
 				if ev.Usage != nil {
 					usage = &model.ChatUsage{
@@ -422,25 +551,23 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, modelID string,
 						CacheRead:  ev.Usage.CacheReadTokens,
 						CacheWrite: ev.Usage.CacheWriteTokens,
 					}
-					out <- Event{Kind: EvUsage, Usage: usage}
+				}
+				if merged := mergeUsage(); merged != nil {
+					out <- Event{Kind: EvUsage, Usage: merged}
 				}
 				stop := string(ev.StopReason)
 				if stop == "" {
 					stop = string(llm.StopEnd)
 				}
-				persistAndDone(stop, "")
+				persistAndDone(stop, "", isFirstAssistantTurn, in.Content)
 				return
 			case llm.EventError:
-				// Flush any pending citations at the error point so
-				// nothing is silently dropped. Anchor at the current
-				// response length — partial answers still get their
-				// pills.
 				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
 				msg := "generation failed"
 				if ev.Err != nil {
 					msg = ev.Err.Error()
 				}
-				persistAndDone("error", msg)
+				persistAndDone("error", msg, isFirstAssistantTurn, in.Content)
 				return
 			}
 		}
@@ -459,12 +586,9 @@ func (o *Orchestrator) packHistory(ctx context.Context, chatID uuid.UUID, turns 
 	if err != nil {
 		return nil, err
 	}
-	// Drop the just-appended user message — Run packs it as the final
-	// turn separately to keep history + question explicit.
 	if n := len(msgs); n > 0 && msgs[n-1].Role == model.ChatRoleUser && msgs[n-1].Content == currentContent {
 		msgs = msgs[:n-1]
 	}
-	// Skip tool turns (Phase 2 doesn't generate any, but be defensive).
 	filtered := make([]model.ChatMessage, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Role == model.ChatRoleTool {
@@ -487,10 +611,7 @@ func (o *Orchestrator) packHistory(ctx context.Context, chatID uuid.UUID, turns 
 	return out, nil
 }
 
-// buildLLMDocs maps DocumentHits → llm.Documents, capped by max. Uses
-// the chunk's Headline (or first 800 chars of Content) as the LLM-side
-// text to keep token costs reasonable. The full content is still
-// retrievable via /api/documents if the user wants to drill down.
+// buildLLMDocs maps DocumentHits → llm.Documents, capped by max.
 func buildLLMDocs(hits []model.DocumentHit, max int) []llm.Document {
 	if len(hits) > max {
 		hits = hits[:max]
@@ -551,23 +672,15 @@ func parserDocsFromLLM(docs []llm.Document) []ParserDoc {
 }
 
 // nextSentenceBoundary scans text[start:] for the first sentence
-// terminator and returns the offset right after it — i.e. the position
-// the next sentence (if any) starts at. Pills anchor at this offset
-// so they render as `Sentence.[N] Next sentence` (the trailing space
-// stays in the prose, not before the pill). Returns 0 when no
-// boundary is found in the new region (zero also doubles as "no
-// anchor" since callers gate on a positive return).
+// terminator and returns the offset right after it.
 //
 // Heuristics tuned for streaming markdown chat output:
 //   - A bare `\n` is a hard boundary.
 //   - `.` / `!` / `?` only count as a sentence end when the NEXT
-//     character is whitespace (avoiding decimals `4.7`, money
-//     `€107.10`, version strings, ellipses).
-//   - For `.` specifically, the PRECEDING character must be a letter
-//     (not a digit). This rejects markdown list markers like `2. `
-//     and trailing-digit cases like `5. ` which the model rarely
-//     uses as actual sentence-ends. Slightly punts on rare prose
-//     like "Page 5." but those are not common in Claude responses.
+//     character is whitespace (avoids decimals `4.7`, money `€107.10`,
+//     version strings, ellipses).
+//   - For `.` specifically, the PRECEDING character must NOT be a digit
+//     (rejects markdown list markers `2. ` and `5. `).
 //   - When the terminator candidate is the last character we've seen
 //     so far, return 0 and wait — the next streamed delta might
 //     confirm (whitespace) or reject (non-space) the boundary.
@@ -596,10 +709,6 @@ func nextSentenceBoundary(text string, start int) int {
 			if next != ' ' && next != '\t' && next != '\n' {
 				continue
 			}
-			// Skip when the period sits after a digit — this is
-			// almost always a list marker (`2. `) or a decimal cut
-			// off mid-stream (`Apr 6.`/`5x.`), not a real sentence
-			// terminator in the model's prose.
 			if i > 0 {
 				prev := text[i-1]
 				if prev >= '0' && prev <= '9' {

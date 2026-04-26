@@ -266,6 +266,9 @@ export interface LLMSettings {
   openai_api_key: string;
   ollama_url: string;
   allowlist: string[];
+  // rewriter_model is the cheap-model id used for query rewriting and
+  // auto-titling. Empty disables both features.
+  rewriter_model: string;
 }
 
 // LLMModelInfo mirrors the JSON returned by GET /api/llm/models. Capability
@@ -385,6 +388,18 @@ export interface ChatMessage {
   tool_calls?: ChatToolCall[];
   usage?: ChatUsage;
   stop_reason?: string;
+  // rewritten_query is the rewriter's normalised search query when the
+  // rewriter ran on this turn. Empty when rewriter was disabled or
+  // first turn. Used by the FE phase strip on chat reload.
+  rewritten_query?: string;
+  // skipped_retrieval is true when the rewriter judged the question
+  // answerable from chat history alone (greetings, meta questions,
+  // history-only follow-ups). Evidence is empty on these turns.
+  skipped_retrieval?: boolean;
+  // duration_ms is the orchestrator's runTurn wall-clock in ms
+  // (server-measured). The FE prefers this over locally-derived
+  // timings so the label stays stable across page refreshes.
+  duration_ms?: number;
   created_at: string;
 }
 
