@@ -176,6 +176,56 @@ func TestUpdateRAGSettings_OutOfRangeRejected(t *testing.T) {
 	}
 }
 
+func TestUpdateRAGSettings_MultimodalRoundTrip(t *testing.T) {
+	st, mgr, router, token := ragRouter(t)
+
+	body := `{"max_tool_rounds":2,"max_images_per_turn":6,"enable_multimodal":true,"enable_open_attachment":true}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rag", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+	data := resp.Data.(map[string]any)
+	if data["max_images_per_turn"] != float64(6) {
+		t.Errorf("max_images_per_turn = %v, want 6", data["max_images_per_turn"])
+	}
+	if data["enable_open_attachment"] != true {
+		t.Errorf("enable_open_attachment = %v, want true", data["enable_open_attachment"])
+	}
+	if got := mgr.MaxImagesPerTurn(); got != 6 {
+		t.Errorf("hot-swapped MaxImagesPerTurn = %d, want 6", got)
+	}
+	if !mgr.EnableOpenAttachment() {
+		t.Error("hot-swapped EnableOpenAttachment = false, want true")
+	}
+	stored, err := st.GetSetting(context.Background(), "rag_max_images_per_turn")
+	if err != nil {
+		t.Fatalf("get stored: %v", err)
+	}
+	if stored != "6" {
+		t.Errorf("stored max_images_per_turn = %q, want 6", stored)
+	}
+}
+
+func TestUpdateRAGSettings_OutOfRangeImagesRejected(t *testing.T) {
+	_, _, router, token := ragRouter(t)
+	body := `{"max_tool_rounds":2,"max_images_per_turn":99}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings/rag", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for out-of-range images, got %d", w.Code)
+	}
+}
+
 // MaxToolRounds = 0 is the documented "tools disabled" sentinel and must
 // be accepted (not collapsed to the default by the validator).
 func TestUpdateRAGSettings_ZeroAccepted(t *testing.T) {

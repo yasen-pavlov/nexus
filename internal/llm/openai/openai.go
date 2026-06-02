@@ -83,12 +83,26 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.ChatCompletionNewPara
 		messages = append(messages, sdk.SystemMessage(systemBody))
 	}
 
-	for _, m := range req.Messages {
+	// Multi-modal: images ride on the LAST user message as image_url
+	// content parts, so they sit with the question the model is answering.
+	// The orchestrator only attaches images for vision models.
+	images := llm.CollectImages(req.Documents)
+	lastUser := llm.LastUserIndex(req.Messages)
+	for i, m := range req.Messages {
 		switch m.Role {
 		case llm.RoleSystem:
 			// Already collapsed into the synthetic system message above.
 		case llm.RoleUser:
-			messages = append(messages, sdk.UserMessage(m.Content))
+			if i == lastUser && len(images) > 0 {
+				parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(images)+1)
+				parts = append(parts, sdk.TextContentPart(m.Content))
+				for _, img := range images {
+					parts = append(parts, ImageContentBlock(img))
+				}
+				messages = append(messages, sdk.UserMessage(parts))
+			} else {
+				messages = append(messages, sdk.UserMessage(m.Content))
+			}
 		case llm.RoleAssistant:
 			messages = append(messages, sdk.AssistantMessage(m.Content))
 		case llm.RoleTool:

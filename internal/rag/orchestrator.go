@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,29 @@ import (
 // internal/rag stays free of internal/api imports and trivially fakeable.
 type SearchProvider interface {
 	Run(ctx context.Context, req model.SearchRequest) (*model.SearchResult, error)
+}
+
+// ImageStore fetches a cached binary by its (sourceType, sourceName,
+// sourceID) triple. Satisfied by *storage.BinaryStore. The orchestrator
+// uses it for cache-ONLY reads when attaching images — a miss returns an
+// error and the image is silently skipped (never a synchronous refetch,
+// per the multi-modal cost guardrails in the master plan §8).
+type ImageStore interface {
+	Get(ctx context.Context, sourceType, sourceName, sourceID string) (io.ReadCloser, error)
+}
+
+// AttachmentResolver looks chunks up by relation or by id. Satisfied by
+// *search.Client.
+//   - FindChunksReferencing finds the chunks whose relations point at any
+//     of the given parent docs (the reverse `attachment_of` edge) — used
+//     to pull a retrieved email/Telegram message's image attachments into
+//     the prompt even when the attachment chunk wasn't a top hit.
+//   - GetChunkByDocID resolves a single chunk by id, backing the
+//     nexus_open_attachment tool. The dispatcher re-checks ownership on
+//     the returned chunk because the model supplies an arbitrary id.
+type AttachmentResolver interface {
+	FindChunksReferencing(ctx context.Context, targetIDs, targetSourceIDs []string) ([]model.Chunk, error)
+	GetChunkByDocID(ctx context.Context, docID string) (*model.Chunk, error)
 }
 
 // RegistryFunc returns the live llm.Registry. Pulled per call so the
@@ -40,6 +64,18 @@ type Settings struct {
 	// orchestrator passes Tools=nil on round 1, forcing single-shot
 	// answers). Read per turn so admin saves take effect without restart.
 	MaxToolRounds int
+	// MaxImagesPerTurn caps how many cached image attachments the
+	// orchestrator feeds to a vision-capable model per turn. 0 disables
+	// image attachment. Default 4.
+	MaxImagesPerTurn int
+	// EnableMultimodal is the global on/off for image attachment. When
+	// false the orchestrator never attaches images even to vision models.
+	EnableMultimodal bool
+	// EnableOpenAttachment exposes the flag-gated nexus_open_attachment
+	// tool to the model (lets it pull a specific attachment by chunk id
+	// mid-answer). Off by default; independent of EnableMultimodal so an
+	// admin can ship auto-attachment without the agentic tool.
+	EnableOpenAttachment bool
 }
 
 // SettingsFunc is read once per turn from runTurn so orchestrator
@@ -91,6 +127,12 @@ type Deps struct {
 	Chats    ChatStore
 	Cfg      Config
 	Log      *zap.Logger
+	// Binaries and Attachments power multi-modal image attachment. Both
+	// optional — when either is nil the orchestrator simply never attaches
+	// images (text-only flow), so non-multimodal tests don't need to wire
+	// them.
+	Binaries    ImageStore
+	Attachments AttachmentResolver
 }
 
 // Orchestrator runs a single user turn end-to-end: persist user message
@@ -102,12 +144,14 @@ type Deps struct {
 // turn's persisted Usage so cost reporting includes the supporting
 // calls.
 type Orchestrator struct {
-	registry RegistryFunc
-	settings SettingsFunc
-	search   SearchProvider
-	chats    ChatStore
-	cfg      Config
-	log      *zap.Logger
+	registry    RegistryFunc
+	settings    SettingsFunc
+	search      SearchProvider
+	chats       ChatStore
+	cfg         Config
+	log         *zap.Logger
+	binaries    ImageStore
+	attachments AttachmentResolver
 }
 
 // NewOrchestrator wires the orchestrator. All Deps fields must be
@@ -134,12 +178,14 @@ func NewOrchestrator(d Deps) *Orchestrator {
 		settings = func() Settings { return Settings{} }
 	}
 	return &Orchestrator{
-		registry: d.Registry,
-		settings: settings,
-		search:   d.Search,
-		chats:    d.Chats,
-		cfg:      cfg,
-		log:      d.Log,
+		registry:    d.Registry,
+		settings:    settings,
+		search:      d.Search,
+		chats:       d.Chats,
+		cfg:         cfg,
+		log:         d.Log,
+		binaries:    d.Binaries,
+		attachments: d.Attachments,
 	}
 }
 
@@ -504,6 +550,10 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 			return
 		}
 		docs = buildLLMDocs(result.Documents, o.cfg.MaxEvidenceChunks)
+		// Multi-modal: attach cached image binaries to the docs when the
+		// model can see them and the admin hasn't disabled it. Best-effort
+		// and cache-only — never blocks or fails the turn (master plan §8).
+		o.attachImages(ctx, docs, result.Documents, info, settings)
 		previews := buildPreviews(result.Documents, o.cfg.MaxEvidenceChunks)
 		evidence = previews
 		out <- Event{Kind: EvEvidence, Evidence: previews}
@@ -530,7 +580,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 	//                     (master plan §2 hard constraint).
 	documents := docs
 	rolledMessages := append(history, llm.Message{Role: llm.RoleUser, Content: in.Content})
-	dispatcher := newSearchToolDispatcher(o.search, in.UserID, o.log)
+	dispatcher := newSearchToolDispatcher(o.search, o.attachments, o.binaries, in.UserID, info.SupportsVision, o.log)
 	maxToolRounds := settings.MaxToolRounds
 	useNativeCitations := info.SupportsCitations
 
@@ -547,7 +597,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 		// needed.
 		var roundTools []llm.Tool
 		if toolRound < maxToolRounds {
-			roundTools = BuildToolList(info, maxToolRounds)
+			roundTools = BuildToolList(info, maxToolRounds, settings.EnableOpenAttachment)
 		}
 
 		// Citation parser is per-round for non-Anthropic providers so [N]
@@ -837,6 +887,7 @@ func buildPreviews(hits []model.DocumentHit, max int) []ChunkPreview {
 			Source:   h.SourceType,
 			Date:     date,
 			Headline: h.Headline,
+			MimeType: h.MimeType,
 		})
 	}
 	return out

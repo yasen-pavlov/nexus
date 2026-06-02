@@ -22,6 +22,11 @@ const nexusSearchToolName = "nexus_search"
 // dispatcher sends back to the LLM per call. Master plan §5.4.
 const nexusSearchToolResultLimit = 5
 
+// nexusOpenAttachmentToolName is the flag-gated tool that pulls a single
+// attachment (by chunk id) into the next round — as an image for vision
+// models, or its extracted text otherwise. Master plan §5.4.
+const nexusOpenAttachmentToolName = "nexus_open_attachment"
+
 // nexusSearchTool is the JSON-Schema-described function the LLM may
 // invoke when the initial evidence isn't enough to answer cleanly.
 // `query` is required; all filters are optional. Schema mirrors the
@@ -57,16 +62,42 @@ var nexusSearchTool = llm.Tool{
 	},
 }
 
+// nexusOpenAttachmentTool lets the model fetch one attachment's content by
+// chunk id. Flag-gated (admin enable_open_attachment) because it widens
+// what the model can pull into context; results are still ownership-checked
+// against the calling user.
+var nexusOpenAttachmentTool = llm.Tool{
+	Name: nexusOpenAttachmentToolName,
+	Description: "Open a specific attachment or document by its chunk id and include its content in the next round. " +
+		"For images this attaches the picture itself (when the model can see images); otherwise it returns the extracted text. " +
+		"Use after nexus_search when you need the full content of a particular result. The id is the chunk's id from a search result.",
+	Schema: map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"chunk_id": map[string]any{
+				"type":        "string",
+				"description": "The id of the chunk/document to open (from a search result's id field).",
+			},
+		},
+		"required": []string{"chunk_id"},
+	},
+}
+
 // BuildToolList returns the tools to expose for one orchestrator round.
 // Empty when the model can't drive tools (Ollama vision-only models,
 // future text-only models) OR when MaxToolRounds is 0 (admin-disabled)
 // OR when the orchestrator has hit the round cap and is forcing the
-// model to answer without further tool use.
-func BuildToolList(info llm.ModelInfo, maxToolRounds int) []llm.Tool {
+// model to answer without further tool use. nexus_open_attachment is
+// appended only when the admin has enabled the flag.
+func BuildToolList(info llm.ModelInfo, maxToolRounds int, enableOpenAttachment bool) []llm.Tool {
 	if !info.SupportsTools || maxToolRounds <= 0 {
 		return nil
 	}
-	return []llm.Tool{nexusSearchTool}
+	tools := []llm.Tool{nexusSearchTool}
+	if enableOpenAttachment {
+		tools = append(tools, nexusOpenAttachmentTool)
+	}
+	return tools
 }
 
 // ToolDispatcher executes a finalized tool call. Implementations are
@@ -105,18 +136,31 @@ type nexusSearchArgs struct {
 // plan §2 and feedback_endpoint_auth.md.
 type searchToolDispatcher struct {
 	search SearchProvider
-	userID uuid.UUID
-	limit  int
-	log    *zap.Logger
+	// chunks resolves a single chunk by id for nexus_open_attachment.
+	// binaries fetches its cached binary (cache-only). Both may be nil
+	// when the host didn't wire multimodal deps — open_attachment then
+	// returns a graceful "unavailable" outcome instead of panicking.
+	chunks         AttachmentResolver
+	binaries       ImageStore
+	userID         uuid.UUID
+	supportsVision bool
+	limit          int
+	log            *zap.Logger
 }
 
-// newSearchToolDispatcher constructs a dispatcher for one user turn.
-func newSearchToolDispatcher(search SearchProvider, userID uuid.UUID, log *zap.Logger) *searchToolDispatcher {
+// newSearchToolDispatcher constructs a dispatcher for one user turn. The
+// userID is baked in so every dispatched call (search OR open-attachment)
+// stays inside the calling user's permissions. supportsVision decides
+// whether nexus_open_attachment returns an image block or extracted text.
+func newSearchToolDispatcher(search SearchProvider, chunks AttachmentResolver, binaries ImageStore, userID uuid.UUID, supportsVision bool, log *zap.Logger) *searchToolDispatcher {
 	return &searchToolDispatcher{
-		search: search,
-		userID: userID,
-		limit:  nexusSearchToolResultLimit,
-		log:    log,
+		search:         search,
+		chunks:         chunks,
+		binaries:       binaries,
+		userID:         userID,
+		supportsVision: supportsVision,
+		limit:          nexusSearchToolResultLimit,
+		log:            log,
 	}
 }
 
@@ -126,13 +170,21 @@ func newSearchToolDispatcher(search SearchProvider, userID uuid.UUID, log *zap.L
 // orchestrator never re-raises a Go error for tool dispatch — the round
 // loop stays alive and the model gets a clean turn-completion path.
 func (d *searchToolDispatcher) Dispatch(ctx context.Context, call llm.ToolCall) ToolOutcome {
-	if call.Name != nexusSearchToolName {
+	switch call.Name {
+	case nexusSearchToolName:
+		return d.dispatchSearch(ctx, call)
+	case nexusOpenAttachmentToolName:
+		return d.dispatchOpenAttachment(ctx, call)
+	default:
 		return ToolOutcome{
 			ResultText: fmt.Sprintf("error: unknown tool %q", call.Name),
 			Summary:    fmt.Sprintf("Unknown tool: %s", call.Name),
 		}
 	}
+}
 
+// dispatchSearch handles the nexus_search tool.
+func (d *searchToolDispatcher) dispatchSearch(ctx context.Context, call llm.ToolCall) ToolOutcome {
 	var args nexusSearchArgs
 	if call.ArgsJSON != "" {
 		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
@@ -188,6 +240,121 @@ func (d *searchToolDispatcher) Dispatch(ctx context.Context, call llm.ToolCall) 
 		Summary:    summary,
 		Chunks:     chunks,
 		Docs:       docs,
+	}
+}
+
+// nexusOpenAttachmentArgs is the parsed shape of the open-attachment args.
+type nexusOpenAttachmentArgs struct {
+	ChunkID string `json:"chunk_id"`
+}
+
+// dispatchOpenAttachment handles nexus_open_attachment: resolve the chunk
+// by id, RE-CHECK ownership (the model supplies an arbitrary id, so this
+// is the security boundary), then return the attachment as an image
+// (vision models) or its extracted text. Cache-only for the binary;
+// strict-but-tolerant like dispatchSearch — never returns a Go error.
+func (d *searchToolDispatcher) dispatchOpenAttachment(ctx context.Context, call llm.ToolCall) ToolOutcome {
+	if d.chunks == nil {
+		return ToolOutcome{
+			ResultText: "error: attachment lookup is not available",
+			Summary:    "Attachment lookup unavailable",
+		}
+	}
+	var args nexusOpenAttachmentArgs
+	if call.ArgsJSON != "" {
+		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
+			d.log.Warn("rag: open_attachment args parse failed",
+				zap.String("raw", call.ArgsJSON), zap.Error(err))
+			return ToolOutcome{
+				ResultText: "error: invalid arguments — must be JSON with a 'chunk_id' string field",
+				Summary:    "Open-attachment call had invalid arguments",
+			}
+		}
+	}
+	args.ChunkID = strings.TrimSpace(args.ChunkID)
+	if args.ChunkID == "" {
+		return ToolOutcome{
+			ResultText: "error: 'chunk_id' is required and must be non-empty",
+			Summary:    "Open-attachment call missing chunk_id",
+		}
+	}
+
+	chunk, err := d.chunks.GetChunkByDocID(ctx, args.ChunkID)
+	if err != nil || chunk == nil {
+		return ToolOutcome{
+			ResultText: fmt.Sprintf("error: no attachment found for id %q", args.ChunkID),
+			Summary:    "Attachment not found",
+		}
+	}
+
+	// Ownership boundary: the model can pass ANY id, so re-check that the
+	// calling user may read this chunk (owner match OR shared). Mirrors the
+	// /api/documents/{id}/content rule; a not-found-style message avoids
+	// leaking existence of other users' docs (feedback_endpoint_auth.md).
+	if chunk.OwnerID != d.userID.String() && !chunk.Shared {
+		return ToolOutcome{
+			ResultText: fmt.Sprintf("error: no attachment found for id %q", args.ChunkID),
+			Summary:    "Attachment not found",
+		}
+	}
+
+	date := ""
+	if !chunk.CreatedAt.IsZero() {
+		date = chunk.CreatedAt.Format("2006-01-02")
+	}
+	content := chunk.Content
+	if content == "" {
+		content = chunk.FullContent
+	}
+	// Use the caller-supplied doc id (a UUID, the same handle search
+	// results carry) for the document and preview — NOT chunk.ID, which is
+	// the composite OpenSearch _id and wouldn't resolve via
+	// /api/documents/{id}/content for the FE thumbnail.
+	doc := llm.Document{
+		ID:      args.ChunkID,
+		Title:   chunk.Title,
+		Source:  chunk.SourceType,
+		Date:    date,
+		Content: content,
+	}
+	preview := ChunkPreview{
+		DocID:    args.ChunkID,
+		Title:    chunk.Title,
+		Source:   chunk.SourceType,
+		Date:     date,
+		MimeType: chunk.MimeType,
+	}
+
+	// Image path: attach the picture when the model can see it and the
+	// binary is cached within the size cap. Otherwise the extracted text
+	// already on the doc carries the content.
+	attachedImage := false
+	if d.supportsVision && isImageMime(chunk.MimeType) {
+		if img, ok := loadCachedImage(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, chunk.MimeType, args.ChunkID); ok {
+			doc.Images = append(doc.Images, img)
+			attachedImage = true
+		}
+	}
+
+	title := chunk.Title
+	if title == "" {
+		title = args.ChunkID
+	}
+	var resultText string
+	switch {
+	case attachedImage:
+		resultText = fmt.Sprintf("Opened attachment %q (image attached below).", title)
+	case content != "":
+		resultText = fmt.Sprintf("Opened attachment %q:\n%s", title, content)
+	default:
+		resultText = fmt.Sprintf("Opened attachment %q, but it has no viewable image or extractable text.", title)
+	}
+
+	return ToolOutcome{
+		ResultText: resultText,
+		Summary:    fmt.Sprintf("Opened %q", title),
+		Chunks:     []ChunkPreview{preview},
+		Docs:       []llm.Document{doc},
 	}
 }
 

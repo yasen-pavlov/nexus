@@ -4,12 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 
 import { useRAGSettings, type UseRAGSettings } from "@/hooks/use-rag-settings";
 import type { RAGSettings } from "@/lib/api-types";
 
 const MIN_TOOL_ROUNDS = 0;
 const MAX_TOOL_ROUNDS = 5;
+const MIN_IMAGES = 0;
+const MAX_IMAGES = 8;
 
 export function RAGForm() {
   const ctx = useRAGSettings();
@@ -30,7 +33,7 @@ export function RAGForm() {
 }
 
 function fingerprint(s: RAGSettings): string {
-  return `${s.max_tool_rounds}`;
+  return `${s.max_tool_rounds}|${s.max_images_per_turn}|${s.enable_multimodal}|${s.enable_open_attachment}`;
 }
 
 function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
@@ -39,14 +42,35 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
 
   const [form, setForm] = useState<RAGSettings>({
     max_tool_rounds: saved.max_tool_rounds,
+    max_images_per_turn: saved.max_images_per_turn,
+    enable_multimodal: saved.enable_multimodal,
+    enable_open_attachment: saved.enable_open_attachment,
   });
 
-  const dirty = form.max_tool_rounds !== saved.max_tool_rounds;
-  const invalid =
+  const patch = (next: Partial<RAGSettings>) =>
+    setForm((f) => ({ ...f, ...next }));
+
+  const dirty =
+    form.max_tool_rounds !== saved.max_tool_rounds ||
+    form.max_images_per_turn !== saved.max_images_per_turn ||
+    form.enable_multimodal !== saved.enable_multimodal ||
+    form.enable_open_attachment !== saved.enable_open_attachment;
+
+  const roundsInvalid =
     form.max_tool_rounds < MIN_TOOL_ROUNDS ||
     form.max_tool_rounds > MAX_TOOL_ROUNDS;
+  const imagesInvalid =
+    form.max_images_per_turn < MIN_IMAGES ||
+    form.max_images_per_turn > MAX_IMAGES;
+  const invalid = roundsInvalid || imagesInvalid;
 
-  const revert = () => setForm({ max_tool_rounds: saved.max_tool_rounds });
+  const revert = () =>
+    setForm({
+      max_tool_rounds: saved.max_tool_rounds,
+      max_images_per_turn: saved.max_images_per_turn,
+      enable_multimodal: saved.enable_multimodal,
+      enable_open_attachment: saved.enable_open_attachment,
+    });
 
   return (
     <form
@@ -64,14 +88,13 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
         <Input
           type="number"
           inputMode="numeric"
+          aria-label="Max tool rounds per turn"
           min={MIN_TOOL_ROUNDS}
           max={MAX_TOOL_ROUNDS}
           value={form.max_tool_rounds}
-          onChange={(e) =>
-            setForm({ max_tool_rounds: Number(e.target.value) })
-          }
+          onChange={(e) => patch({ max_tool_rounds: Number(e.target.value) })}
           className={
-            invalid
+            roundsInvalid
               ? "h-10 max-w-[120px] border-destructive/60 font-mono text-[13px]"
               : "h-10 max-w-[120px] font-mono text-[13px]"
           }
@@ -82,6 +105,73 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
           tool calls entirely (single-shot answers from the initial
           retrieval). Capped at {MAX_TOOL_ROUNDS}.
         </p>
+      </div>
+
+      {/* Multi-modal section */}
+      <div className="flex flex-col gap-4 border-t border-border/60 pt-5">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground/80">
+          Images
+        </div>
+
+        <label className="flex max-w-xl cursor-pointer items-start justify-between gap-4">
+          <span className="flex flex-col gap-0.5">
+            <span className="text-[13px] font-medium">
+              Attach images to vision models
+            </span>
+            <span className="text-[12px] leading-[1.5] text-muted-foreground">
+              When a retrieved chunk (or its attachment) is a cached image and
+              the chosen model can see images, attach it to the prompt so the
+              model can describe what's in it.
+            </span>
+          </span>
+          <Switch
+            checked={form.enable_multimodal}
+            onCheckedChange={(v) => patch({ enable_multimodal: v })}
+            aria-label="Attach images to vision models"
+          />
+        </label>
+
+        <div className="grid max-w-xl gap-1.5">
+          <Label className="text-[13px] font-medium">Max images per turn</Label>
+          <Input
+            type="number"
+            inputMode="numeric"
+            aria-label="Max images per turn"
+            min={MIN_IMAGES}
+            max={MAX_IMAGES}
+            value={form.max_images_per_turn}
+            disabled={!form.enable_multimodal}
+            onChange={(e) =>
+              patch({ max_images_per_turn: Number(e.target.value) })
+            }
+            className={
+              imagesInvalid
+                ? "h-10 max-w-[120px] border-destructive/60 font-mono text-[13px]"
+                : "h-10 max-w-[120px] font-mono text-[13px]"
+            }
+          />
+          <p className="text-[12px] leading-[1.5] text-muted-foreground">
+            Cap on cached images fed to the model each turn. <code>0</code>{" "}
+            attaches none. Capped at {MAX_IMAGES} to keep token cost bounded.
+          </p>
+        </div>
+
+        <label className="flex max-w-xl cursor-pointer items-start justify-between gap-4">
+          <span className="flex flex-col gap-0.5">
+            <span className="text-[13px] font-medium">
+              Enable the <code>nexus_open_attachment</code> tool
+            </span>
+            <span className="text-[12px] leading-[1.5] text-muted-foreground">
+              Lets the model pull a specific attachment by id mid-answer (image
+              for vision models, otherwise its extracted text). Off by default.
+            </span>
+          </span>
+          <Switch
+            checked={form.enable_open_attachment}
+            onCheckedChange={(v) => patch({ enable_open_attachment: v })}
+            aria-label="Enable the nexus_open_attachment tool"
+          />
+        </label>
       </div>
 
       {dirty && (
@@ -103,11 +193,7 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
             >
               Revert
             </Button>
-            <Button
-              type="submit"
-              size="sm"
-              disabled={update.isPending || invalid}
-            >
+            <Button type="submit" size="sm" disabled={update.isPending || invalid}>
               {update.isPending ? "Saving…" : "Save changes"}
             </Button>
           </div>

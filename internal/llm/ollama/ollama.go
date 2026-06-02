@@ -262,12 +262,23 @@ func buildBody(req llm.GenerateRequest, stream bool) ([]byte, error) {
 		body.Messages = append(body.Messages, chatMsg{Role: "system", Content: systemBody})
 	}
 
-	for _, m := range req.Messages {
+	// Multi-modal: base64 images ride on the LAST user message's "images"
+	// field (Ollama's wire format). The orchestrator only attaches images
+	// for vision-capable models.
+	images := llm.CollectImages(req.Documents)
+	lastUser := llm.LastUserIndex(req.Messages)
+	for i, m := range req.Messages {
 		switch m.Role {
 		case llm.RoleSystem:
 			// Already collapsed.
 		case llm.RoleUser:
-			body.Messages = append(body.Messages, chatMsg{Role: "user", Content: m.Content})
+			um := chatMsg{Role: "user", Content: m.Content}
+			if i == lastUser && len(images) > 0 {
+				for _, img := range images {
+					um.Images = append(um.Images, EncodeImage(img))
+				}
+			}
+			body.Messages = append(body.Messages, um)
 		case llm.RoleAssistant:
 			am := chatMsg{Role: "assistant", Content: m.Content}
 			for _, tc := range m.ToolCalls {

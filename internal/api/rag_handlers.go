@@ -13,11 +13,17 @@ import (
 // suggestion holds — we round-trip via direct conversion instead of
 // re-typing field names.
 type ragSettingsResponse struct {
-	MaxToolRounds int `json:"max_tool_rounds"`
+	MaxToolRounds        int  `json:"max_tool_rounds"`
+	MaxImagesPerTurn     int  `json:"max_images_per_turn"`
+	EnableMultimodal     bool `json:"enable_multimodal"`
+	EnableOpenAttachment bool `json:"enable_open_attachment"`
 }
 
 type ragSettingsRequest struct {
-	MaxToolRounds int `json:"max_tool_rounds"`
+	MaxToolRounds        int  `json:"max_tool_rounds"`
+	MaxImagesPerTurn     int  `json:"max_images_per_turn"`
+	EnableMultimodal     bool `json:"enable_multimodal"`
+	EnableOpenAttachment bool `json:"enable_open_attachment"`
 }
 
 // GetRAGSettings godoc

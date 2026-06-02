@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react";
 
+import { InlineImage } from "@/components/conversation/inline-media";
+import { mimeIsImage } from "@/components/conversation/mime-helpers";
 import { sourceMetaFor } from "@/components/source-meta";
 import { SourceChip } from "@/components/source-chip";
 import type { ChunkPreview } from "@/lib/api-types";
@@ -33,8 +35,10 @@ export function EvidenceCard({
   const hueStyle = {
     "--chip-hue": `var(${meta.colorVar})`,
   } as CSSProperties;
+  const isImage = mimeIsImage(chunk.mime_type);
 
   return (
+    <div className="flex flex-col gap-2">
     <button
       type="button"
       data-chunk-id={chunk.id}
@@ -86,5 +90,14 @@ export function EvidenceCard({
         )}
       </div>
     </button>
+      {/* Inline thumbnail for image chunks — rendered as a sibling (not
+          nested) because the card itself is a <button> and InlineImage
+          renders its own zoom button. Reuses the conversation lightbox. */}
+      {isImage && (
+        <div className="pl-5">
+          <InlineImage id={chunk.id} filename={chunk.title || chunk.id} />
+        </div>
+      )}
+    </div>
   );
 }

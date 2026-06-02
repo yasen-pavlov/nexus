@@ -98,6 +98,58 @@ func TestRAGManager_UpdateFromSettings_AcceptsZero(t *testing.T) {
 	}
 }
 
+func TestRAGManager_LoadFromDB_MultimodalDefaults(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	mgr := NewRAGManager(st, zap.NewNop())
+	if err := mgr.LoadFromDB(context.Background(), nil); err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if got := mgr.MaxImagesPerTurn(); got != defaultMaxImagesPerTurn {
+		t.Errorf("MaxImagesPerTurn = %d, want %d", got, defaultMaxImagesPerTurn)
+	}
+	if !mgr.EnableMultimodal() {
+		t.Error("EnableMultimodal = false, want true by default")
+	}
+	if mgr.EnableOpenAttachment() {
+		t.Error("EnableOpenAttachment = true, want false by default")
+	}
+}
+
+func TestRAGManager_UpdateFromSettings_Multimodal(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	ctx := context.Background()
+	mgr := NewRAGManager(st, zap.NewNop())
+
+	snap := RAGSnapshot{MaxToolRounds: 2, MaxImagesPerTurn: 6, EnableMultimodal: false, EnableOpenAttachment: true}
+	if err := mgr.UpdateFromSettings(ctx, snap); err != nil {
+		t.Fatalf("UpdateFromSettings: %v", err)
+	}
+	fresh := NewRAGManager(st, zap.NewNop())
+	if err := fresh.LoadFromDB(ctx, nil); err != nil {
+		t.Fatalf("fresh LoadFromDB: %v", err)
+	}
+	if got := fresh.MaxImagesPerTurn(); got != 6 {
+		t.Errorf("persisted MaxImagesPerTurn = %d, want 6", got)
+	}
+	if fresh.EnableMultimodal() {
+		t.Error("persisted EnableMultimodal = true, want false")
+	}
+	if !fresh.EnableOpenAttachment() {
+		t.Error("persisted EnableOpenAttachment = false, want true")
+	}
+}
+
+func TestRAGManager_UpdateFromSettings_RejectsBadImageCount(t *testing.T) {
+	st, _, _ := newTestDeps(t)
+	mgr := NewRAGManager(st, zap.NewNop())
+	for _, n := range []int{-1, maxAllowedImagesPerTurn + 1} {
+		err := mgr.UpdateFromSettings(context.Background(), RAGSnapshot{MaxImagesPerTurn: n})
+		if err == nil {
+			t.Errorf("UpdateFromSettings(images=%d): expected error, got nil", n)
+		}
+	}
+}
+
 func TestRAGManager_LoadFromDB_StoreErrorPropagates(t *testing.T) {
 	st, _, _ := newTestDeps(t)
 	mgr := NewRAGManager(st, zap.NewNop())

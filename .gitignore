@@ -25,7 +25,7 @@ ranking-verify*.png
 # Ad-hoc Ask/RAG visual-verification screenshots dropped in the repo root.
 redesign*.png
 sources*.png
-phase5*.png
+phase*.png
 
 # Local-only design & planning notes — kept out of the tree on purpose.
 plans/

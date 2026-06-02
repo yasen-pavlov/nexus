@@ -145,14 +145,19 @@ func run() error {
 		Registry: lm.Get,
 		Settings: func() rag.Settings {
 			return rag.Settings{
-				RewriterModel: lm.RewriterModel(),
-				MaxToolRounds: ragMgr.MaxToolRounds(),
+				RewriterModel:        lm.RewriterModel(),
+				MaxToolRounds:        ragMgr.MaxToolRounds(),
+				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),
+				EnableMultimodal:     ragMgr.EnableMultimodal(),
+				EnableOpenAttachment: ragMgr.EnableOpenAttachment(),
 			}
 		},
-		Search: api.NewRAGSearchProvider(searchService),
-		Chats:  st,
-		Cfg:    rag.DefaultConfig(),
-		Log:    log,
+		Search:      api.NewRAGSearchProvider(searchService),
+		Chats:       st,
+		Cfg:         rag.DefaultConfig(),
+		Log:         log,
+		Binaries:    binaryStore,
+		Attachments: searchClient,
 	})
 
 	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, ragMgr, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)

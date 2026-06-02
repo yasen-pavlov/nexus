@@ -95,6 +95,15 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 		block := docToBlock(doc, req.EnableCache && isLast)
 		leadingDocBlocks = append(leadingDocBlocks, block)
 	}
+	// Multi-modal: append any attached images as base64 image blocks in
+	// the same synthetic user message as the documents, so Claude reads
+	// them alongside the cited text. The orchestrator only populates
+	// Images for vision-capable models, so no capability check here.
+	for _, doc := range req.Documents {
+		for _, img := range doc.Images {
+			leadingDocBlocks = append(leadingDocBlocks, ImageContentBlock(img))
+		}
+	}
 
 	// Conversation history: replay messages in order. Documents (if any)
 	// are merged into the *first* user message so the citation index

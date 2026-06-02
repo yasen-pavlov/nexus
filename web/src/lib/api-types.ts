@@ -374,6 +374,13 @@ export interface ChatToolEvent {
 // Tools=nil on round 1, forcing a single-shot answer).
 export interface RAGSettings {
   max_tool_rounds: number;
+  // Phase 6 multi-modal knobs. enable_multimodal is the global on/off for
+  // attaching cached images to vision models; max_images_per_turn caps how
+  // many per turn (0–8). enable_open_attachment exposes the flag-gated
+  // nexus_open_attachment tool.
+  max_images_per_turn: number;
+  enable_multimodal: boolean;
+  enable_open_attachment: boolean;
 }
 
 export interface ChatUsage {
@@ -447,4 +454,8 @@ export interface ChunkPreview {
   source: string;
   date?: string;
   headline?: string;
+  // mime_type is the chunk's content type when known. An image/* value
+  // means the evidence card renders an inline thumbnail (fetched from
+  // /api/documents/{id}/content). Omitted for plain text chunks.
+  mime_type?: string;
 }

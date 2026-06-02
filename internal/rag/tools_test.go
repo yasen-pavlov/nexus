@@ -44,7 +44,7 @@ func TestBuildToolList_HonoursModelAndCap(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tools := BuildToolList(llm.ModelInfo{SupportsTools: tc.supportsTools}, tc.max)
+			tools := BuildToolList(llm.ModelInfo{SupportsTools: tc.supportsTools}, tc.max, false)
 			if got := len(tools) > 0; got != tc.wantTools {
 				t.Errorf("got tools=%d, want non-empty=%v", len(tools), tc.wantTools)
 			}
@@ -59,7 +59,7 @@ func TestSearchToolDispatcher_HappyPath(t *testing.T) {
 		{Document: model.Document{ID: uuid.New(), Title: "Wolt Order", SourceType: "imap", Content: "Pizza"}},
 	}
 	srch := &fakeSearch{docs: docs}
-	d := newSearchToolDispatcher(srch, owner, zap.NewNop())
+	d := newSearchToolDispatcher(srch, nil, nil, owner, false, zap.NewNop())
 
 	out := d.Dispatch(context.Background(), llm.ToolCall{
 		ID:       "tc1",
@@ -90,7 +90,7 @@ func TestSearchToolDispatcher_HappyPath(t *testing.T) {
 
 func TestSearchToolDispatcher_PassesFilters(t *testing.T) {
 	srch := &fakeSearch{docs: nil}
-	d := newSearchToolDispatcher(srch, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(srch, nil, nil, uuid.New(), false, zap.NewNop())
 	d.Dispatch(context.Background(), llm.ToolCall{
 		Name:     "nexus_search",
 		ArgsJSON: `{"query":"q","sources":["imap","telegram"],"date_from":"2026-01-01","date_to":"2026-01-31"}`,
@@ -105,7 +105,7 @@ func TestSearchToolDispatcher_PassesFilters(t *testing.T) {
 }
 
 func TestSearchToolDispatcher_UnknownToolName(t *testing.T) {
-	d := newSearchToolDispatcher(&fakeSearch{}, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(&fakeSearch{}, nil, nil, uuid.New(), false, zap.NewNop())
 	out := d.Dispatch(context.Background(), llm.ToolCall{Name: "made_up_tool", ArgsJSON: `{}`})
 	if !strings.Contains(out.ResultText, "unknown tool") {
 		t.Errorf("ResultText = %q, want unknown-tool error", out.ResultText)
@@ -114,7 +114,7 @@ func TestSearchToolDispatcher_UnknownToolName(t *testing.T) {
 
 func TestSearchToolDispatcher_MalformedArgsTolerant(t *testing.T) {
 	srch := &fakeSearch{}
-	d := newSearchToolDispatcher(srch, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(srch, nil, nil, uuid.New(), false, zap.NewNop())
 	out := d.Dispatch(context.Background(), llm.ToolCall{
 		Name:     "nexus_search",
 		ArgsJSON: `{not-json`,
@@ -130,7 +130,7 @@ func TestSearchToolDispatcher_MalformedArgsTolerant(t *testing.T) {
 
 func TestSearchToolDispatcher_EmptyQuery(t *testing.T) {
 	srch := &fakeSearch{}
-	d := newSearchToolDispatcher(srch, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(srch, nil, nil, uuid.New(), false, zap.NewNop())
 	out := d.Dispatch(context.Background(), llm.ToolCall{
 		Name:     "nexus_search",
 		ArgsJSON: `{"query":"   "}`,
@@ -145,7 +145,7 @@ func TestSearchToolDispatcher_EmptyQuery(t *testing.T) {
 
 func TestSearchToolDispatcher_BackendErrorReturnedAsToolResultText(t *testing.T) {
 	srch := &fakeSearch{err: errors.New("boom")}
-	d := newSearchToolDispatcher(srch, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(srch, nil, nil, uuid.New(), false, zap.NewNop())
 	out := d.Dispatch(context.Background(), llm.ToolCall{
 		Name:     "nexus_search",
 		ArgsJSON: `{"query":"x"}`,
@@ -159,7 +159,7 @@ func TestSearchToolDispatcher_BackendErrorReturnedAsToolResultText(t *testing.T)
 }
 
 func TestSearchToolDispatcher_NoResults(t *testing.T) {
-	d := newSearchToolDispatcher(&fakeSearch{docs: nil}, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(&fakeSearch{docs: nil}, nil, nil, uuid.New(), false, zap.NewNop())
 	out := d.Dispatch(context.Background(), llm.ToolCall{
 		Name:     "nexus_search",
 		ArgsJSON: `{"query":"orphan"}`,
@@ -204,7 +204,7 @@ func TestAppendUniqueChunks_Dedupes(t *testing.T) {
 // Stub fakeSearch already returns synchronously, but adding a deadline
 // catches future regressions if we plumb extra IO into the dispatcher.
 func TestSearchToolDispatcher_RespectsContextDeadline(t *testing.T) {
-	d := newSearchToolDispatcher(&fakeSearch{}, uuid.New(), zap.NewNop())
+	d := newSearchToolDispatcher(&fakeSearch{}, nil, nil, uuid.New(), false, zap.NewNop())
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	d.Dispatch(ctx, llm.ToolCall{Name: "nexus_search", ArgsJSON: `{"query":"x"}`})

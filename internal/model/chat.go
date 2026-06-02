@@ -90,6 +90,11 @@ type ChunkPreview struct {
 	Source   string `json:"source"`
 	Date     string `json:"date,omitempty"`
 	Headline string `json:"headline,omitempty"`
+	// MimeType is the retrieved chunk's content type when known. The FE
+	// uses an image/* prefix to render an inline thumbnail (fetched via
+	// /api/documents/{id}/content) below the evidence card. Empty for
+	// chunks with no binary (most text chunks).
+	MimeType string `json:"mime_type,omitempty"`
 }
 
 // ChatCitation pins an assistant claim to a retrieved document. SpanStart

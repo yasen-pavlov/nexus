@@ -14,6 +14,13 @@ import { ToolTrace } from "../tool-trace";
 import { UserTurn } from "../user-turn";
 import { buildCopyText } from "../copy-text";
 
+// InlineImage (reused inside EvidenceCard for image chunks) fetches the
+// blob via useDocumentBlob; stub it so the thumbnail renders synchronously
+// without a network round-trip.
+vi.mock("@/hooks/use-document-blob", () => ({
+  useDocumentBlob: () => ({ data: "blob:fake", isLoading: false, isError: false }),
+}));
+
 const sampleModels: LLMModelInfo[] = [
   {
     id: "anthropic:claude-sonnet-4-6",
@@ -78,6 +85,23 @@ describe("EvidenceCard", () => {
     expect(card).not.toBeNull();
     await user.click(card);
     expect(onActivate).toHaveBeenCalled();
+  });
+
+  it("renders an inline thumbnail for image chunks", () => {
+    const imgChunk: ChunkPreview = {
+      id: "img-1",
+      title: "photo.jpg",
+      source: "imap",
+      mime_type: "image/jpeg",
+    };
+    render(<EvidenceCard number={2} chunk={imgChunk} onActivate={() => {}} />);
+    const img = screen.getByRole("img", { name: "photo.jpg" });
+    expect(img).toHaveAttribute("src", "blob:fake");
+  });
+
+  it("renders no thumbnail for non-image chunks", () => {
+    render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={() => {}} />);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 });
 

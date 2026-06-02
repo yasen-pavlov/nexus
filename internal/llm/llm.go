@@ -56,6 +56,30 @@ type Image struct {
 	SourceID  string // for citation back-mapping
 }
 
+// CollectImages flattens every image attached across the documents, in
+// document order. Adapters mount the result on the user turn so a
+// vision-capable model sees them alongside the question it's answering.
+func CollectImages(docs []Document) []Image {
+	var out []Image
+	for _, d := range docs {
+		out = append(out, d.Images...)
+	}
+	return out
+}
+
+// LastUserIndex returns the index of the last RoleUser message in msgs,
+// or -1 when there is none. Adapters use it to decide which user message
+// carries the image content parts.
+func LastUserIndex(msgs []Message) int {
+	idx := -1
+	for i, m := range msgs {
+		if m.Role == RoleUser {
+			idx = i
+		}
+	}
+	return idx
+}
+
 // Message is one turn of conversation history. Tool turns reference the
 // originating call via ToolCallID; assistant turns may carry ToolCalls when the
 // orchestrator persists a pre-tool message before the tool result lands.
