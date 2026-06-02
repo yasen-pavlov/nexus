@@ -129,7 +129,7 @@ func newTestRouterWithJobs(t *testing.T) (*store.Store, *search.Client, *Connect
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), NewRAGManager(st, zap.NewNop()), nil, sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, sjm, authWrap(router, token)
 }
@@ -451,7 +451,7 @@ func TestSearchOwnershipScoping(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	doSearch := func(t *testing.T, userID uuid.UUID, username, role string) []string {
 		t.Helper()
@@ -1099,7 +1099,7 @@ func TestGetConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1116,7 +1116,7 @@ func TestDeleteConnector_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/connectors/"+uuid.New().String(), nil)
 	w := httptest.NewRecorder()
@@ -1264,7 +1264,7 @@ func TestGetEmbeddingSettings_StoreError(t *testing.T) {
 
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
+	router := authWrap(NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop()), token)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings/embedding", nil)
 	w := httptest.NewRecorder()
@@ -2317,7 +2317,7 @@ func TestDownloadDocument_Integration_Unauthenticated(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	// Index a shared chunk so the doc exists
 	docID := indexFSChunk(t, sc, "dl-noauth", "any.txt", "", true)
@@ -2334,7 +2334,7 @@ func TestDownloadDocument_Integration_OtherUserNonShared(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	alice, err := st.CreateUser(context.Background(), "alice-dl", "hash", "user")
 	if err != nil {
@@ -2388,7 +2388,7 @@ func TestDownloadDocument_Integration_SharedDocAccessibleByOtherUser(t *testing.
 	_ = sc.Refresh(context.Background())
 
 	// Build an unwrapped router so we can use a non-admin token
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	user, err := st.CreateUser(context.Background(), "regular-user-dl", "hash", "user")
 	if err != nil {
@@ -2467,7 +2467,7 @@ func TestDeletionSync_Integration(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	jobs := NewSyncJobManager(st, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, jobs, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, jobs, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 
 	// Filesystem connector + temp dir. First sync indexes both files;
@@ -2641,7 +2641,7 @@ func newTestRouterWithBinaryStore(t *testing.T) (*store.Store, *search.Client, *
 	}
 	cm.SetBinaryStore(bs)
 
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	return st, sc, cm, bs, authWrap(router, token)
 }
@@ -2677,7 +2677,7 @@ func TestStorageHandlers_NilBinaryStore(t *testing.T) {
 	st, sc, cm := newTestDeps(t)
 	em := NewEmbeddingManager(st, zap.NewNop())
 	p := pipeline.New(st, sc, em, zap.NewNop())
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestAdmin(t, st)
 	wrapped := authWrap(router, token)
 
@@ -2810,7 +2810,7 @@ func TestStorageStats_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	// Non-admin user.
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
@@ -2960,7 +2960,7 @@ func TestDeleteStorageCache_RequiresAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, NewSyncJobManager(st, zap.NewNop()), bs, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	username := fmt.Sprintf("bob-%s-%d", strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	user, err := st.CreateUser(context.Background(), username, "hash", "user")

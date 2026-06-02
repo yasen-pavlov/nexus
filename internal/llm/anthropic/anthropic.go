@@ -9,6 +9,7 @@ package anthropic
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -300,7 +301,14 @@ func mapMessages(in []llm.Message) []sdk.MessageParam {
 				if input == "" {
 					input = "{}"
 				}
-				blocks = append(blocks, sdk.NewToolUseBlock(tc.ID, []byte(input), tc.Name))
+				// NewToolUseBlock takes `input any` and the SDK runs it
+				// through json.Marshal. Passing raw []byte would
+				// base64-encode it as a string ("Input should be a
+				// valid dictionary" 400 from Anthropic on round 2 of
+				// any tool-use turn). json.RawMessage embeds the
+				// already-formed JSON verbatim, which is what the
+				// API expects for tool_use.input.
+				blocks = append(blocks, sdk.NewToolUseBlock(tc.ID, json.RawMessage(input), tc.Name))
 			}
 			out = append(out, sdk.NewAssistantMessage(blocks...))
 		case llm.RoleTool:

@@ -2,13 +2,18 @@ import { AlertCircle, Copy, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import type { ChatMessage, ChunkPreview } from "@/lib/api-types";
+import type {
+  ChatMessage,
+  ChatToolEvent,
+  ChunkPreview,
+} from "@/lib/api-types";
 import type { StreamingTurn } from "@/hooks/use-chat-stream";
 import { splitModelID } from "@/lib/llm-catalog";
 import { cn } from "@/lib/utils";
 
 import { AnswerStream } from "./answer-stream";
 import { buildCopyText } from "./copy-text";
+import { ToolTrace } from "./tool-trace";
 
 export interface AssistantTurnProps {
   /** Persisted assistant message — present when this turn is finished
@@ -16,14 +21,20 @@ export interface AssistantTurnProps {
   message?: ChatMessage;
   /** In-flight streaming state. Mutually exclusive with `message`. */
   streaming?: StreamingTurn;
+  /** Cited-only chunks — the per-turn Sources footer renders these as
+   *  numbered chips, with the same numbering used by inline `[N]` pills. */
   evidence: ChunkPreview[];
-  onJumpToEvidence: (docID: string) => void;
   onRegenerate?: () => void;
   /** ISO timestamp of the user message this assistant turn answered.
    *  Used to derive a wall-clock duration for the metadata footer
    *  ("13.4s · 1.2k in · 477 out") so users can compare model latency
    *  across turns. Optional — when absent the duration is omitted. */
   prevTurnCreatedAt?: string;
+  /** The user message content this turn answered. Used to label the
+   *  synthetic "Searched <query>" strip when the rewriter didn't run
+   *  (first turn or rewriter disabled) so the strip shows the literal
+   *  question instead of the generic "Searched the index" fallback. */
+  prevUserContent?: string;
 }
 
 interface Resolved {
@@ -31,7 +42,6 @@ interface Resolved {
   citations: ChatMessage["citations"];
   isStreaming: boolean;
   isError: boolean;
-  errorMessage?: string;
   modelID: string;
   inputTokens?: number;
   outputTokens?: number;
@@ -48,7 +58,11 @@ function resolve({
       isStreaming:
         streaming.phase === "retrieving" || streaming.phase === "streaming",
       isError: streaming.phase === "error",
-      errorMessage: streaming.error?.message,
+      // Don't surface the raw provider error to users — the AssistantTurn
+      // error block falls back to "The provider returned an error." which
+      // matches the post-reload persisted view. Underlying message lives
+      // in the BE WARN log + the Network tab SSE error frame for
+      // diagnosis; the chat surface stays calm.
       modelID: "", // Surface the chosen model when stable on the persisted msg.
       inputTokens: streaming.usage?.input,
       outputTokens: streaming.usage?.output,
@@ -78,13 +92,82 @@ export function AssistantTurn({
   message,
   streaming,
   evidence,
-  onJumpToEvidence,
   onRegenerate,
   prevTurnCreatedAt,
+  prevUserContent,
 }: Readonly<AssistantTurnProps>) {
   const [copied, setCopied] = useState(false);
   const r = useMemo(() => resolve({ message, streaming }), [message, streaming]);
   const modelLabel = r.modelID ? splitModelID(r.modelID).bare || r.modelID : "";
+
+  // Per-search strips above the answer body. Each strip = one search
+  // event. The orchestrator's automatic first search and any
+  // model-issued nexus_search calls render with the same uniform
+  // "Searched <query>" label — the user mental model is "show me
+  // every search that fed this answer", not "who issued each call".
+  //
+  // Streaming source is the live `toolEvents` accumulator from the SSE
+  // stream + the streaming turn's initial evidence. Persisted source
+  // is `message.evidence` (initial = union minus tool-fetched) +
+  // `message.tool_calls` (which denormalises per-call chunks).
+  // Skip-retrieval turns produce no strip at all.
+  const toolEvents = useMemo<ChatToolEvent[]>(() => {
+    const out: ChatToolEvent[] = [];
+
+    // Streaming branch.
+    if (streaming) {
+      if (!streaming.skippedRetrieval && streaming.evidence.length > 0) {
+        out.push({
+          name: "nexus_search",
+          args: JSON.stringify({
+            query: streaming.query ?? streaming.userContent,
+          }),
+          summary: undefined,
+          chunks: streaming.evidence,
+        });
+      }
+      out.push(...streaming.toolEvents);
+      return out;
+    }
+
+    // Persisted branch. Compute the "initial" chunk subset by
+    // removing every chunk attributed to a tool call from the
+    // evidence union.
+    if (message) {
+      const toolChunkIDs = new Set<string>();
+      const toolEventsList = (message.tool_calls ?? []).map((tc) => {
+        for (const c of tc.chunks ?? []) toolChunkIDs.add(c.id);
+        return {
+          name: tc.name,
+          args: tc.args,
+          summary: tc.result_summary,
+          chunks: tc.chunks,
+        } as ChatToolEvent;
+      });
+
+      const initialChunks = (message.evidence ?? []).filter(
+        (c) => !toolChunkIDs.has(c.id),
+      );
+      if (!message.skipped_retrieval && initialChunks.length > 0) {
+        // Prefer the rewriter's query when it ran; otherwise fall back
+        // to the literal user question (passed in from chat-thread).
+        // Either way the strip reads "Searched <query>" so users can
+        // see exactly what hit the index.
+        const labelQuery =
+          message.rewritten_query?.trim() || prevUserContent?.trim() || "";
+        out.push({
+          name: "nexus_search",
+          args: JSON.stringify({ query: labelQuery }),
+          summary: undefined,
+          chunks: initialChunks,
+        });
+      }
+      out.push(...toolEventsList);
+      return out;
+    }
+
+    return out;
+  }, [streaming, message, prevUserContent]);
   // Wall-clock duration. Prefers the server-measured duration_ms
   // (carried on the `done` SSE frame for streaming, persisted on the
   // chat_messages row for refreshed views) so the label is stable
@@ -127,12 +210,25 @@ export function AssistantTurn({
 
   return (
     <article aria-label="Assistant turn" className="flex flex-col gap-1">
+      {toolEvents.length > 0 && (
+        <div className="mb-3 flex flex-col gap-2">
+          {toolEvents.map((ev, idx) => (
+            <ToolTrace
+              key={`${ev.name}-${idx}`}
+              name={ev.name}
+              args={ev.args}
+              summary={ev.summary}
+              chunks={ev.chunks}
+            />
+          ))}
+        </div>
+      )}
+
       <AnswerStream
         text={r.text}
         citations={r.citations ?? []}
         evidence={evidence}
         isStreaming={r.isStreaming}
-        onJumpToEvidence={onJumpToEvidence}
       />
 
       {r.isError && (
@@ -140,9 +236,7 @@ export function AssistantTurn({
           <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
           <div className="flex-1">
             <div className="font-medium">Something went wrong</div>
-            <div className="opacity-90">
-              {r.errorMessage ?? "The provider returned an error."}
-            </div>
+            <div className="opacity-90">The provider returned an error.</div>
           </div>
           {onRegenerate && (
             <Button

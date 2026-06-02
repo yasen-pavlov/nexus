@@ -299,6 +299,17 @@ func writeRagEvent(w http.ResponseWriter, ev rag.Event) {
 		writeNamedSSEFrame(w, "rewriter_status", map[string]string{"reason": ev.StatusReason})
 	case rag.EvTitleStatus:
 		writeNamedSSEFrame(w, "title_status", map[string]string{"reason": ev.StatusReason})
+	case rag.EvToolStart:
+		writeNamedSSEFrame(w, "tool_start", map[string]string{
+			"name": ev.ToolName,
+			"args": ev.ToolArgs,
+		})
+	case rag.EvToolResult:
+		writeNamedSSEFrame(w, "tool_result", map[string]any{
+			"name":    ev.ToolName,
+			"summary": ev.ToolSummary,
+			"chunks":  ev.ToolChunks,
+		})
 	case rag.EvDone:
 		writeNamedSSEFrame(w, "done", map[string]any{
 			"stop_reason": ev.StopReason,

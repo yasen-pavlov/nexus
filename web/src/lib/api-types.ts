@@ -348,6 +348,32 @@ export interface ChatToolCall {
   args: string;
   result_id?: string;
   result_summary?: string;
+  // Denormalised per-call result chunks. Empty / undefined when the
+  // tool returned zero results — the FE persisted ToolTrace renders
+  // these in its expanded body so reloads no longer collapse to
+  // "No matching documents."
+  chunks?: ChunkPreview[];
+}
+
+// ChatToolEvent is the streaming-state shape of one tool round, fed by
+// the matching `tool_start` + `tool_result` SSE frames. The args /
+// summary / chunks merge into a single record as the frames arrive so
+// the FE can render a stable ToolTrace row even mid-stream. Persisted
+// turns reconstruct an equivalent shape from `ChatMessage.tool_calls`
+// + `ChatMessage.evidence` (chunks are joined client-side).
+export interface ChatToolEvent {
+  name: string;
+  args: string;
+  summary?: string;
+  chunks?: ChunkPreview[];
+}
+
+// RAGSettings is the wire shape for GET / PUT /api/settings/rag (admin).
+// max_tool_rounds is the cap on agentic tool-use rounds per turn; 0
+// disables agentic tool calls entirely (the orchestrator passes
+// Tools=nil on round 1, forcing a single-shot answer).
+export interface RAGSettings {
+  max_tool_rounds: number;
 }
 
 export interface ChatUsage {

@@ -3,7 +3,10 @@ import {
   Fragment,
   cloneElement,
   isValidElement,
+  useCallback,
   useMemo,
+  useRef,
+  useState,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -15,17 +18,21 @@ import type { ChatCitation, ChunkPreview } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 import { CitationPill } from "./citation-pill";
+import { EvidenceCard } from "./evidence-card";
 
 export interface AnswerStreamProps {
   text: string;
   citations: ChatCitation[];
+  /** Cited-only chunks for THIS turn. Numbers are positional (1..N) and
+   *  shared across the inline `[N]` pills, the bottom Sources chips,
+   *  and the in-place expand cards. */
   evidence: ChunkPreview[];
   isStreaming: boolean;
-  onJumpToEvidence: (docID: string) => void;
 }
 
 const SENTINEL_OPEN = "§§CITE";
 const SENTINEL_CLOSE = "§§";
+const FLASH_DURATION_MS = 1500;
 
 interface PreparedAnswer {
   /** Text with `§§CITE:idx§§` tokens inserted at each resolvable citation's
@@ -156,17 +163,25 @@ function withPills(
  * Streamed answer prose rendered as markdown. Citations resolve into
  * inline tonal pills — span_end positions get sentinel tokens before
  * markdown parsing, then a custom text renderer swaps them for
- * <CitationPill>. After the body, a small "Sources" rail offers a
- * numeric mini-toc so readers can jump even when a chunk wasn't cited
- * inline.
+ * <CitationPill>.
+ *
+ * Below the prose: a per-turn Sources footer with the same numbered
+ * chips as the inline pills. Clicking a chip OR an inline pill expands
+ * the matching evidence card in-place under the chip strip, scrolls it
+ * into view, and flashes the source-tinted ring. Multiple cards can be
+ * expanded at once. State lives entirely inside this component — no
+ * global rail / panel.
  */
 export function AnswerStream({
   text,
   citations,
   evidence,
   isStreaming,
-  onJumpToEvidence,
 }: Readonly<AnswerStreamProps>) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [flashedDocID, setFlashedDocID] = useState<string | undefined>();
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const numberByDocID = useMemo(() => {
     const map = new Map<string, number>();
     evidence.forEach((c, i) => map.set(c.id, i + 1));
@@ -184,16 +199,56 @@ export function AnswerStream({
     [text, citations, evidenceByDocID],
   );
 
+  // Flash + scroll. Reusable across "click footer chip", "click inline
+  // pill", and the auto-expand path. Defers the scroll/flash by a tick
+  // so the matching card has time to mount when we just toggled it on.
+  const flashAndScroll = useCallback((docID: string) => {
+    globalThis.setTimeout(() => {
+      const el = document.querySelector(`[data-chunk-id="${docID}"]`);
+      if (el && "scrollIntoView" in el) {
+        (el as HTMLElement).scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      }
+      setFlashedDocID(docID);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = globalThis.setTimeout(() => {
+        setFlashedDocID(undefined);
+      }, FLASH_DURATION_MS);
+    }, 0);
+  }, []);
+
+  // Toggle expanded state for a chunk. Used by both the chip strip and
+  // inline pills. When expanding (or already-expanded), always also
+  // flash + scroll — the user just expressed intent to see THAT source,
+  // even if it's already visible.
+  const onActivate = useCallback(
+    (docID: string) => {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(docID)) {
+          next.delete(docID);
+          return next;
+        }
+        next.add(docID);
+        return next;
+      });
+      flashAndScroll(docID);
+    },
+    [flashAndScroll],
+  );
+
   // Closure that any renderer can use to splice pills into its
-  // children. Memoised on the inputs so cloneElement isn't allocating
-  // on every keystroke during streaming.
+  // children. Callbacks here are stable (useCallback) so the walk
+  // doesn't allocate new pill props on every keystroke during streaming.
   const pillify = (children: ReactNode): ReactNode =>
     withPills(
       children,
       prepared.citations,
       evidenceByDocID,
       numberByDocID,
-      onJumpToEvidence,
+      onActivate,
     );
 
   return (
@@ -251,6 +306,55 @@ export function AnswerStream({
                 {pillify(children)}
               </blockquote>
             ),
+            // GFM tables. Without overrides the sentinel tokens
+            // (§§CITE:N§§) we splice into the body land in the default
+            // <td>/<th> renderers, which don't pass children through
+            // pillify — so the raw sentinel text leaks into the rendered
+            // table. Wrappers must also be registered so the walker
+            // descends into cells; pillify on the wrappers is harmless
+            // (no string children at that level).
+            table: ({ children }) => (
+              <div className="my-4 overflow-x-auto">
+                <table className="w-full border-collapse text-[14px]">
+                  {pillify(children)}
+                </table>
+              </div>
+            ),
+            thead: ({ children }) => <thead>{pillify(children)}</thead>,
+            tbody: ({ children }) => <tbody>{pillify(children)}</tbody>,
+            tr: ({ children }) => (
+              <tr className="border-b border-border/40 last:border-b-0">
+                {pillify(children)}
+              </tr>
+            ),
+            th: ({ children }) => (
+              <th className="px-3 py-2 text-left text-[12.5px] font-semibold text-muted-foreground">
+                {pillify(children)}
+              </th>
+            ),
+            td: ({ children }) => (
+              <td className="px-3 py-2 align-top">{pillify(children)}</td>
+            ),
+            // Strikethrough (also GFM) — sentinels can land inside a
+            // <del> when a citation attaches at the end of struck text.
+            del: ({ children }) => <del>{pillify(children)}</del>,
+            // Higher heading levels not in the existing h1-h3 overrides.
+            // Sentinels end-of-heading would otherwise leak verbatim.
+            h4: ({ children }) => (
+              <h4 className="mb-2 mt-4 text-[14px] font-semibold tracking-tight text-foreground first:mt-0">
+                {pillify(children)}
+              </h4>
+            ),
+            h5: ({ children }) => (
+              <h5 className="mb-1 mt-3 text-[13px] font-semibold uppercase tracking-[0.04em] text-muted-foreground first:mt-0">
+                {pillify(children)}
+              </h5>
+            ),
+            h6: ({ children }) => (
+              <h6 className="mb-1 mt-3 text-[12px] font-semibold uppercase tracking-[0.04em] text-muted-foreground first:mt-0">
+                {pillify(children)}
+              </h6>
+            ),
             code: ({ children, ...props }) => {
               const isBlock = "data-language" in props;
               // Inline code rarely contains citations; preserve the
@@ -296,7 +400,7 @@ export function AnswerStream({
       </div>
 
       {evidence.length > 0 && (
-        <div className={cn("mt-5 flex flex-col gap-1.5")}>
+        <div className="mt-5 flex flex-col gap-2">
           <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
             Sources
           </div>
@@ -307,10 +411,25 @@ export function AnswerStream({
                 number={i + 1}
                 sourceType={c.source}
                 title={c.title}
-                onClick={() => onJumpToEvidence(c.id)}
+                onClick={() => onActivate(c.id)}
               />
             ))}
           </div>
+          {expanded.size > 0 && (
+            <div className="mt-2 flex flex-col gap-2">
+              {evidence
+                .filter((c) => expanded.has(c.id))
+                .map((c) => (
+                  <EvidenceCard
+                    key={`card-${c.id}`}
+                    number={(numberByDocID.get(c.id) ?? 0)}
+                    chunk={c}
+                    flashed={flashedDocID === c.id}
+                    onActivate={() => onActivate(c.id)}
+                  />
+                ))}
+            </div>
+          )}
         </div>
       )}
     </TooltipProvider>

@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -59,6 +61,48 @@ func TestMapMessages_HandlesAllRoles(t *testing.T) {
 	}
 	if out[2].Role != sdk.MessageParamRoleUser {
 		t.Errorf("tool turn should map to user, got %s", out[2].Role)
+	}
+}
+
+// Regression: tool_use.input must json.Marshal as a dictionary, not a
+// base64-encoded string. The Anthropic API rejects ([]byte) encoded
+// inputs with "messages.N.content.0.tool_use.input: Input should be a
+// valid dictionary" — wire failure mode is silent until round 2 of any
+// tool-use turn. mapMessages must therefore wrap ArgsJSON in
+// json.RawMessage (not []byte) when constructing the tool_use block.
+func TestMapMessages_ToolUseInputEncodesAsDictionary(t *testing.T) {
+	out := mapMessages([]llm.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
+			ID: "tc1", Name: "search", ArgsJSON: `{"q":"x","n":3}`,
+		}}},
+	})
+	if len(out) != 1 {
+		t.Fatalf("got %d messages, want 1", len(out))
+	}
+	encoded, err := json.Marshal(out[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The JSON-encoded message must contain the input as a real object,
+	// preserving the keys. A base64 string would look like
+	// "input":"eyJxIjoieCJ9" and FAIL the substring check below.
+	if !strings.Contains(string(encoded), `"input":{"q":"x","n":3}`) {
+		t.Errorf("tool_use.input did not encode as a dictionary; got: %s", encoded)
+	}
+}
+
+// Empty ArgsJSON must collapse to "{}" so the tool_use.input remains a
+// valid (empty) dictionary — Anthropic still requires the field shape.
+func TestMapMessages_ToolUseInputEmptyArgsBecomesEmptyDict(t *testing.T) {
+	out := mapMessages([]llm.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "search", ArgsJSON: ""}}},
+	})
+	encoded, err := json.Marshal(out[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"input":{}`) {
+		t.Errorf("empty ArgsJSON should produce empty dict; got: %s", encoded)
 	}
 }
 

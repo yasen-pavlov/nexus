@@ -49,17 +49,26 @@ function formatElapsed(ms: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-/** Tick once per second while `startedAtMs` is set, returning the
- *  formatted elapsed string. Returns null when no timer is active. */
-function useElapsed(startedAtMs?: number): string | null {
+/** Tick once per second while `startedAtMs` is set AND `live` is true,
+ *  returning the formatted elapsed string. When `live` flips to false
+ *  (turn entered done/error) the interval is cleared and the counter
+ *  freezes at its last value — matching the AssistantTurn footer's
+ *  behaviour where the wall-clock label stops moving as soon as the
+ *  turn finishes. Returns null when no timer is active.
+ *
+ *  The `live` gate only matters for variants that keep the chip on
+ *  screen past completion (skip-retrieval is the only one today); the
+ *  default + rewritten chips return `null` once phase isn't
+ *  retrieving/streaming, so for them this is a no-op. */
+function useElapsed(startedAtMs: number | undefined, live: boolean): string | null {
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
-    if (!startedAtMs) return;
+    if (!startedAtMs || !live) return;
     const tick = () => setNow(Date.now());
     tick();
     const id = globalThis.setInterval(tick, 1000);
     return () => globalThis.clearInterval(id);
-  }, [startedAtMs]);
+  }, [startedAtMs, live]);
   if (!startedAtMs) return null;
   return formatElapsed(now - startedAtMs);
 }
@@ -117,7 +126,8 @@ export function PhaseChip({
   startedAtMs,
   rewriterFailureReason,
 }: Readonly<PhaseChipProps>) {
-  const elapsed = useElapsed(startedAtMs);
+  const live = phase === "retrieving" || phase === "streaming";
+  const elapsed = useElapsed(startedAtMs, live);
 
   if (skippedRetrieval) {
     return (
@@ -131,7 +141,12 @@ export function PhaseChip({
           aria-hidden
         />
         <span>Answering from history</span>
-        {elapsed && (
+        {/* Skip-retrieval is the only variant that persists past
+            completion (as a permanent "this answered from history alone"
+            badge), so the elapsed counter only renders while live —
+            after the turn finishes the AssistantTurn footer takes over
+            with the wall-clock duration. */}
+        {live && elapsed && (
           <span className="font-normal text-muted-foreground/70 tabular-nums">
             · {elapsed}
           </span>

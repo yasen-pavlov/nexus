@@ -113,6 +113,14 @@ func run() error {
 		log.Warn("failed to load llm settings", zap.Error(err))
 	}
 
+	// RAG runtime knobs (Phase 5: max_tool_rounds). Hot-reloads via
+	// PUT /api/settings/rag; the orchestrator reads o.settings() once
+	// per turn, so admin saves take effect without restart.
+	ragMgr := api.NewRAGManager(st, log)
+	if err := ragMgr.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load rag settings", zap.Error(err))
+	}
+
 	// Ranking config (per-source half-life, floor, trust weight, plus
 	// rerank min score + feature toggles). Overlays any persisted overrides
 	// on top of the compiled-in defaults.
@@ -136,7 +144,10 @@ func run() error {
 	orchestrator := rag.NewOrchestrator(rag.Deps{
 		Registry: lm.Get,
 		Settings: func() rag.Settings {
-			return rag.Settings{RewriterModel: lm.RewriterModel()}
+			return rag.Settings{
+				RewriterModel: lm.RewriterModel(),
+				MaxToolRounds: ragMgr.MaxToolRounds(),
+			}
 		},
 		Search: api.NewRAGSearchProvider(searchService),
 		Chats:  st,
@@ -144,7 +155,7 @@ func run() error {
 		Log:    log,
 	})
 
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, ragMgr, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
 	return serve(ctx, cfg.Port, router, sched, log)
 }

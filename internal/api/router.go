@@ -28,6 +28,7 @@ func NewRouter(
 	em *EmbeddingManager,
 	rm *RerankManager,
 	lm *LLMManager,
+	ragMgr *RAGManager,
 	orchestrator *rag.Orchestrator,
 	syncJobs *SyncJobManager,
 	binaryStore *storage.BinaryStore,
@@ -64,6 +65,7 @@ func NewRouter(
 		em:            em,
 		rm:            rm,
 		lm:            lm,
+		ragMgr:        ragMgr,
 		rag:           orchestrator,
 		cm:            cm,
 		syncJobs:      syncJobs,
@@ -161,6 +163,8 @@ func NewRouter(
 					r.Put("/rerank", h.UpdateRerankSettings)
 					r.Get("/llm", h.GetLLMSettings)
 					r.Put("/llm", h.UpdateLLMSettings)
+					r.Get("/rag", h.GetRAGSettings)
+					r.Put("/rag", h.UpdateRAGSettings)
 					r.Get("/retention", h.GetRetentionSettings)
 					r.Put("/retention", h.UpdateRetentionSettings)
 					r.Post("/retention/sweep", h.RunRetentionSweep)

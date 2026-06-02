@@ -366,4 +366,112 @@ describe("useChatStream", () => {
     });
     expect(result.current.turn.autoTitle).toBeUndefined();
   });
+
+  it("captures tool_start + tool_result into toolEvents", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "retrieving", data: JSON.stringify({ query: "x" }) },
+      {
+        event: "tool_start",
+        data: JSON.stringify({ name: "nexus_search", args: '{"query":"y"}' }),
+      },
+      {
+        event: "tool_result",
+        data: JSON.stringify({
+          name: "nexus_search",
+          summary: "Searched \"y\" — 2 results",
+          chunks: [
+            { id: "c1", title: "Hit 1", source: "imap" },
+            { id: "c2", title: "Hit 2", source: "imap" },
+          ],
+        }),
+      },
+      { event: "text", data: JSON.stringify({ delta: "answer" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "find y" });
+    });
+    expect(result.current.turn.toolEvents).toHaveLength(1);
+    const ev = result.current.turn.toolEvents[0];
+    expect(ev.name).toBe("nexus_search");
+    expect(ev.args).toBe('{"query":"y"}');
+    expect(ev.summary).toBe("Searched \"y\" — 2 results");
+    expect(ev.chunks).toHaveLength(2);
+  });
+
+  it("matches multiple tool_start/tool_result pairs in order", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "tool_start", data: JSON.stringify({ name: "nexus_search", args: "{}" }) },
+      {
+        event: "tool_result",
+        data: JSON.stringify({ name: "nexus_search", summary: "first", chunks: [] }),
+      },
+      { event: "tool_start", data: JSON.stringify({ name: "nexus_search", args: "{}" }) },
+      {
+        event: "tool_result",
+        data: JSON.stringify({ name: "nexus_search", summary: "second", chunks: [] }),
+      },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    expect(result.current.turn.toolEvents).toHaveLength(2);
+    expect(result.current.turn.toolEvents[0].summary).toBe("first");
+    expect(result.current.turn.toolEvents[1].summary).toBe("second");
+  });
+
+  it("preserves phase=error when `done` follows an `error` frame", async () => {
+    // Orchestrator pattern: persistAndDone emits EvError then EvDone
+    // on every error path. The reducer must keep phase="error" so the
+    // AssistantTurn red block fires; the prior bug let phase silently
+    // roll back to "done" while the error info stayed on the turn.
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      { event: "text", data: JSON.stringify({ delta: "partial " }) },
+      { event: "error", data: JSON.stringify({ message: "model boom" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "error", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    expect(result.current.turn.phase).toBe("error");
+    expect(result.current.turn.error?.kind).toBe("protocol");
+    expect(result.current.turn.error?.message).toBe("model boom");
+    expect(result.current.turn.answer).toBe("partial ");
+    // done-frame metadata still lands so the message persists / refresh works.
+    expect(result.current.turn.messageID).toBe("m");
+    expect(result.current.turn.stopReason).toBe("error");
+  });
+
+  it("drops a tool_result without a matching prior tool_start without crashing", async () => {
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      // Orphan tool_result — should be a no-op and not throw.
+      {
+        event: "tool_result",
+        data: JSON.stringify({ name: "nexus_search", summary: "ghost", chunks: [] }),
+      },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    expect(result.current.turn.toolEvents).toEqual([]);
+    expect(result.current.turn.phase).toBe("done");
+  });
 });

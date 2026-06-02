@@ -8,13 +8,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useChat } from "@/hooks/use-chats";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import { useLLMDefault, useLLMModels } from "@/hooks/use-llm-models";
-import type { ChatMessage, ChunkPreview } from "@/lib/api-types";
+import type { ChatCitation, ChatMessage, ChunkPreview } from "@/lib/api-types";
 import { chatKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
 
 import { AskComposer } from "./ask-composer";
 import { AssistantTurn } from "./assistant-turn";
-import { EvidenceRail } from "./evidence-rail";
 import { PhaseChip } from "./phase-chip";
 import { pickInitialModel } from "./pick-initial-model";
 import { UserTurn } from "./user-turn";
@@ -29,7 +28,6 @@ export interface ChatThreadProps {
 }
 
 const LAST_MODEL_KEY = "nexus_last_used_model";
-const FLASH_DURATION_MS = 1500;
 
 function readLastUsedModel(): string | null {
   if (typeof globalThis.localStorage === "undefined") return null;
@@ -46,9 +44,6 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
 
   const [model, setModel] = useState<string>("");
   const autoFiredRef = useRef(false);
-  // Lock the visible streaming turn to a local copy of evidence so a
-  // pill click + scroll handshake works against the cards on screen.
-  const [flashedDocID, setFlashedDocID] = useState<string | undefined>();
 
   // Adjust state during render once we have what we need to choose a
   // default — avoids the setState-in-effect lint and matches the
@@ -110,15 +105,6 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialContent, model, detail.data, turn.phase]);
 
-  const onJumpToEvidence = (docID: string) => {
-    const el = document.querySelector(`[data-chunk-id="${docID}"]`);
-    if (el && "scrollIntoView" in el) {
-      (el as HTMLElement).scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-    setFlashedDocID(docID);
-    globalThis.setTimeout(() => setFlashedDocID(undefined), FLASH_DURATION_MS);
-  };
-
   if (detail.isPending) {
     return <ChatThreadSkeleton />;
   }
@@ -128,10 +114,6 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
 
   // While a turn is active OR has just finished, render it as the
   // "streaming" card and hide its persisted twin from the message list.
-  // This keeps the evidence rail populated after the orchestrator
-  // persists the assistant message — chunks aren't stored on the row,
-  // so the in-memory copy is the only place they live until the user
-  // navigates away or starts a new turn.
   const showStreaming = turn.phase !== "idle";
   const persistedMessages = showStreaming
     ? detail.data.messages.filter((m) => m.id !== turn.messageID && m.content !== turn.userContent)
@@ -140,108 +122,93 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   const lastUserSeq = lastSeqOfRole(persistedMessages, "user");
   const lastAssistantSeq = lastSeqOfRole(persistedMessages, "assistant");
 
-  // The evidence rail tracks whichever turn is currently most relevant:
-  // the in-flight stream when one's running, otherwise the most recent
-  // persisted assistant turn's stored evidence.
-  const lastAssistant = persistedMessages
-    .slice()
-    .reverse()
-    .find((m) => m.role === "assistant");
-  const railEvidence = showStreaming
-    ? turn.evidence
-    : (lastAssistant?.evidence ?? []);
-
   const isStreaming = turn.phase === "retrieving" || turn.phase === "streaming";
 
-  // The rail collapses for skip-retrieval turns when there's no
-  // fallback evidence to show. We keep the rail visible if a prior
-  // assistant turn has evidence that can stand in.
-  const showRail =
-    !showStreaming || !turn.skippedRetrieval || (lastAssistant?.evidence?.length ?? 0) > 0;
-
+  // Each turn carries its own evidence locally (cited-only filter
+  // applied inside AssistantTurn via the per-turn AnswerStream footer).
+  // No global rail / panel state — sources travel with their answer.
   return (
-    <div
-      className={
-        showRail
-          ? "grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_360px]"
-          : "grid grid-cols-1 gap-6"
-      }
-    >
-      <div className="flex min-w-0 flex-col gap-6">
-        <div className="flex flex-col gap-8">
-          {persistedMessages.map((m, idx) => (
+    <div className="flex min-w-0 flex-col gap-6">
+      <div className="flex flex-col gap-8">
+        {persistedMessages.map((m, idx) => {
+          // Walk backward from this assistant turn to find the user
+          // message that triggered it. Used by AssistantTurn to label
+          // the synthetic "Searched <query>" strip when the rewriter
+          // didn't run (first turn or rewriter-disabled), so the strip
+          // shows the literal question instead of falling back to the
+          // generic "Searched the index" copy.
+          let userQueryForStrip: string | undefined;
+          if (m.role === "assistant") {
+            for (let j = idx - 1; j >= 0; j--) {
+              if (persistedMessages[j].role === "user") {
+                userQueryForStrip = persistedMessages[j].content;
+                break;
+              }
+            }
+          }
+          return (
             <Turn
               key={m.id}
               message={m}
-              evidence={m.evidence ?? []}
-              onJumpToEvidence={onJumpToEvidence}
+              evidence={filterToCited(m.evidence ?? [], m.citations ?? [])}
               isLastUser={m.role === "user" && m.seq === lastUserSeq}
               isLastAssistant={m.role === "assistant" && m.seq === lastAssistantSeq}
               onRegenerate={undefined}
               prevTurnCreatedAt={
                 idx > 0 ? persistedMessages[idx - 1].created_at : undefined
               }
+              prevUserContent={userQueryForStrip}
               nextMessage={
                 idx + 1 < persistedMessages.length
                   ? persistedMessages[idx + 1]
                   : undefined
               }
             />
-          ))}
+          );
+        })}
 
-          {showStreaming && (
-            <div className="flex flex-col gap-4">
-              {/* The user content the streaming turn is answering */}
-              {turn.userContent && (
-                <UserTurn
-                  message={syntheticUserMessage(chatID, turn.userContent)}
-                />
-              )}
-
-              <PhaseChip
-                phase={turn.phase}
-                userContent={turn.userContent}
-                query={turn.query}
-                skippedRetrieval={turn.skippedRetrieval}
-                startedAtMs={turn.startedAt}
-                rewriterFailureReason={turn.rewriterFailureReason}
+        {showStreaming && (
+          <div className="flex flex-col gap-4">
+            {/* The user content the streaming turn is answering */}
+            {turn.userContent && (
+              <UserTurn
+                message={syntheticUserMessage(chatID, turn.userContent)}
               />
+            )}
 
+            <PhaseChip
+              phase={turn.phase}
+              userContent={turn.userContent}
+              query={turn.query}
+              skippedRetrieval={turn.skippedRetrieval}
+              startedAtMs={turn.startedAt}
+              rewriterFailureReason={turn.rewriterFailureReason}
+            />
 
-              <AssistantTurn
-                streaming={turn}
-                evidence={turn.evidence}
-                onJumpToEvidence={onJumpToEvidence}
-                onRegenerate={
-                  turn.phase === "error"
-                    ? () => handleSubmit(turn.userContent)
-                    : undefined
-                }
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="sticky bottom-4">
-          <AskComposer
-            model={model}
-            onModelChange={setModel}
-            models={models}
-            onSubmit={handleSubmit}
-            isStreaming={isStreaming}
-            onCancel={stream.cancel}
-            isFirstTurn={isFirstTurn}
-          />
-        </div>
+            <AssistantTurn
+              streaming={turn}
+              evidence={filterToCited(turn.evidence, turn.citations)}
+              onRegenerate={
+                turn.phase === "error"
+                  ? () => handleSubmit(turn.userContent)
+                  : undefined
+              }
+            />
+          </div>
+        )}
       </div>
 
-      {showRail && (
-        <EvidenceRail
-          chunks={railEvidence}
-          highlightedDocID={flashedDocID}
-          onActivate={onJumpToEvidence}
+      <div className="sticky bottom-4">
+        <AskComposer
+          model={model}
+          onModelChange={setModel}
+          models={models}
+          onSubmit={handleSubmit}
+          isStreaming={isStreaming}
+          onCancel={stream.cancel}
+          isFirstTurn={isFirstTurn}
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -249,13 +216,16 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
 interface TurnProps {
   message: ChatMessage;
   evidence: ChunkPreview[];
-  onJumpToEvidence: (docID: string) => void;
   isLastUser: boolean;
   isLastAssistant: boolean;
   onRegenerate?: () => void;
   /** ISO timestamp of the immediately preceding message — used by
    *  AssistantTurn to derive a wall-clock duration label. */
   prevTurnCreatedAt?: string;
+  /** The user message content this assistant turn answered. Used by
+   *  AssistantTurn to label the synthetic "Searched <query>" strip
+   *  when the rewriter didn't run. */
+  prevUserContent?: string;
   /** The immediately-following message in the thread. UserTurn uses
    *  this to surface the assistant's persisted `rewritten_query` as a
    *  retroactive footnote ("rewritten as: …") under the user bubble. */
@@ -265,9 +235,9 @@ interface TurnProps {
 function Turn({
   message,
   evidence,
-  onJumpToEvidence,
   onRegenerate,
   prevTurnCreatedAt,
+  prevUserContent,
   nextMessage,
 }: Readonly<TurnProps>) {
   if (message.role === "user") {
@@ -277,9 +247,9 @@ function Turn({
     <AssistantTurn
       message={message}
       evidence={evidence}
-      onJumpToEvidence={onJumpToEvidence}
       onRegenerate={onRegenerate}
       prevTurnCreatedAt={prevTurnCreatedAt}
+      prevUserContent={prevUserContent}
     />
   );
 }
@@ -288,6 +258,21 @@ function lastSeqOfRole(msgs: ChatMessage[], role: ChatMessage["role"]): number {
   let max = -1;
   for (const m of msgs) if (m.role === role && m.seq > max) max = m.seq;
   return max;
+}
+
+// filterToCited returns the chunks whose DocID appears in `citations`.
+// Cited-only contract: inline `[N]` pills, the bottom Sources footer
+// chips, and the in-place expand cards all index into this filtered
+// slice using the same 1-based positions. Uncited retrieval lives in
+// the per-search <ToolTrace> strips above the answer body.
+function filterToCited(
+  chunks: ChunkPreview[],
+  citations: ChatCitation[],
+): ChunkPreview[] {
+  if (citations.length === 0) return [];
+  const cited = new Set<string>();
+  for (const c of citations) cited.add(c.doc_id);
+  return chunks.filter((c) => cited.has(c.id));
 }
 
 function syntheticUserMessage(chatID: string, content: string): ChatMessage {
@@ -303,16 +288,10 @@ function syntheticUserMessage(chatID: string, content: string): ChatMessage {
 
 function ChatThreadSkeleton() {
   return (
-    <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="flex flex-col gap-8">
-        <Skeleton className="h-24 w-full rounded-lg" />
-        <Skeleton className="h-40 w-full rounded-lg" />
-        <Skeleton className="h-20 w-full rounded-xl" />
-      </div>
-      <div className="hidden flex-col gap-2 md:flex">
-        <Skeleton className="h-32 w-full rounded-lg" />
-        <Skeleton className="h-32 w-full rounded-lg" />
-      </div>
+    <div className="flex flex-col gap-8">
+      <Skeleton className="h-24 w-full rounded-lg" />
+      <Skeleton className="h-40 w-full rounded-lg" />
+      <Skeleton className="h-20 w-full rounded-xl" />
     </div>
   );
 }

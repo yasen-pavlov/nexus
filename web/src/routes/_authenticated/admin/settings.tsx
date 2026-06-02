@@ -43,6 +43,7 @@ import { SettingsSection } from "@/components/admin/settings-section";
 import { CacheSection } from "@/components/admin/cache-section";
 import { LLMForm } from "@/components/admin/llm-form";
 import { MaintenanceSection } from "@/components/admin/maintenance-section";
+import { RAGForm } from "@/components/admin/rag-form";
 import { RankingForm } from "@/components/admin/ranking-form";
 import { RerankForm } from "@/components/admin/rerank-form";
 import { RetentionForm } from "@/components/admin/retention-form";
@@ -95,10 +96,11 @@ const NAV: NavItem[] = [
   { id: "embeddings", label: "Embeddings", icon: Brain, ordinal: "01" },
   { id: "rerank", label: "Reranking", icon: Scale, ordinal: "02" },
   { id: "llm", label: "Ask (LLM)", icon: Sparkles, ordinal: "03" },
-  { id: "ranking", label: "Search ranking", icon: Sliders, ordinal: "04" },
-  { id: "retention", label: "History retention", icon: Archive, ordinal: "05" },
-  { id: "cache", label: "Binary cache", icon: HardDriveDownload, ordinal: "06" },
-  { id: "maintenance", label: "Maintenance", icon: Wrench, ordinal: "07" },
+  { id: "rag", label: "Ask (Tool loop)", icon: Sparkles, ordinal: "04" },
+  { id: "ranking", label: "Search ranking", icon: Sliders, ordinal: "05" },
+  { id: "retention", label: "History retention", icon: Archive, ordinal: "06" },
+  { id: "cache", label: "Binary cache", icon: HardDriveDownload, ordinal: "07" },
+  { id: "maintenance", label: "Maintenance", icon: Wrench, ordinal: "08" },
 ];
 
 // Active-section scoring, for use by the scroll listener below.
@@ -310,8 +312,18 @@ function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection
+            id="rag"
+            label="Engine · 04"
+            title="Ask (Tool loop)"
+            icon={Sparkles}
+            description="How agentic the answer flow is. The model can call nexus_search mid-answer when its initial evidence is thin; this caps how many follow-up searches one turn may run."
+          >
+            <RAGForm />
+          </SettingsSection>
+
+          <SettingsSection
             id="ranking"
-            label="Signals · 04"
+            label="Signals · 05"
             title="Search ranking"
             icon={Sliders}
             description="Recency decay and per-source trust weights. Changes apply on the next query — no re-index."
@@ -321,7 +333,7 @@ function SettingsPage() {
 
           <SettingsSection
             id="retention"
-            label="Data · 05"
+            label="Data · 06"
             title="History retention"
             icon={Archive}
             description="How long sync runs stay in the timeline, and how often the cleanup sweep runs."
@@ -331,7 +343,7 @@ function SettingsPage() {
 
           <SettingsSection
             id="cache"
-            label="Data · 06"
+            label="Data · 07"
             title="Binary cache"
             icon={Database}
             description="Per-connector cache of attachments and media. Wipe selectively; some connectors can't re-populate."
@@ -341,7 +353,7 @@ function SettingsPage() {
 
           <SettingsSection
             id="maintenance"
-            label="Levers · 07"
+            label="Levers · 08"
             title="Maintenance"
             icon={Wrench}
             description="The big levers. Full re-index, reset all sync cursors."

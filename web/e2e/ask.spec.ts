@@ -87,6 +87,26 @@ async function mockAuthed(page: Page) {
       }),
     }),
   );
+  // Phase 4 + 5 endpoints — vite dev proxies unmocked /api requests to
+  // the live BE (port 8080). Without these mocks the e2e fakes-JWT
+  // gets a 401 from the live BE on first render and the chain of
+  // failed queries unmounts the page back to /login.
+  await page.route("**/api/llm/default", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { default_model: "anthropic:claude-sonnet-4-6" },
+      }),
+    }),
+  );
+  await page.route("**/api/settings/rag", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { max_tool_rounds: 3 } }),
+    }),
+  );
 }
 
 const SAMPLE_CHAT = {
@@ -201,15 +221,29 @@ test("submitting on the landing creates a chat and navigates", async ({ page }) 
 
   // We routed to /ask/{id}?q=…
   await expect(page).toHaveURL(/\/ask\/chat-1/);
-  // Evidence card appears.
-  await expect(page.getByText("Doc 1")).toBeVisible({ timeout: 10_000 });
   // Streamed answer text appears. Citation pill splits the text across
   // sibling <span>s — match the prefix and suffix independently.
   await expect(page.getByText(/Hello/)).toBeVisible();
   await expect(page.getByText(/world\./)).toBeVisible();
-  // Citation pill rendered with number 1.
+  // Citation pill rendered with number 1 — pills live both inline in
+  // prose and as chips in the per-turn Sources footer.
   await expect(page.getByRole("button", { name: /Citation 1/ }).first())
     .toBeVisible();
+  // Per-turn Sources footer chip is visible (inline + footer chip).
+  // Before clicking, the per-turn footer expand card doesn't exist yet
+  // (only the chips). After clicking the inline pill the footer card
+  // mounts.
+  await expect(
+    page.getByRole("button", { name: /Citation 1 — Doc 1/ }),
+  ).toHaveCount(2);
+  // Sentinel: the synthetic ToolTrace strip is also rendering its
+  // chunk inside its (collapsed) body. Track count change rather than
+  // visibility — adding the footer card increments the total.
+  const cardsBefore = await page.locator('[data-chunk-id="d1"]').count();
+  await page.getByRole("button", { name: /Citation 1/ }).first().click();
+  await expect(
+    page.locator('[data-chunk-id="d1"]'),
+  ).toHaveCount(cardsBefore + 1);
 });
 
 test("skipped_retrieval hides the evidence rail and shows the muted phase chip", async ({ page }) => {
@@ -266,4 +300,75 @@ test("skipped_retrieval hides the evidence rail and shows the muted phase chip",
   });
   // Answer body is reachable.
   await expect(page.getByText("You're welcome.")).toBeVisible();
+});
+
+test("tool round renders the ToolTrace strip and merges chunks into the rail", async ({ page }) => {
+  await mockAuthed(page);
+  await page.route("**/api/chats?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { chats: [], total: 0 } }),
+    }),
+  );
+  await page.route("**/api/chats", (route) => {
+    if (route.request().method() === "POST") {
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ data: SAMPLE_CHAT }),
+      });
+    }
+    return route.fallback();
+  });
+  await page.route("**/api/chats/chat-1", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { chat: SAMPLE_CHAT, messages: [] } }),
+    }),
+  );
+  // Stubbed SSE: round 1 stops on tool_use → tool_start + tool_result
+  // (returning a fresh chunk) → round 2 finishes with end_turn.
+  await page.route("**/api/chats/chat-1/messages", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: [
+        `event: retrieving\ndata: {"query":"wolt"}`,
+        `event: evidence\ndata: {"chunks":[{"id":"d1","title":"Initial doc","source":"imap"}]}`,
+        `event: text\ndata: {"delta":"Searching... "}`,
+        `event: tool_start\ndata: {"name":"nexus_search","args":"{\\"query\\":\\"wolt invoice\\"}"}`,
+        `event: tool_result\ndata: {"name":"nexus_search","summary":"Searched \\"wolt invoice\\" — 1 result","chunks":[{"id":"d2","title":"Wolt receipt","source":"imap"}]}`,
+        `event: text\ndata: {"delta":"Found it."}`,
+        `event: usage\ndata: {"input":120,"output":8,"cache_read":0,"cache_write":0}`,
+        `event: done\ndata: {"stop_reason":"end_turn","message_id":"m1"}`,
+        ``,
+      ].join("\n\n"),
+    }),
+  );
+
+  await page.goto("/ask");
+  const composer = page.getByPlaceholder(/Ask anything/);
+  await composer.fill("the wolt invoice please");
+  await composer.press("Control+Enter");
+
+  await expect(page).toHaveURL(/\/ask\/chat-1/);
+
+  // Two strips render: the synthetic "Searched <user query>" for the
+  // orchestrator's automatic first search (driven by the SSE
+  // `evidence` frame) AND the model's nexus_search tool call. Pick
+  // the BE summary as it's the most specific match.
+  const toolStrip = page.getByRole("button", {
+    name: /Searched "wolt invoice" — 1 result/,
+  });
+  await expect(toolStrip).toBeVisible({ timeout: 10_000 });
+  await toolStrip.click();
+  // Expanded body reveals the tool-fetched chunk.
+  await expect(page.getByText("Wolt receipt")).toBeVisible();
+  // No citation frame scripted → no per-turn Sources footer (footer
+  // only renders when there are cited chunks).
+  await expect(
+    page.getByRole("button", { name: /Citation 1/ }),
+  ).toHaveCount(0);
 });

@@ -65,6 +65,9 @@ export const settingsKeys = {
   retention: () => [...settingsKeys.all, "retention"] as const,
   ranking: () => [...settingsKeys.all, "ranking"] as const,
   llm: () => [...settingsKeys.all, "llm"] as const,
+  // RAG runtime knobs (Phase 5: max_tool_rounds). Same admin-form
+  // pattern as llm/embedding/rerank.
+  rag: () => [...settingsKeys.all, "rag"] as const,
 };
 
 export const llmKeys = {

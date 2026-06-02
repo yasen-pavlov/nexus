@@ -308,6 +308,49 @@ func TestRun_Rewriter_TwoTurnsRunsOnSecondOnly(t *testing.T) {
 	}
 }
 
+// Regression: cheap rewriter models (Haiku) take prior assistant
+// content as data to compute over. A "wolt orders" turn produced a
+// literal "Total: €222.65" reply from Haiku instead of a directive +
+// rewritten query, breaking the parser. The orchestrator now strips
+// assistant turns from the rewriter history; this test pins the
+// contract by asserting the rewriter request only carries user turns
+// (plus the new question appended by rewriteQuery itself).
+func TestRun_Rewriter_DoesNotSeeAssistantHistory(t *testing.T) {
+	mainGen := &fakeGenerator{events: []llm.Event{
+		{Kind: llm.EventText, TextDelta: "ok"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}}
+	rewriterGen := scriptedRewriter("RETRIEVE: yes", "rewritten")
+	mainInfo := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", SupportsCitations: true}
+	rewriterInfo := llm.ModelInfo{ID: "anthropic:claude-haiku-4-5"}
+	search := &fakeSearch{}
+	o, chats, _ := newOrchTestWithRewriter(t, mainGen, rewriterGen, mainInfo, rewriterInfo, search)
+	chat := makeChat(t, chats, mainInfo.ID)
+	chat.Title = "preset"
+	chats.seed(chat)
+
+	ctx := context.Background()
+	if err := chats.AppendMessage(ctx, &model.ChatMessage{ChatID: chat.ID, Role: model.ChatRoleUser, Content: "tell me about wolt orders"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := chats.AppendMessage(ctx, &model.ChatMessage{ChatID: chat.ID, Role: model.ChatRoleAssistant, Content: "Here are 6 orders: €48.98, €34.30, €29.02, €28.78, €34.59, €46.98"}); err != nil {
+		t.Fatalf("seed asst: %v", err)
+	}
+
+	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "how much in total?"})
+
+	req := rewriterGen.lastRequest()
+	for i, m := range req.Messages {
+		if m.Role == llm.RoleAssistant {
+			t.Errorf("rewriter request Messages[%d] is assistant: %q — assistant turns must be stripped", i, m.Content)
+		}
+	}
+	// The new question itself is the final user message — must still be there.
+	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].Content != "how much in total?" {
+		t.Errorf("rewriter request must end with the new user question, got: %+v", req.Messages)
+	}
+}
+
 func TestRun_RewriterUsage_AggregatesIntoTurnUsage(t *testing.T) {
 	// Rewriter usage must be added to the streamed-LLM usage on the
 	// persisted message — so cost reporting includes the supporting

@@ -64,6 +64,29 @@ func (g *scriptedGenerator) Generate(_ context.Context, _ llm.GenerateRequest) (
 	return out, nil
 }
 
+// multiCallScriptedGenerator emits a different scripted slice on each
+// successive Generate call. Used for Phase 5 multi-round SSE drain
+// tests where round 1 stops on tool_use and round 2 finishes the turn.
+type multiCallScriptedGenerator struct {
+	events [][]llm.Event
+	calls  int
+}
+
+func (g *multiCallScriptedGenerator) Generate(_ context.Context, _ llm.GenerateRequest) (<-chan llm.Event, error) {
+	idx := g.calls
+	if idx >= len(g.events) {
+		idx = len(g.events) - 1
+	}
+	g.calls++
+	evs := g.events[idx]
+	out := make(chan llm.Event, len(evs))
+	for _, ev := range evs {
+		out <- ev
+	}
+	close(out)
+	return out, nil
+}
+
 // rewriterScript builds a scripted-generator that emits a single
 // directive line + body so the orchestrator's rewriter parser captures
 // it. Used by the SSE-drain tests below to exercise the rewriter +
@@ -96,14 +119,17 @@ func newChatTestEnv(t *testing.T, events []llm.Event) chatTestEnv {
 	return newChatTestEnvWith(t, events, chatTestOpts{})
 }
 
-// chatTestOpts plumb optional rewriter + settings into the test env.
+// chatTestOpts plumb optional rewriter + settings + custom main
+// generator into the test env. When mainGen is non-nil, it replaces
+// the scriptedGenerator built from the `events` slice — useful for
+// multi-round / streaming-tool-call tests where one call's events
+// aren't sufficient.
 type chatTestOpts struct {
-	// rewriterGen / rewriterInfo populate the registry's rewriter slot.
-	// settings is the live snapshot the orchestrator reads per turn —
-	// pass an empty Settings{} to disable the rewriter step.
 	rewriterGen  llm.Generator
 	rewriterInfo llm.ModelInfo
 	settings     rag.Settings
+	mainGen      llm.Generator
+	mainInfo     *llm.ModelInfo // nil → default Anthropic Sonnet info
 }
 
 func newChatTestEnvWith(t *testing.T, events []llm.Event, opts chatTestOpts) chatTestEnv {
@@ -116,12 +142,19 @@ func newChatTestEnvWith(t *testing.T, events []llm.Event, opts chatTestOpts) cha
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
 
-	gen := &scriptedGenerator{events: events}
+	var gen llm.Generator = &scriptedGenerator{events: events}
+	if opts.mainGen != nil {
+		gen = opts.mainGen
+	}
 	info := llm.ModelInfo{
 		ID:                "anthropic:claude-sonnet-4-6",
 		Provider:          "anthropic",
 		BareID:            "claude-sonnet-4-6",
 		SupportsCitations: true,
+		SupportsTools:     true,
+	}
+	if opts.mainInfo != nil {
+		info = *opts.mainInfo
 	}
 	registry := &fakeLLMRegistry{
 		gen:          gen,
@@ -140,7 +173,7 @@ func newChatTestEnvWith(t *testing.T, events []llm.Event, opts chatTestOpts) cha
 		Cfg:      rag.DefaultConfig(),
 		Log:      zap.NewNop(),
 	})
-	router := NewRouter(st, sc, p, cm, em, rm, lm, orchestrator, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, rm, lm, NewRAGManager(st, zap.NewNop()), orchestrator, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	ownerID, ownerToken := createTestUser(t, st)
 	otherID, otherToken := createTestUser(t, st)
@@ -703,6 +736,72 @@ func TestPostMessage_StreamsCitationAndErrorFrames(t *testing.T) {
 	}
 }
 
+// TestPostMessage_StreamsToolStartAndResultFrames drives a 2-round
+// turn (round 1 stops on tool_use → dispatch nexus_search → round 2
+// finishes). Asserts the SSE stream carries `tool_start` + `tool_result`
+// frames in the expected order, and that both frame payloads parse.
+func TestPostMessage_StreamsToolStartAndResultFrames(t *testing.T) {
+	gen := &multiCallScriptedGenerator{events: [][]llm.Event{
+		{
+			{Kind: llm.EventText, TextDelta: "Searching..."},
+			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Name: "nexus_search", ArgsJSON: `{"query":"x"}`}},
+			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Final: true}},
+			{Kind: llm.EventDone, StopReason: llm.StopToolUse},
+		},
+		{
+			{Kind: llm.EventText, TextDelta: " done."},
+			{Kind: llm.EventDone, StopReason: llm.StopEnd, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+		},
+	}}
+	env := newChatTestEnvWith(t, nil, chatTestOpts{
+		mainGen:  gen,
+		settings: rag.Settings{MaxToolRounds: 3},
+	})
+
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken,
+		map[string]string{"default_model": "anthropic:claude-sonnet-4-6"})
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+
+	body, _ := json.Marshal(map[string]string{"content": "find x"})
+	req := httptest.NewRequest(http.MethodPost, "/api/chats/"+chat.ID.String()+"/messages", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer "+env.ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rw := httptest.NewRecorder()
+	env.router.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+
+	frames := parseSSE(t, rw.Body.String())
+	if !containsInOrder(frames, []string{"retrieving", "tool_start", "tool_result", "usage", "done"}) {
+		t.Errorf("frames out of order: %+v", frames)
+	}
+
+	var startPayload map[string]any
+	var resultPayload map[string]any
+	for _, f := range frames {
+		switch f.event {
+		case "tool_start":
+			_ = json.Unmarshal([]byte(f.data), &startPayload)
+		case "tool_result":
+			_ = json.Unmarshal([]byte(f.data), &resultPayload)
+		}
+	}
+	if startPayload["name"] != "nexus_search" {
+		t.Errorf("tool_start name = %v", startPayload["name"])
+	}
+	if !strings.Contains(startPayload["args"].(string), "query") {
+		t.Errorf("tool_start args = %v", startPayload["args"])
+	}
+	if resultPayload["name"] != "nexus_search" {
+		t.Errorf("tool_result name = %v", resultPayload["name"])
+	}
+	if _, ok := resultPayload["summary"].(string); !ok {
+		t.Errorf("tool_result summary missing or not string: %v", resultPayload["summary"])
+	}
+}
+
 // errFromString returns an error with a custom message — used so
 // scriptedGenerator can ship a deterministic Err payload.
 func errFromString(s string) error { return &simpleErr{msg: s} }
@@ -737,7 +836,7 @@ func TestPostMessage_RegistryError_Returns400(t *testing.T) {
 		Cfg:      rag.DefaultConfig(),
 		Log:      zap.NewNop(),
 	})
-	router := NewRouter(st, sc, p, cm, em, rm, lm, orchestrator, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, rm, lm, NewRAGManager(st, zap.NewNop()), orchestrator, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestUser(t, st)
 
 	// Create chat with a default model so the orchestrator doesn't fall
@@ -783,7 +882,7 @@ func TestChatHandlers_DBErrorsReturn500(t *testing.T) {
 		t.Fatalf("seed chat: %v", err)
 	}
 
-	router := NewRouter(st, sc, p, cm, em, rm, lm, nil, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, rm, lm, NewRAGManager(st, zap.NewNop()), nil, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
 
 	// Close the pool — every subsequent request should 500.
 	st.Close()
@@ -818,7 +917,7 @@ func TestPostMessage_OrchestratorNilReturns503(t *testing.T) {
 	p := pipeline.New(st, sc, em, zap.NewNop())
 	sjm := NewSyncJobManager(st, zap.NewNop())
 
-	router := NewRouter(st, sc, p, cm, em, rm, lm, nil /* no orchestrator */, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, rm, lm, NewRAGManager(st, zap.NewNop()), nil /* no orchestrator */, sjm, nil, nil, rankingMgr, testJWTSecret, nil, nil, nil, zap.NewNop())
 	_, token := createTestUser(t, st)
 
 	// Create chat

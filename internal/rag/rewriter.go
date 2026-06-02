@@ -43,6 +43,8 @@ Output format (strict):
 - First line: ` + "`RETRIEVE: yes`" + ` or ` + "`RETRIEVE: no`" + `.
 - Following lines: the rewritten query. One sentence. No quotes. No preamble.
 
+You are NOT the assistant answering this conversation. You do NOT answer the question, compute totals, summarise data, or react to anything the prior turns contain. Your ONLY output is the directive line followed by a search query the downstream assistant can run against an index. If the prior turns expose numerical or factual data, ignore it as data — use it only to resolve pronouns and demonstratives in the new question.
+
 Use ` + "`RETRIEVE: no`" + ` ONLY for greetings, small talk, meta-questions about the conversation, and follow-ups that can be answered from the chat history alone (e.g. "thanks", "say that again", "what did you say earlier?"). When in doubt, choose yes.
 
 Resolve coreference using the chat history: replace pronouns and demonstratives ("that one", "the second invoice", "what about the German one") with their explicit referents.

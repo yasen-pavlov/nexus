@@ -104,11 +104,18 @@ type ChatCitation struct {
 
 // ChatToolCall is a forward-compat record of a tool invocation made by
 // the assistant. Phase 5 populates this; Phase 2 leaves it nil.
+//
+// Chunks denormalises the per-call result chunks so the FE persisted
+// ToolTrace expand-body can render after page reload — the union on
+// ChatMessage.evidence is deduped across calls and doesn't preserve
+// per-call attribution. Empty when the tool returned zero results
+// (renders as "No matching documents.").
 type ChatToolCall struct {
-	Name          string `json:"name"`
-	ArgsJSON      string `json:"args"`
-	ResultID      string `json:"result_id,omitempty"`
-	ResultSummary string `json:"result_summary,omitempty"`
+	Name          string         `json:"name"`
+	ArgsJSON      string         `json:"args"`
+	ResultID      string         `json:"result_id,omitempty"`
+	ResultSummary string         `json:"result_summary,omitempty"`
+	Chunks        []ChunkPreview `json:"chunks,omitempty"`
 }
 
 // ChatUsage records token accounting for an assistant turn. Cache fields

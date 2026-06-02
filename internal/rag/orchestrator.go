@@ -35,6 +35,11 @@ type Settings struct {
 	// RewriterModel is the cheap-model id (provider-prefixed) used for
 	// query rewriting AND auto-titling. Empty disables both features.
 	RewriterModel string
+	// MaxToolRounds caps how many tool-use rounds the orchestrator will
+	// allow during one user turn. 0 disables tools entirely (the
+	// orchestrator passes Tools=nil on round 1, forcing single-shot
+	// answers). Read per turn so admin saves take effect without restart.
+	MaxToolRounds int
 }
 
 // SettingsFunc is read once per turn from runTurn so orchestrator
@@ -212,9 +217,11 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 		accumulatedText strings.Builder
 		citations       []model.ChatCitation
 		evidence        []ChunkPreview
-		// usage is the LLM call's reported tokens. auxUsage accumulates
-		// rewriter + title costs so the persisted total reflects the
-		// full turn cost (plan §"Token cost accounting").
+		// usage is the running LLM-call token total. The Phase-5 round
+		// loop accumulates tokens from every Generate call (initial +
+		// each tool round) into this single counter. auxUsage on top
+		// accumulates rewriter + title costs so the persisted total
+		// reflects the full turn cost (plan §"Token cost accounting").
 		usage    *model.ChatUsage
 		auxUsage model.ChatUsage
 		// rewriterRan tracks whether the rewriter modified the search
@@ -227,6 +234,11 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 		// sentence terminator so pills land at clean sentence
 		// boundaries instead of mid-word.
 		pendingCitations []model.ChatCitation
+		// toolCallsCollected accumulates one record per tool call
+		// dispatched across all rounds in this turn. Persisted as the
+		// assistant message's chat_messages.tool_calls JSONB so the FE
+		// can render the collapsible tool-trace rows after page reload.
+		toolCallsCollected []model.ChatToolCall
 	)
 
 	settings := o.settings()
@@ -329,6 +341,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 			Model:            modelID,
 			Citations:        citations,
 			Evidence:         evidence,
+			ToolCalls:        toolCallsCollected,
 			Usage:            mergeUsage(),
 			StopReason:       stop,
 			RewrittenQuery:   rewrittenQuery,
@@ -347,6 +360,19 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 	// is configured (the title and rewriter share one cheap-model setting).
 	persistAndDone := func(stop string, errMsg string, isFirstAssistantTurn bool, userQuestion string) {
 		finalOnce.Do(func() {
+			// Surface the underlying failure message at WARN — every
+			// error-stop path funnels through here, so a single log
+			// statement covers "generate failed", "stream closed
+			// unexpectedly", "retrieval failed", and EventError
+			// payloads. Without this the SSE error frame is the only
+			// visible diagnostic and gets lost as soon as the FE
+			// closes the stream.
+			if stop == "error" && errMsg != "" {
+				o.log.Warn("rag: turn finalised with error",
+					zap.String("err", errMsg),
+					zap.String("model", modelID),
+					zap.String("chat_id", in.ChatID.String()))
+			}
 			persistAssistant(stop)
 
 			// Auto-title — best-effort, fire only on the first
@@ -429,7 +455,18 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 			o.log.Warn("rag: rewriter model not resolvable; skipping rewrite", zap.Error(err))
 			out <- Event{Kind: EvRewriterStatus, StatusReason: rewriterFailureError}
 		} else {
-			res := rewriteQuery(ctx, rewriterGen, rewriterInfo, history, in.Content, o.log)
+			// Strip prior ASSISTANT turns from the rewriter history.
+			// Cheap models (Haiku-class) take prior assistant content
+			// as data to compute over and answer the question
+			// themselves instead of rewriting it (one Wolt-orders
+			// turn produced a literal "Total: €222.65" reply,
+			// breaking the parser). User-only history still gives
+			// the rewriter enough topic continuity for the common
+			// coreference cases ("how much in total" → "how much
+			// did I pay in total for the wolt orders"); the cases
+			// that genuinely need an assistant-introduced referent
+			// ("the second invoice") fall through to the tool loop.
+			res := rewriteQuery(ctx, rewriterGen, rewriterInfo, userHistoryOnly(history), in.Content, o.log)
 			addUsage(res.Usage)
 			if strings.TrimSpace(res.Rewritten) != "" {
 				searchQuery = res.Rewritten
@@ -480,98 +517,243 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 	if bareModel == "" {
 		bareModel = modelID
 	}
-	llmReq := llm.GenerateRequest{
-		Model:       bareModel,
-		System:      o.cfg.SystemPrompt,
-		Documents:   docs,
-		Messages:    append(history, llm.Message{Role: llm.RoleUser, Content: in.Content}),
-		MaxTokens:   o.cfg.MaxTokens,
-		EnableCache: true,
-	}
 
-	events, err := gen.Generate(ctx, llmReq)
-	if err != nil {
-		persistAndDone("error", "generate failed: "+err.Error(), isFirstAssistantTurn, in.Content)
-		return
-	}
-
-	parser := NewCitationParser(parserDocsFromLLM(docs))
+	// Phase 5 round loop. Initial state:
+	//   documents       — cumulative across rounds (initial + tool-fetched), deduped
+	//                     by DocID. Stable order so citation indices stay valid for
+	//                     non-Anthropic providers and Anthropic's document_index
+	//                     also stays monotonic.
+	//   rolledMessages  — the conversation we feed the LLM. Grows with each round:
+	//                     [history, user, asst+tool_use, tool_result, asst+tool_use,
+	//                     tool_result, ..., asst]. Ends when stop != tool_use.
+	//   dispatcher      — built per turn so the per-user OwnerID is baked in
+	//                     (master plan §2 hard constraint).
+	documents := docs
+	rolledMessages := append(history, llm.Message{Role: llm.RoleUser, Content: in.Content})
+	dispatcher := newSearchToolDispatcher(o.search, in.UserID, o.log)
+	maxToolRounds := settings.MaxToolRounds
 	useNativeCitations := info.SupportsCitations
 
-	for {
-		select {
-		case <-ctx.Done():
+	for toolRound := 0; ; toolRound++ {
+		// Cancellation between rounds — Phase 4's pattern of checking ctx
+		// before each expensive stage applies to each new generate call.
+		if err := ctx.Err(); err != nil {
 			persistAndDone("cancelled", "", isFirstAssistantTurn, in.Content)
 			return
-		case ev, ok := <-events:
-			if !ok {
-				persistAndDone("error", "stream closed unexpectedly", isFirstAssistantTurn, in.Content)
+		}
+
+		// Tools for this round. nil after the cap so the model is forced to
+		// answer from current context — no separate "force-finish" branch
+		// needed.
+		var roundTools []llm.Tool
+		if toolRound < maxToolRounds {
+			roundTools = BuildToolList(info, maxToolRounds)
+		}
+
+		// Citation parser is per-round for non-Anthropic providers so [N]
+		// markers map against the cumulative documents slice (which may
+		// have grown since the previous round via tool results).
+		var parser *CitationParser
+		if !useNativeCitations {
+			parser = NewCitationParser(parserDocsFromLLM(documents))
+		}
+
+		llmReq := llm.GenerateRequest{
+			Model:       bareModel,
+			System:      o.cfg.SystemPrompt,
+			Documents:   documents,
+			Messages:    rolledMessages,
+			Tools:       roundTools,
+			MaxTokens:   o.cfg.MaxTokens,
+			EnableCache: true,
+		}
+
+		events, err := gen.Generate(ctx, llmReq)
+		if err != nil {
+			persistAndDone("error", "generate failed: "+err.Error(), isFirstAssistantTurn, in.Content)
+			return
+		}
+
+		// Per-round accumulators. roundText feeds the assistant message we
+		// append to rolledMessages so the next round sees the model's
+		// reasoning (and any text it emitted alongside its tool_use blocks).
+		// toolBuf accumulates ToolCallDelta.ArgsJSON across deltas keyed by
+		// call ID; toolOrder preserves invocation order so we dispatch in
+		// the order the model produced them.
+		var (
+			roundText strings.Builder
+			toolBuf   = map[string]*llm.ToolCall{}
+			toolOrder []string
+			roundStop = llm.StopEnd
+		)
+
+	drain:
+		for {
+			select {
+			case <-ctx.Done():
+				persistAndDone("cancelled", "", isFirstAssistantTurn, in.Content)
 				return
-			}
-			switch ev.Kind {
-			case llm.EventText:
-				if useNativeCitations {
-					prevLen := accumulatedText.Len()
-					accumulatedText.WriteString(ev.TextDelta)
-					out <- Event{Kind: EvText, TextDelta: ev.TextDelta}
-					distributePendingAtBoundaries(accumulatedText.String(), prevLen)
-				} else {
-					clean, cites := parser.Feed(ev.TextDelta)
-					if clean != "" {
-						accumulatedText.WriteString(clean)
-						out <- Event{Kind: EvText, TextDelta: clean}
+			case ev, ok := <-events:
+				if !ok {
+					persistAndDone("error", "stream closed unexpectedly", isFirstAssistantTurn, in.Content)
+					return
+				}
+				switch ev.Kind {
+				case llm.EventText:
+					if useNativeCitations {
+						prevLen := accumulatedText.Len()
+						accumulatedText.WriteString(ev.TextDelta)
+						roundText.WriteString(ev.TextDelta)
+						out <- Event{Kind: EvText, TextDelta: ev.TextDelta}
+						distributePendingAtBoundaries(accumulatedText.String(), prevLen)
+					} else {
+						clean, cites := parser.Feed(ev.TextDelta)
+						if clean != "" {
+							accumulatedText.WriteString(clean)
+							roundText.WriteString(clean)
+							out <- Event{Kind: EvText, TextDelta: clean}
+						}
+						for i := range cites {
+							citations = append(citations, cites[i])
+							c := cites[i]
+							out <- Event{Kind: EvCitation, Citation: &c}
+						}
 					}
-					for i := range cites {
-						citations = append(citations, cites[i])
-						c := cites[i]
-						out <- Event{Kind: EvCitation, Citation: &c}
+				case llm.EventCitation:
+					if ev.Citation != nil {
+						pendingCitations = append(pendingCitations, model.ChatCitation{
+							DocID:     ev.Citation.DocID,
+							CitedText: ev.Citation.CitedText,
+						})
 					}
-				}
-			case llm.EventCitation:
-				if ev.Citation != nil {
-					pendingCitations = append(pendingCitations, model.ChatCitation{
-						DocID:     ev.Citation.DocID,
-						CitedText: ev.Citation.CitedText,
-					})
-				}
-			case llm.EventToolCall:
-				o.log.Warn("rag: unexpected tool call delta in Phase 4")
-			case llm.EventDone:
-				if !useNativeCitations {
-					if tail := parser.Flush(); tail != "" {
-						accumulatedText.WriteString(tail)
-						out <- Event{Kind: EvText, TextDelta: tail}
+				case llm.EventToolCall:
+					if ev.ToolCall == nil {
+						continue
 					}
-				}
-				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
-				if ev.Usage != nil {
-					usage = &model.ChatUsage{
-						Input:      ev.Usage.InputTokens,
-						Output:     ev.Usage.OutputTokens,
-						CacheRead:  ev.Usage.CacheReadTokens,
-						CacheWrite: ev.Usage.CacheWriteTokens,
+					id := ev.ToolCall.ID
+					if id == "" {
+						// Ollama emits Final=true tool calls without an
+						// SDK-supplied ID. Synthesize one stable per
+						// (round, order) so the matching tool_result
+						// message round-trips ToolCallID correctly.
+						id = fmt.Sprintf("ollama-r%d-%d", toolRound, len(toolOrder))
 					}
+					tc, exists := toolBuf[id]
+					if !exists {
+						tc = &llm.ToolCall{ID: id, Name: ev.ToolCall.Name}
+						toolBuf[id] = tc
+						toolOrder = append(toolOrder, id)
+					}
+					if tc.Name == "" && ev.ToolCall.Name != "" {
+						tc.Name = ev.ToolCall.Name
+					}
+					if ev.ToolCall.ArgsJSON != "" {
+						tc.ArgsJSON += ev.ToolCall.ArgsJSON
+					}
+				case llm.EventDone:
+					if !useNativeCitations {
+						if tail := parser.Flush(); tail != "" {
+							accumulatedText.WriteString(tail)
+							roundText.WriteString(tail)
+							out <- Event{Kind: EvText, TextDelta: tail}
+						}
+					}
+					if ev.Usage != nil {
+						if usage == nil {
+							usage = &model.ChatUsage{}
+						}
+						usage.Input += ev.Usage.InputTokens
+						usage.Output += ev.Usage.OutputTokens
+						usage.CacheRead += ev.Usage.CacheReadTokens
+						usage.CacheWrite += ev.Usage.CacheWriteTokens
+					}
+					roundStop = ev.StopReason
+					if roundStop == "" {
+						roundStop = llm.StopEnd
+					}
+					break drain
+				case llm.EventError:
+					flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
+					msg := "generation failed"
+					if ev.Err != nil {
+						msg = ev.Err.Error()
+					}
+					persistAndDone("error", msg, isFirstAssistantTurn, in.Content)
+					return
 				}
-				if merged := mergeUsage(); merged != nil {
-					out <- Event{Kind: EvUsage, Usage: merged}
-				}
-				stop := string(ev.StopReason)
-				if stop == "" {
-					stop = string(llm.StopEnd)
-				}
-				persistAndDone(stop, "", isFirstAssistantTurn, in.Content)
-				return
-			case llm.EventError:
-				flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
-				msg := "generation failed"
-				if ev.Err != nil {
-					msg = ev.Err.Error()
-				}
-				persistAndDone("error", msg, isFirstAssistantTurn, in.Content)
-				return
 			}
 		}
+
+		if roundStop != llm.StopToolUse {
+			// end_turn / max_tokens / filtered → finalize the turn.
+			flushAllPendingAt(byteToUTF16(accumulatedText.Len()))
+			if merged := mergeUsage(); merged != nil {
+				out <- Event{Kind: EvUsage, Usage: merged}
+			}
+			persistAndDone(string(roundStop), "", isFirstAssistantTurn, in.Content)
+			return
+		}
+
+		// Tool round — collect calls in invocation order, dispatch each.
+		finalCalls := make([]llm.ToolCall, 0, len(toolOrder))
+		for _, id := range toolOrder {
+			finalCalls = append(finalCalls, *toolBuf[id])
+		}
+
+		// Append the assistant turn (text emitted this round + tool_use
+		// blocks) to rolledMessages so the next round sees the model's
+		// own reasoning. Anthropic and OpenAI both require the assistant
+		// turn carrying the tool_use to be present before the tool_result
+		// turn lands.
+		rolledMessages = append(rolledMessages, llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   roundText.String(),
+			ToolCalls: finalCalls,
+		})
+
+		// Dispatch each call. Visibility filter applies because the
+		// dispatcher was constructed with in.UserID baked in.
+		for _, call := range finalCalls {
+			out <- Event{Kind: EvToolStart, ToolName: call.Name, ToolArgs: call.ArgsJSON}
+			outcome := dispatcher.Dispatch(ctx, call)
+			rolledMessages = append(rolledMessages, llm.Message{
+				Role:       llm.RoleTool,
+				Content:    outcome.ResultText,
+				ToolCallID: call.ID,
+			})
+			documents = appendUniqueDocs(documents, outcome.Docs)
+			evidence = appendUniqueChunks(evidence, outcome.Chunks)
+			toolCallsCollected = append(toolCallsCollected, model.ChatToolCall{
+				Name:          call.Name,
+				ArgsJSON:      call.ArgsJSON,
+				ResultID:      call.ID,
+				ResultSummary: outcome.Summary,
+				// Denormalise per-call chunks so the FE persisted
+				// ToolTrace can render its expanded body after page
+				// reload (the union on chat_messages.evidence is
+				// deduped + can't be split back per-call).
+				Chunks: outcome.Chunks,
+			})
+			out <- Event{Kind: EvToolResult, ToolName: call.Name, ToolSummary: outcome.Summary, ToolChunks: outcome.Chunks}
+		}
+		// Loop continues — toolRound++ then another generate call with
+		// the extended messages + documents. On the round AFTER reaching
+		// maxToolRounds, roundTools=nil forces the model to finish.
 	}
+}
+
+// userHistoryOnly returns msgs filtered to user turns only. Used by
+// the rewriter call so cheap models can't be tempted to compute over
+// or summarise prior assistant content. See the rewriter call site
+// in runTurn for the failure mode this prevents.
+func userHistoryOnly(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == llm.RoleUser {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // packHistory loads prior messages for the chat and returns up to

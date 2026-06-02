@@ -17,6 +17,7 @@ import {
 } from "@/lib/api-client";
 import type {
   ChatCitation,
+  ChatToolEvent,
   ChatUsage,
   ChunkPreview,
 } from "@/lib/api-types";
@@ -83,6 +84,11 @@ export interface StreamingTurn {
    *  includes network + SSE-flush latency and would drift after a
    *  page refresh. */
   durationMs?: number;
+  /** Phase 5: per-round agentic tool-call trace. One entry per
+   *  `tool_start` SSE frame, populated with summary + chunks when the
+   *  matching `tool_result` lands. AssistantTurn renders these as
+   *  collapsible ToolTrace rows above the answer body. */
+  toolEvents: ChatToolEvent[];
 }
 
 const INITIAL: StreamingTurn = {
@@ -91,6 +97,7 @@ const INITIAL: StreamingTurn = {
   evidence: [],
   answer: "",
   citations: [],
+  toolEvents: [],
 };
 
 type Action =
@@ -202,7 +209,48 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
       const reason = (payload as { reason?: string }).reason ?? "error";
       return { ...state, titleFailureReason: reason };
     }
+    case "tool_start": {
+      // One entry per dispatched tool call. The matching tool_result
+      // frame lands later and merges its summary + chunks onto the
+      // first event with this name that's still missing a summary.
+      const p = payload as { name?: string; args?: string };
+      if (!p.name) return state;
+      return {
+        ...state,
+        toolEvents: [
+          ...state.toolEvents,
+          { name: p.name, args: p.args ?? "" },
+        ],
+      };
+    }
+    case "tool_result": {
+      const p = payload as {
+        name?: string;
+        summary?: string;
+        chunks?: ChunkPreview[];
+      };
+      if (!p.name) return state;
+      // Merge onto the most recent same-name event whose summary hasn't
+      // been set yet. If none exists (server sent tool_result without a
+      // matching tool_start — should not happen but tolerate), drop.
+      let merged = false;
+      const next = state.toolEvents.map((ev) => {
+        if (!merged && ev.name === p.name && ev.summary === undefined) {
+          merged = true;
+          return { ...ev, summary: p.summary, chunks: p.chunks ?? [] };
+        }
+        return ev;
+      });
+      if (!merged) return state;
+      return { ...state, toolEvents: next };
+    }
     case "done": {
+      // The orchestrator always sends `done` last, even after an `error`
+      // frame. Preserve phase="error" so downstream consumers (e.g. the
+      // AssistantTurn red block) treat phase as the single source of truth
+      // for "did this turn fail?". `error` info on the turn stays
+      // untouched either way; we just don't let phase silently roll back
+      // to "done" once an error landed.
       const d = payload as {
         stop_reason?: string;
         message_id?: string;
@@ -210,7 +258,7 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
       };
       return {
         ...state,
-        phase: "done",
+        phase: state.phase === "error" ? "error" : "done",
         stopReason: d.stop_reason,
         messageID: d.message_id,
         completedAt: Date.now(),

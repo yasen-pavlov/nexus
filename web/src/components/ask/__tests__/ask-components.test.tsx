@@ -8,9 +8,9 @@ import { AnswerStream } from "../answer-stream";
 import { AskComposer } from "../ask-composer";
 import { CitationPill } from "../citation-pill";
 import { EvidenceCard } from "../evidence-card";
-import { EvidenceRail } from "../evidence-rail";
 import { ExamplePill } from "../example-pill";
 import { PhaseChip } from "../phase-chip";
+import { ToolTrace } from "../tool-trace";
 import { UserTurn } from "../user-turn";
 import { buildCopyText } from "../copy-text";
 
@@ -81,38 +81,18 @@ describe("EvidenceCard", () => {
   });
 });
 
-describe("EvidenceRail", () => {
-  it("renders the empty state when chunks is empty", () => {
-    render(<EvidenceRail chunks={[]} onActivate={() => {}} />);
-    expect(screen.getByText(/Run a question to see what backed it/)).toBeInTheDocument();
-  });
-
-  it("renders one card per chunk", () => {
-    render(
-      <EvidenceRail
-        chunks={[sampleChunk, { ...sampleChunk, id: "doc-2", title: "Doc 2" }]}
-        onActivate={() => {}}
-      />,
-    );
-    expect(document.querySelector('[data-chunk-id="doc-1"]')).not.toBeNull();
-    expect(document.querySelector('[data-chunk-id="doc-2"]')).not.toBeNull();
-  });
-});
-
 describe("AnswerStream", () => {
   it("renders text + numbered pills via segmentAnswer", () => {
-    const onJump = vi.fn();
     render(
       <AnswerStream
         text="Hello world."
         citations={[{ doc_id: "doc-1", span_start: 0, span_end: 5 }]}
         evidence={[sampleChunk]}
         isStreaming={false}
-        onJumpToEvidence={onJump}
       />,
     );
     // The pill text reads "1" because doc-1 is the first evidence chunk.
-    // Both an inline pill and a sources-rail pill render with the same
+    // Both an inline pill and a footer-chip pill render with the same
     // accessible name; assert at least one is in the document.
     expect(screen.getAllByRole("button", { name: /Citation 1 — Anthropic/ }).length).toBeGreaterThan(0);
     expect(screen.getByText(/Hello/)).toBeInTheDocument();
@@ -126,7 +106,6 @@ describe("AnswerStream", () => {
         citations={[]}
         evidence={[]}
         isStreaming={false}
-        onJumpToEvidence={() => {}}
       />,
     );
     // Bold renders as <strong>
@@ -147,7 +126,6 @@ describe("AnswerStream", () => {
         citations={[{ doc_id: "doc-1", span_start: 3, span_end: 13 }]}
         evidence={[sampleChunk]}
         isStreaming={false}
-        onJumpToEvidence={() => {}}
       />,
     );
     const li = document.querySelector("ol > li");
@@ -158,20 +136,81 @@ describe("AnswerStream", () => {
     expect(inlinePills?.length ?? 0).toBeGreaterThan(0);
   });
 
-  it("calls onJumpToEvidence when a sources-rail pill is clicked", async () => {
+  // Regression: the sentinel tokens AnswerStream splices into the body
+  // (§§CITE:N§§) live in a string node that the pillify walker swaps
+  // for <CitationPill>. Without explicit table-element overrides, the
+  // walker never reached strings inside <td>/<th> — so models that
+  // emitted GFM tables (Sonnet often does for comparison answers) leaked
+  // raw "§§CITE:0§§" text into the rendered cells. This test pins the
+  // contract: a citation whose span_end falls inside a table cell must
+  // resolve to a pill in the DOM, with no sentinel left behind.
+  it("resolves citation sentinels inside GFM table cells", () => {
+    // span_end = 38 lands after "China Restaurant Rosengarten" in the
+    // first data row's Venue column.
+    const text =
+      "| Date | Venue | Total |\n| --- | --- | --- |\n| 29 Mar | China Restaurant Rosengarten | €48.98 |";
+    render(
+      <AnswerStream
+        text={text}
+        citations={[{ doc_id: "doc-1", span_start: 24, span_end: 75 }]}
+        evidence={[sampleChunk]}
+        isStreaming={false}
+      />,
+    );
+    // No sentinel text leaks anywhere in the answer body.
+    const article = document.querySelector('[role="article"]');
+    expect(article?.textContent ?? "").not.toContain("§§CITE");
+    // And the inline pill rendered inside a <td>.
+    const tdPills = document.querySelectorAll(
+      'td button[aria-label*="Citation 1"]',
+    );
+    expect(tdPills.length).toBeGreaterThan(0);
+  });
+
+  // Per-turn embedded sources contract: clicking a footer chip expands
+  // an in-place evidence card under the chip strip. Multiple chips can
+  // be expanded at once. Click again collapses.
+  it("expands an evidence card in-place when a footer chip is clicked", async () => {
     const user = userEvent.setup();
-    const onJump = vi.fn();
     render(
       <AnswerStream
         text="x"
         citations={[]}
         evidence={[sampleChunk]}
         isStreaming={false}
-        onJumpToEvidence={onJump}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Citation 1 — Anthropic/ }));
-    expect(onJump).toHaveBeenCalledWith("doc-1");
+    // Before click: no expand card in the DOM.
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).toBeNull();
+    await user.click(
+      screen.getByRole("button", { name: /Citation 1 — Anthropic/ }),
+    );
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).not.toBeNull();
+    // Click again collapses.
+    await user.click(
+      screen.getAllByRole("button", { name: /Citation 1 — Anthropic/ })[0],
+    );
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).toBeNull();
+  });
+
+  // Inline `[N]` pill click should also expand the matching footer card.
+  it("inline pill click expands the matching footer card", async () => {
+    const user = userEvent.setup();
+    render(
+      <AnswerStream
+        text="Hello world."
+        citations={[{ doc_id: "doc-1", span_start: 0, span_end: 5 }]}
+        evidence={[sampleChunk]}
+        isStreaming={false}
+      />,
+    );
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).toBeNull();
+    // The first matching pill is the inline one (the chip is later).
+    const pills = screen.getAllByRole("button", {
+      name: /Citation 1 — Anthropic/,
+    });
+    await user.click(pills[0]);
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).not.toBeNull();
   });
 });
 
@@ -394,5 +433,113 @@ describe("buildCopyText", () => {
     );
     // Body should not contain the marker — but the legend still lists evidence.
     expect(out.split("Sources:")[0]).not.toContain("[1]");
+  });
+});
+
+describe("ToolTrace", () => {
+  it("renders the BE-supplied summary in the collapsed strip", () => {
+    render(
+      <ToolTrace
+        name="nexus_search"
+        args={'{"query":"x"}'}
+        summary='Searched "x" — 2 results'
+      />,
+    );
+    expect(
+      screen.getByText('Searched "x" — 2 results'),
+    ).toBeInTheDocument();
+  });
+
+  it("derives a query-aware label from args when summary is absent", () => {
+    render(<ToolTrace name="nexus_search" args={'{"query":"wolt"}'} />);
+    expect(screen.getByText(/Searched/)).toBeInTheDocument();
+    expect(screen.getByText('"wolt"')).toBeInTheDocument();
+  });
+
+  it("falls back to a generic label when args is malformed", () => {
+    render(<ToolTrace name="nexus_search" args="not-json" />);
+    expect(screen.getByText("Searched the index")).toBeInTheDocument();
+  });
+
+  it("truncates a long query label at a word boundary and keeps the full text on hover", () => {
+    const longQuery =
+      "Search my email and documents and give me a breakdown of every subscription I pay for";
+    render(
+      <ToolTrace
+        name="nexus_search"
+        args={JSON.stringify({ query: longQuery })}
+      />,
+    );
+    const label = screen.getByText(/…"$/);
+    // Trimmed well below the verbatim question, ends with an ellipsis
+    // inside the closing quote, and exposes the full query via title.
+    expect(label.textContent!.length).toBeLessThan(longQuery.length);
+    expect(label).toHaveAttribute("title", `"${longQuery}"`);
+  });
+
+  it("expands on click and reveals nested EvidenceCards", async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolTrace
+        name="nexus_search"
+        args="{}"
+        summary="Searched"
+        chunks={[sampleChunk]}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Searched/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // Card has data-chunk-id matching sampleChunk.id
+    const card = document.querySelector('[data-chunk-id="doc-1"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    // Clicking the card collapses the strip back (no global rail to
+    // jump to anymore — the strip is self-contained).
+    await user.click(card);
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("starts expanded when defaultExpanded is true", () => {
+    render(
+      <ToolTrace
+        name="nexus_search"
+        args="{}"
+        summary="Searched"
+        chunks={[sampleChunk]}
+        defaultExpanded
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Searched/ });
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("renders a no-results placeholder when expanded with empty chunks", async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolTrace name="nexus_search" args="{}" summary="No hits" chunks={[]} />,
+    );
+    await user.click(screen.getByRole("button", { name: /No hits/ }));
+    expect(screen.getByText("No matching documents.")).toBeInTheDocument();
+  });
+
+  it("shows the chunk-count badge only when chunks are non-empty", () => {
+    const { rerender, container } = render(
+      <ToolTrace
+        name="nexus_search"
+        args="{}"
+        summary="Searched"
+        chunks={[sampleChunk, sampleChunk]}
+      />,
+    );
+    // The badge sits on the collapsed strip (the trigger button), not
+    // inside the expanded region — narrow the query to the trigger.
+    const trigger = screen.getByRole("button", { name: /Searched/ });
+    expect(trigger).toHaveTextContent("2");
+    rerender(<ToolTrace name="nexus_search" args="{}" summary="Searched" chunks={[]} />);
+    const triggerAfter = screen.getByRole("button", { name: /Searched/ });
+    expect(triggerAfter.textContent).not.toMatch(/\b0\b/);
+    // Belt and braces: no element rendered by ToolTrace itself shows "0".
+    expect(container.querySelector('[aria-hidden="true"]')).toBeTruthy();
   });
 });

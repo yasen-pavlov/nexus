@@ -2,18 +2,23 @@
 // user turn into a streamed, grounded, cited answer over the user's
 // existing index. Phase 4 ships the multi-turn rewriter, the
 // skip-retrieval branch (greetings / history-only follow-ups), and
-// auto-titles. Phase 5 will add the agentic tool-use loop; Phase 6 the
-// multi-modal images.
+// auto-titles. Phase 5 adds the agentic tool-use loop (nexus_search);
+// Phase 6 will add multi-modal images.
 //
 // SSE ordering invariant on POST /api/chats/:id/messages:
 //
-//		(retrieving | skipped_retrieval) → evidence? → text* → citation* →
-//		usage → title? → done
+//		(retrieving | skipped_retrieval) → evidence? →
+//		  (text* citation* (tool_start tool_result)*)+ →
+//		  usage → title? → done
 //
 //	  - Exactly one of `retrieving` or `skipped_retrieval` fires per turn,
 //	    never both.
 //	  - `evidence` only fires after `retrieving`. The skip-retrieval branch
 //	    never produces evidence.
+//	  - `tool_start` and `tool_result` come in pairs (one tool_result per
+//	    tool_start) and group by round. They may interleave with `text` and
+//	    `citation` from the same generation pass when the model emits
+//	    "thinking out loud" text alongside its tool_use blocks (Anthropic).
 //	  - `title` fires zero or one times, only on the first end_turn assistant
 //	    message of a chat (when the rewriter model is configured + auto-title
 //	    succeeds within its 2s timeout).
@@ -75,6 +80,15 @@ const (
 	// who configured the rewriter model and is wondering why titles
 	// aren't appearing. Carries StatusReason.
 	EvTitleStatus
+	// EvToolStart fires at the start of each tool dispatch in the agentic
+	// round loop. Carries ToolName and ToolArgs (the model's raw JSON
+	// arg string, useful for the FE collapsible trace row).
+	EvToolStart
+	// EvToolResult fires after each tool dispatch completes. Carries
+	// ToolName, ToolSummary (one-line prose for the trace), and
+	// ToolChunks (the chunks the FE evidence rail merges into its
+	// existing list, deduped by DocID).
+	EvToolResult
 )
 
 // ChunkPreview is re-exported from internal/model for backwards-compat
@@ -97,4 +111,8 @@ type Event struct {
 	Err          string              // EvError
 	Title        string              // EvTitle
 	StatusReason string              // EvRewriterStatus / EvTitleStatus — "timeout"|"empty"|"parse_failed"|"error"
+	ToolName     string              // EvToolStart / EvToolResult
+	ToolArgs     string              // EvToolStart — raw JSON the model produced
+	ToolSummary  string              // EvToolResult — one-line prose
+	ToolChunks   []ChunkPreview      // EvToolResult — chunks for the FE evidence rail
 }

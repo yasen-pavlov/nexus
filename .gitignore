@@ -22,6 +22,10 @@ internal/api/static/*
 web/.playwright-mcp/
 web/test-results/
 ranking-verify*.png
+# Ad-hoc Ask/RAG visual-verification screenshots dropped in the repo root.
+redesign*.png
+sources*.png
+phase5*.png
 
 # Local-only design & planning notes — kept out of the tree on purpose.
 plans/

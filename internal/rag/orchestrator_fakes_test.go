@@ -141,29 +141,48 @@ func (f *fakeSearch) lastRequest() model.SearchRequest {
 
 // fakeGenerator scripts a sequence of llm.Events. Setting `delay` makes
 // each event wait that long before being sent, so cancellation tests can
-// interrupt mid-stream. Captures the inbound GenerateRequest so tests
-// can assert on Documents / Messages composition.
+// interrupt mid-stream. Captures every inbound GenerateRequest so
+// multi-round tests can assert on per-call Documents / Messages /
+// Tools composition.
+//
+// Phase 5 multi-round support: when `eventsPerCall` is non-empty, each
+// successive Generate call emits the next inner slice (clamped to the
+// last entry on overflow so a misbehaving model can't OOB the test).
+// When unset, every call emits the same `events` slice (Phase 4
+// behaviour).
 type fakeGenerator struct {
-	mu      sync.Mutex
-	events  []llm.Event
-	delay   time.Duration
-	err     error
-	lastReq llm.GenerateRequest
-	calls   int
+	mu            sync.Mutex
+	events        []llm.Event
+	eventsPerCall [][]llm.Event
+	delay         time.Duration
+	err           error
+	requests      []llm.GenerateRequest
+	calls         int
 }
 
 func (f *fakeGenerator) Generate(ctx context.Context, req llm.GenerateRequest) (<-chan llm.Event, error) {
 	f.mu.Lock()
-	f.lastReq = req
+	f.requests = append(f.requests, req)
+	callIdx := f.calls
 	f.calls++
 	f.mu.Unlock()
 	if f.err != nil {
 		return nil, f.err
 	}
-	out := make(chan llm.Event, len(f.events))
+
+	events := f.events
+	if len(f.eventsPerCall) > 0 {
+		idx := callIdx
+		if idx >= len(f.eventsPerCall) {
+			idx = len(f.eventsPerCall) - 1
+		}
+		events = f.eventsPerCall[idx]
+	}
+
+	out := make(chan llm.Event, len(events))
 	go func() {
 		defer close(out)
-		for _, ev := range f.events {
+		for _, ev := range events {
 			if f.delay > 0 {
 				select {
 				case <-ctx.Done():
@@ -189,10 +208,26 @@ func (f *fakeGenerator) callCount() int {
 	return f.calls
 }
 
+// lastRequest returns the most recent GenerateRequest the orchestrator
+// dispatched. Callers that need every request use requestAt.
 func (f *fakeGenerator) lastRequest() llm.GenerateRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.lastReq
+	if len(f.requests) == 0 {
+		return llm.GenerateRequest{}
+	}
+	return f.requests[len(f.requests)-1]
+}
+
+// requestAt returns the i-th GenerateRequest (0-based). Callers assert
+// per-round Documents / Tools composition.
+func (f *fakeGenerator) requestAt(i int) llm.GenerateRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < 0 || i >= len(f.requests) {
+		return llm.GenerateRequest{}
+	}
+	return f.requests[i]
 }
 
 // fakeRegistry returns a single Generator/ModelInfo pair. Optional

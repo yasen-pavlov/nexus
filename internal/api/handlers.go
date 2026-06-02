@@ -43,6 +43,7 @@ type handler struct {
 	em            *EmbeddingManager
 	rm            *RerankManager
 	lm            *LLMManager
+	ragMgr        *RAGManager
 	rag           *rag.Orchestrator
 	cm            *ConnectorManager
 	syncJobs      *SyncJobManager
