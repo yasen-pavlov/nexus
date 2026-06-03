@@ -395,6 +395,105 @@ func TestDeleteChat_NonOwnerReturns404(t *testing.T) {
 	}
 }
 
+// --- message feedback endpoint ---
+
+func feedbackPath(chatID, msgID string) string {
+	return "/api/chats/" + chatID + "/messages/" + msgID + "/feedback"
+}
+
+func seedAssistantMessage(t *testing.T, env chatTestEnv, chatID uuid.UUID) uuid.UUID {
+	t.Helper()
+	msg := &model.ChatMessage{ChatID: chatID, Role: model.ChatRoleAssistant, Content: "answer"}
+	if err := env.st.AppendMessage(context.Background(), msg); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	return msg.ID
+}
+
+func TestSetMessageFeedback_OwnerRoundTripAndClear(t *testing.T) {
+	env := newChatTestEnv(t, nil)
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken, nil)
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	msgID := seedAssistantMessage(t, env, chat.ID)
+	path := feedbackPath(chat.ID.String(), msgID.String())
+
+	// Rate up.
+	w = doChatRequest(t, env.router, http.MethodPut, path, env.ownerToken, map[string]any{"feedback": "up"})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("up status=%d body=%s", w.Code, w.Body.String())
+	}
+	// Persisted: GET chat shows feedback "up".
+	w = doChatRequest(t, env.router, http.MethodGet, "/api/chats/"+chat.ID.String(), env.ownerToken, nil)
+	var detail chatDetailResponse
+	decodeChatData(t, w.Body, &detail)
+	if len(detail.Messages) != 1 || detail.Messages[0].Feedback == nil || *detail.Messages[0].Feedback != "up" {
+		t.Fatalf("feedback not persisted: %+v", detail.Messages)
+	}
+
+	// Clear (null).
+	w = doChatRequest(t, env.router, http.MethodPut, path, env.ownerToken, map[string]any{"feedback": nil})
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("clear status=%d", w.Code)
+	}
+	w = doChatRequest(t, env.router, http.MethodGet, "/api/chats/"+chat.ID.String(), env.ownerToken, nil)
+	var afterClear chatDetailResponse
+	decodeChatData(t, w.Body, &afterClear)
+	if afterClear.Messages[0].Feedback != nil {
+		t.Errorf("feedback should be cleared, got %v", *afterClear.Messages[0].Feedback)
+	}
+}
+
+func TestSetMessageFeedback_InvalidValueRejected(t *testing.T) {
+	env := newChatTestEnv(t, nil)
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken, nil)
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	msgID := seedAssistantMessage(t, env, chat.ID)
+	w = doChatRequest(t, env.router, http.MethodPut, feedbackPath(chat.ID.String(), msgID.String()),
+		env.ownerToken, map[string]any{"feedback": "meh"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestSetMessageFeedback_NonOwnerReturns404(t *testing.T) {
+	env := newChatTestEnv(t, nil)
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken, nil)
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	msgID := seedAssistantMessage(t, env, chat.ID)
+	w = doChatRequest(t, env.router, http.MethodPut, feedbackPath(chat.ID.String(), msgID.String()),
+		env.otherToken, map[string]any{"feedback": "up"})
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestSetMessageFeedback_AnonRejected(t *testing.T) {
+	env := newChatTestEnv(t, nil)
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken, nil)
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	w = doChatRequest(t, env.router, http.MethodPut, feedbackPath(chat.ID.String(), uuid.New().String()),
+		"", map[string]any{"feedback": "up"})
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
+func TestSetMessageFeedback_UnknownMessageReturns404(t *testing.T) {
+	env := newChatTestEnv(t, nil)
+	w := doChatRequest(t, env.router, http.MethodPost, "/api/chats", env.ownerToken, nil)
+	var chat model.Chat
+	decodeChatData(t, w.Body, &chat)
+	w = doChatRequest(t, env.router, http.MethodPut, feedbackPath(chat.ID.String(), uuid.New().String()),
+		env.ownerToken, map[string]any{"feedback": "up"})
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
 // --- SSE message endpoint ---
 
 func TestPostMessage_StreamsRetrievingEvidenceTextDone(t *testing.T) {

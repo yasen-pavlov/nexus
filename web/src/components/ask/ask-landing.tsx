@@ -4,7 +4,12 @@ import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import { useChats, useCreateChat, useDeleteChat } from "@/hooks/use-chats";
+import {
+  useChats,
+  useCreateChat,
+  useDeleteChat,
+  useUpdateChat,
+} from "@/hooks/use-chats";
 import { useLLMDefault, useLLMModels } from "@/hooks/use-llm-models";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +42,7 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
   const navigate = useNavigate();
   const create = useCreateChat();
   const del = useDeleteChat();
+  const rename = useUpdateChat();
   const modelsQuery = useLLMModels();
   const models = useMemo(() => modelsQuery.data ?? [], [modelsQuery.data]);
   const defaultQuery = useLLMDefault();
@@ -196,6 +202,9 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
                   key={c.id}
                   chat={c}
                   onDelete={(id) => del.mutateAsync(id)}
+                  onRename={async (id, title) => {
+                    await rename.mutateAsync({ id, title });
+                  }}
                 />
               ))}
             </div>

@@ -114,6 +114,7 @@ func NewRouter(
 				r.Get("/{id}", h.GetChat)
 				r.Patch("/{id}", h.UpdateChat)
 				r.Delete("/{id}", h.DeleteChat)
+				r.Put("/{id}/messages/{messageId}/feedback", h.SetMessageFeedback)
 			})
 
 			r.Get("/documents/by-source", h.GetDocumentBySource)

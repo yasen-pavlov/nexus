@@ -14,7 +14,7 @@ import (
 
 const chatCols = `id, user_id, title, default_model, created_at, updated_at`
 const chatColsQualified = `c.id, c.user_id, c.title, c.default_model, c.created_at, c.updated_at`
-const chatMessageCols = `id, chat_id, role, seq, content, model, citations, evidence, tool_calls, usage, stop_reason, rewritten_query, skipped_retrieval, duration_ms, created_at`
+const chatMessageCols = `id, chat_id, role, seq, content, model, citations, evidence, tool_calls, usage, stop_reason, rewritten_query, skipped_retrieval, duration_ms, feedback, created_at`
 
 // ChatUpdate carries the fields a PATCH may set. Nil fields are left untouched.
 type ChatUpdate struct {
@@ -170,6 +170,24 @@ func (s *Store) UpdateChat(ctx context.Context, id uuid.UUID, fields ChatUpdate)
 	return nil
 }
 
+// SetMessageFeedback sets (or clears, when feedback is nil) the thumbs
+// rating on one message. Scoped by chat_id so a message id can only be
+// rated within its own chat; the caller checks chat ownership. Returns
+// ErrNotFound when no message matches (wrong id or wrong chat).
+func (s *Store) SetMessageFeedback(ctx context.Context, chatID, messageID uuid.UUID, feedback *string) error {
+	result, err := s.pool.Exec(ctx,
+		`UPDATE chat_messages SET feedback = $1 WHERE id = $2 AND chat_id = $3`,
+		feedback, messageID, chatID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: set message feedback: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteChat removes a chat. ON DELETE CASCADE clears chat_messages.
 func (s *Store) DeleteChat(ctx context.Context, id uuid.UUID) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM chats WHERE id = $1`, id)
@@ -184,18 +202,19 @@ func (s *Store) DeleteChat(ctx context.Context, id uuid.UUID) error {
 
 func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	var m model.ChatMessage
-	var modelStr, stopReason, rewrittenQuery *string
+	var modelStr, stopReason, rewrittenQuery, feedback *string
 	var durationMs *int
 	var citationsJSON, evidenceJSON, toolCallsJSON, usageJSON []byte
 	err := scan(
 		&m.ID, &m.ChatID, &m.Role, &m.Seq, &m.Content,
 		&modelStr, &citationsJSON, &evidenceJSON, &toolCallsJSON, &usageJSON, &stopReason,
-		&rewrittenQuery, &m.SkippedRetrieval, &durationMs, &m.CreatedAt,
+		&rewrittenQuery, &m.SkippedRetrieval, &durationMs, &feedback, &m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	m.DurationMs = durationMs
+	m.Feedback = feedback
 	if modelStr != nil {
 		m.Model = *modelStr
 	}
@@ -308,11 +327,11 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		msg.ID, msg.ChatID, msg.Role, msg.Seq, msg.Content,
 		nullableString(msg.Model), citationsJSON, evidenceJSON, toolCallsJSON, usageJSON,
 		nullableString(msg.StopReason), nullableString(msg.RewrittenQuery), msg.SkippedRetrieval,
-		msg.DurationMs, msg.CreatedAt,
+		msg.DurationMs, msg.Feedback, msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: insert chat message: %w", err)

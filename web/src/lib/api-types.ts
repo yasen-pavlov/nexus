@@ -433,6 +433,10 @@ export interface ChatMessage {
   // (server-measured). The FE prefers this over locally-derived
   // timings so the label stays stable across page refreshes.
   duration_ms?: number;
+  // feedback is the user's thumbs rating on an assistant message:
+  // "up", "down", or null/absent (no rating). Set via the message
+  // feedback endpoint.
+  feedback?: "up" | "down" | null;
   created_at: string;
 }
 

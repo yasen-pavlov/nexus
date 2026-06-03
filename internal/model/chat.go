@@ -75,9 +75,13 @@ type ChatMessage struct {
 	// can render a consistent label across the live (in-flight) view
 	// and the post-refresh persisted view. Nil for messages written
 	// before migration 019 and for user messages.
-	DurationMs *int      `json:"duration_ms,omitempty"`
-	StopReason string    `json:"stop_reason,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	DurationMs *int   `json:"duration_ms,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
+	// Feedback is the user's thumbs rating on an assistant message:
+	// "up", "down", or nil (no rating). Set via the message-feedback
+	// endpoint; used for Phase 7 telemetry. Always nil for user messages.
+	Feedback  *string   `json:"feedback,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ChunkPreview is the minimum a UI needs to render an evidence card. The

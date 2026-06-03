@@ -1,6 +1,7 @@
-import { AlertCircle, Copy, RotateCcw } from "lucide-react";
+import { AlertCircle, Copy, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { useMessageFeedback, type Feedback } from "@/hooks/use-message-feedback";
 import { Button } from "@/components/ui/button";
 import type {
   ChatMessage,
@@ -282,6 +283,9 @@ export function AssistantTurn({
 
         {showActions && (
           <div className="ml-auto flex items-center gap-1">
+            {/* Thumbs only on a persisted (non-error) assistant message —
+                a rating needs a stored message id to attach to. */}
+            {message && !r.isError && <FeedbackButtons message={message} />}
             <Button
               type="button"
               size="sm"
@@ -310,6 +314,58 @@ export function AssistantTurn({
         )}
       </footer>
     </article>
+  );
+}
+
+/**
+ * Thumbs up/down on a persisted assistant message. Clicking the active
+ * rating again clears it. Optimistic: the local state flips immediately
+ * and the mutation reconciles via a chat-detail refetch on success.
+ */
+function FeedbackButtons({ message }: Readonly<{ message: ChatMessage }>) {
+  const fb = useMessageFeedback();
+  const [rating, setRating] = useState<Feedback>(message.feedback ?? null);
+
+  const choose = (value: "up" | "down") => {
+    const next: Feedback = rating === value ? null : value;
+    setRating(next);
+    fb.mutate(
+      { chatId: message.chat_id, messageId: message.id, feedback: next },
+      { onError: () => setRating(message.feedback ?? null) },
+    );
+  };
+
+  return (
+    <div className="flex items-center" role="group" aria-label="Rate this answer">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        onClick={() => choose("up")}
+        aria-pressed={rating === "up"}
+        aria-label="Good answer"
+        className={cn(
+          "h-7 w-7 px-0",
+          rating === "up" && "text-primary",
+        )}
+      >
+        <ThumbsUp className="size-3.5" aria-hidden />
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        onClick={() => choose("down")}
+        aria-pressed={rating === "down"}
+        aria-label="Bad answer"
+        className={cn(
+          "h-7 w-7 px-0",
+          rating === "down" && "text-destructive",
+        )}
+      >
+        <ThumbsDown className="size-3.5" aria-hidden />
+      </Button>
+    </div>
   );
 }
 

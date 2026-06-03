@@ -35,6 +35,12 @@ type updateChatRequest struct {
 	DefaultModel *string `json:"default_model"`
 }
 
+// messageFeedbackRequest is the body for the message-feedback endpoint.
+// Feedback is "up", "down", or null (to clear the rating).
+type messageFeedbackRequest struct {
+	Feedback *string `json:"feedback"`
+}
+
 // listChatsResponse is the body of GET /api/chats.
 type listChatsResponse struct {
 	Chats []model.ChatListEntry `json:"chats"`
@@ -157,6 +163,52 @@ func (h *handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// SetMessageFeedback godoc
+//
+//	@Summary		Rate an assistant message
+//	@Description	Records a thumbs rating ("up"/"down", or null to clear) on a message. Owner-only; non-owners get 404 to avoid leaking chat existence.
+//	@Tags			chats
+//	@Accept			json
+//	@Produce		json
+//	@Param			id			path	string	true	"Chat ID"
+//	@Param			messageId	path	string	true	"Message ID"
+//	@Param			request		body	messageFeedbackRequest	true	"Feedback"
+//	@Success		204
+//	@Failure		400	{object}	APIResponse
+//	@Failure		404	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/chats/{id}/messages/{messageId}/feedback [put]
+func (h *handler) SetMessageFeedback(w http.ResponseWriter, r *http.Request) {
+	chat, ok := h.loadOwnedChat(w, r)
+	if !ok {
+		return
+	}
+	messageID, err := uuid.Parse(chi.URLParam(r, "messageId"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid message id")
+		return
+	}
+	var req messageFeedbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Feedback != nil && *req.Feedback != "up" && *req.Feedback != "down" {
+		writeError(w, http.StatusBadRequest, "feedback must be 'up', 'down', or null")
+		return
+	}
+	if err := h.store.SetMessageFeedback(r.Context(), chat.ID, messageID, req.Feedback); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		h.log.Error("set message feedback", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "failed to set feedback")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // DeleteChat removes the chat and (via ON DELETE CASCADE) all its messages.
