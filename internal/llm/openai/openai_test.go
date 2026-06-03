@@ -130,7 +130,9 @@ func TestGenerate_StreamsToolCall(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 
-	var args strings.Builder
+	// The adapter emits each tool call once, fully assembled, on the Final
+	// delta (id + name + complete arguments) — see run().
+	var args, name, id string
 	var sawFinal bool
 	var stop llm.StopReason
 	for ev := range ch {
@@ -138,8 +140,9 @@ func TestGenerate_StreamsToolCall(t *testing.T) {
 		case llm.EventToolCall:
 			if ev.ToolCall.Final {
 				sawFinal = true
-			} else {
-				args.WriteString(ev.ToolCall.ArgsJSON)
+				args = ev.ToolCall.ArgsJSON
+				name = ev.ToolCall.Name
+				id = ev.ToolCall.ID
 			}
 		case llm.EventDone:
 			stop = ev.StopReason
@@ -151,8 +154,11 @@ func TestGenerate_StreamsToolCall(t *testing.T) {
 	if !sawFinal {
 		t.Error("expected a Final tool delta")
 	}
-	if got := args.String(); !strings.Contains(got, `"query":"foo"`) {
-		t.Errorf("args = %q", got)
+	if name != "nexus_search" || id != "call_1" {
+		t.Errorf("final tool call id/name = %q/%q, want call_1/nexus_search", id, name)
+	}
+	if !strings.Contains(args, `"query":"foo"`) {
+		t.Errorf("args = %q", args)
 	}
 	if stop != llm.StopToolUse {
 		t.Errorf("stop = %q", stop)

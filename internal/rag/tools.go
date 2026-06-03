@@ -144,21 +144,24 @@ type searchToolDispatcher struct {
 	binaries       ImageStore
 	userID         uuid.UUID
 	supportsVision bool
+	supportsPDF    bool
 	limit          int
 	log            *zap.Logger
 }
 
 // newSearchToolDispatcher constructs a dispatcher for one user turn. The
 // userID is baked in so every dispatched call (search OR open-attachment)
-// stays inside the calling user's permissions. supportsVision decides
-// whether nexus_open_attachment returns an image block or extracted text.
-func newSearchToolDispatcher(search SearchProvider, chunks AttachmentResolver, binaries ImageStore, userID uuid.UUID, supportsVision bool, log *zap.Logger) *searchToolDispatcher {
+// stays inside the calling user's permissions. supportsVision / supportsPDF
+// decide whether nexus_open_attachment returns an image block, a native PDF
+// block, or just extracted text.
+func newSearchToolDispatcher(search SearchProvider, chunks AttachmentResolver, binaries ImageStore, userID uuid.UUID, supportsVision, supportsPDF bool, log *zap.Logger) *searchToolDispatcher {
 	return &searchToolDispatcher{
 		search:         search,
 		chunks:         chunks,
 		binaries:       binaries,
 		userID:         userID,
 		supportsVision: supportsVision,
+		supportsPDF:    supportsPDF,
 		limit:          nexusSearchToolResultLimit,
 		log:            log,
 	}
@@ -325,29 +328,37 @@ func (d *searchToolDispatcher) dispatchOpenAttachment(ctx context.Context, call 
 		MimeType: chunk.MimeType,
 	}
 
-	// Image path: attach the picture when the model can see it and the
-	// binary is cached within the size cap. Otherwise the extracted text
-	// already on the doc carries the content.
-	attachedImage := false
-	if d.supportsVision && isImageMime(chunk.MimeType) {
-		if img, ok := loadCachedImage(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, chunk.MimeType, args.ChunkID); ok {
-			doc.Images = append(doc.Images, img)
-			attachedImage = true
-		}
-	}
-
+	// Media path: attach the picture (vision models) or the native PDF
+	// (PDF-capable models) when the binary is cached within the size cap.
+	// Otherwise the extracted text already on the doc carries the content.
 	title := chunk.Title
 	if title == "" {
 		title = args.ChunkID
 	}
+	attached := "" // "image" | "pdf" | ""
+	switch {
+	case d.supportsVision && isImageMime(chunk.MimeType):
+		if img, ok := loadCachedImage(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, chunk.MimeType, args.ChunkID); ok {
+			doc.Images = append(doc.Images, img)
+			attached = "image"
+		}
+	case d.supportsPDF && isPDFMime(chunk.MimeType):
+		if pdf, ok := loadCachedPDF(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, title, args.ChunkID); ok {
+			doc.PDFs = append(doc.PDFs, pdf)
+			attached = "pdf"
+		}
+	}
+
 	var resultText string
 	switch {
-	case attachedImage:
+	case attached == "image":
 		resultText = fmt.Sprintf("Opened attachment %q (image attached below).", title)
+	case attached == "pdf":
+		resultText = fmt.Sprintf("Opened attachment %q (PDF attached below).", title)
 	case content != "":
 		resultText = fmt.Sprintf("Opened attachment %q:\n%s", title, content)
 	default:
-		resultText = fmt.Sprintf("Opened attachment %q, but it has no viewable image or extractable text.", title)
+		resultText = fmt.Sprintf("Opened attachment %q, but it has no viewable content or extractable text.", title)
 	}
 
 	return ToolOutcome{

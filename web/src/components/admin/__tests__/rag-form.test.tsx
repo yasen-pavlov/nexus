@@ -118,7 +118,7 @@ describe("RAGForm", () => {
     const images = screen.getByRole("spinbutton", { name: "Max images per turn" });
     expect(images).not.toBeDisabled();
     await user.click(
-      screen.getByRole("switch", { name: /Attach images to vision models/ }),
+      screen.getByRole("switch", { name: /Attach images/ }),
     );
     expect(images).toBeDisabled();
   });

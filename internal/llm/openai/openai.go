@@ -83,28 +83,32 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.ChatCompletionNewPara
 		messages = append(messages, sdk.SystemMessage(systemBody))
 	}
 
-	// Multi-modal: images ride on the LAST user message as image_url
-	// content parts, so they sit with the question the model is answering.
-	// The orchestrator only attaches images for vision models.
+	// Multi-modal: images + PDFs ride on the LAST user message as content
+	// parts (image_url / file), so they sit with the question the model is
+	// answering. The orchestrator only attaches these for capable models.
 	images := llm.CollectImages(req.Documents)
+	pdfs := llm.CollectPDFs(req.Documents)
 	lastUser := llm.LastUserIndex(req.Messages)
 	for i, m := range req.Messages {
 		switch m.Role {
 		case llm.RoleSystem:
 			// Already collapsed into the synthetic system message above.
 		case llm.RoleUser:
-			if i == lastUser && len(images) > 0 {
-				parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(images)+1)
+			if i == lastUser && (len(images) > 0 || len(pdfs) > 0) {
+				parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(images)+len(pdfs)+1)
 				parts = append(parts, sdk.TextContentPart(m.Content))
 				for _, img := range images {
 					parts = append(parts, ImageContentBlock(img))
+				}
+				for _, pdf := range pdfs {
+					parts = append(parts, PDFContentBlock(pdf))
 				}
 				messages = append(messages, sdk.UserMessage(parts))
 			} else {
 				messages = append(messages, sdk.UserMessage(m.Content))
 			}
 		case llm.RoleAssistant:
-			messages = append(messages, sdk.AssistantMessage(m.Content))
+			messages = append(messages, assistantMessage(m))
 		case llm.RoleTool:
 			messages = append(messages, sdk.ToolMessage(m.Content, m.ToolCallID))
 		}
@@ -155,35 +159,30 @@ func (c *Client) run(ctx context.Context, params sdk.ChatCompletionNewParams, ou
 				}
 			}
 
-			// Tool-call deltas: emit incrementally as args fragments arrive.
-			for _, dt := range ch.Delta.ToolCalls {
-				ev := llm.Event{
-					Kind: llm.EventToolCall,
-					ToolCall: &llm.ToolCallDelta{
-						ID:       dt.ID,
-						Name:     dt.Function.Name,
-						ArgsJSON: dt.Function.Arguments,
-					},
-				}
-				if !sendOrCancel(ctx, out, ev) {
-					return
-				}
-			}
+			// NB: we deliberately do NOT forward the raw streamed
+			// tool-call fragments here. OpenAI streams parallel tool calls
+			// with the id+name only on the FIRST fragment per `index` and
+			// empty-id continuation fragments carrying just argument text —
+			// forwarding those makes the orchestrator (which buffers by id)
+			// synthesise phantom calls with empty names. Instead we let the
+			// SDK accumulator reassemble each call and emit it once, complete,
+			// below.
 
 			if string(ch.FinishReason) != "" {
 				stopReason = mapFinishReason(string(ch.FinishReason))
 			}
 		}
 
-		// When a tool call finishes, fire a Final marker so the orchestrator
-		// knows the args are complete and ready to json.Unmarshal.
+		// Emit each tool call exactly once, fully assembled (id + name +
+		// complete arguments), the moment the accumulator reports it done.
 		if tc, ok := acc.JustFinishedToolCall(); ok {
 			if !sendOrCancel(ctx, out, llm.Event{
 				Kind: llm.EventToolCall,
 				ToolCall: &llm.ToolCallDelta{
-					ID:    tc.ID,
-					Name:  tc.Name,
-					Final: true,
+					ID:       tc.ID,
+					Name:     tc.Name,
+					ArgsJSON: tc.Arguments,
+					Final:    true,
 				},
 			}) {
 				return
@@ -294,4 +293,48 @@ func ImageContentBlock(img llm.Image) sdk.ChatCompletionContentPartUnionParam {
 			ImageURL: sdk.ChatCompletionContentPartImageImageURLParam{URL: dataURI},
 		},
 	}
+}
+
+// assistantMessage builds an assistant message, carrying tool_calls when
+// the turn issued any. OpenAI rejects a request where a `tool` message
+// doesn't follow an assistant message that declares the matching
+// tool_calls ("messages with role 'tool' must be a response to a
+// preceding message with 'tool_calls'"), so a multi-round tool turn MUST
+// re-emit the assistant's tool_calls — sdk.AssistantMessage(content) alone
+// drops them.
+func assistantMessage(m llm.Message) sdk.ChatCompletionMessageParamUnion {
+	if len(m.ToolCalls) == 0 {
+		return sdk.AssistantMessage(m.Content)
+	}
+	asst := sdk.ChatCompletionAssistantMessageParam{}
+	if m.Content != "" {
+		asst.Content.OfString = sdk.String(m.Content)
+	}
+	for _, tc := range m.ToolCalls {
+		asst.ToolCalls = append(asst.ToolCalls, sdk.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &sdk.ChatCompletionMessageFunctionToolCallParam{
+				ID: tc.ID,
+				Function: sdk.ChatCompletionMessageFunctionToolCallFunctionParam{
+					Name:      tc.Name,
+					Arguments: tc.ArgsJSON,
+				},
+			},
+		})
+	}
+	return sdk.ChatCompletionMessageParamUnion{OfAssistant: &asst}
+}
+
+// PDFContentBlock builds a native-PDF file content part (Phase 6b). OpenAI
+// accepts a base64 `file_data` data URI plus a filename; the model extracts
+// the text and renders pages so visual content is visible.
+func PDFContentBlock(pdf llm.PDF) sdk.ChatCompletionContentPartUnionParam {
+	dataURI := fmt.Sprintf("data:application/pdf;base64,%s", base64.StdEncoding.EncodeToString(pdf.Data))
+	filename := pdf.Filename
+	if filename == "" {
+		filename = "document.pdf"
+	}
+	return sdk.FileContentPart(sdk.ChatCompletionContentPartFileFileParam{
+		FileData: sdk.String(dataURI),
+		Filename: sdk.String(filename),
+	})
 }

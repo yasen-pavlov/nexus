@@ -550,10 +550,11 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 			return
 		}
 		docs = buildLLMDocs(result.Documents, o.cfg.MaxEvidenceChunks)
-		// Multi-modal: attach cached image binaries to the docs when the
-		// model can see them and the admin hasn't disabled it. Best-effort
-		// and cache-only — never blocks or fails the turn (master plan §8).
-		o.attachImages(ctx, docs, result.Documents, info, settings)
+		// Multi-modal: attach cached images (vision models) and PDFs
+		// (native-PDF models) to the docs when the admin hasn't disabled
+		// it. Best-effort and cache-only — never blocks or fails the turn
+		// (master plan §8).
+		o.attachMedia(ctx, docs, result.Documents, info, settings)
 		previews := buildPreviews(result.Documents, o.cfg.MaxEvidenceChunks)
 		evidence = previews
 		out <- Event{Kind: EvEvidence, Evidence: previews}
@@ -580,7 +581,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 	//                     (master plan §2 hard constraint).
 	documents := docs
 	rolledMessages := append(history, llm.Message{Role: llm.RoleUser, Content: in.Content})
-	dispatcher := newSearchToolDispatcher(o.search, o.attachments, o.binaries, in.UserID, info.SupportsVision, o.log)
+	dispatcher := newSearchToolDispatcher(o.search, o.attachments, o.binaries, in.UserID, info.SupportsVision, info.SupportsPDF, o.log)
 	maxToolRounds := settings.MaxToolRounds
 	useNativeCitations := info.SupportsCitations
 

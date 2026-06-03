@@ -10,25 +10,29 @@ import (
 	"go.uber.org/zap"
 )
 
-// maxImageBytes caps a single attached image. 5 MB keeps a 4-image turn
-// well under every provider's per-request limit and stops a giant indexed
-// image from blowing up token cost (master plan §8).
-const maxImageBytes = 5 << 20
+// maxAttachmentBytes caps a single attached image or PDF. 5 MB keeps a
+// 4-attachment turn well under every provider's per-request limit and
+// stops a giant indexed file from blowing up token cost (master plan §8).
+const maxAttachmentBytes = 5 << 20
 
-// attachImages fills Document.Images for the docs a vision-capable model
-// can see, drawing from two sources in reranked order until the per-turn
-// budget is spent:
+// attachMedia fills Document.Images and Document.PDFs for a model that can
+// consume them, drawing from two sources in reranked order until the
+// per-turn budget is spent:
 //
-//	A. a retrieved chunk that is ITSELF an image (mime image/*);
-//	B. image attachments of a retrieved email / Telegram parent, found by
-//	   walking the reverse `attachment_of` edge.
+//	A. a retrieved chunk that is itself an image or a PDF;
+//	B. image/PDF attachments of a retrieved email / Telegram parent, found
+//	   by walking the reverse `attachment_of` edge.
 //
-// Cache-only: a binary miss is skipped silently — never a synchronous
-// refetch, which would add latency/cost on the hot answer path. Mutates
-// docs in place; a no-op when deps are nil, the model can't see images,
-// the admin disabled multimodal, or the budget is zero.
-func (o *Orchestrator) attachImages(ctx context.Context, docs []llm.Document, hits []model.DocumentHit, info llm.ModelInfo, s Settings) {
-	if o.binaries == nil || !info.SupportsVision || !s.EnableMultimodal {
+// Images go to vision models (SupportsVision); PDFs go to models with
+// native PDF support (SupportsPDF — Anthropic + OpenAI). The budget is
+// shared across both kinds. Cache-only: a binary miss is skipped silently
+// — never a synchronous refetch on the answer path. Mutates docs in place;
+// a no-op when deps are nil, multimodal is disabled, the model can take
+// neither kind, or the budget is zero.
+func (o *Orchestrator) attachMedia(ctx context.Context, docs []llm.Document, hits []model.DocumentHit, info llm.ModelInfo, s Settings) {
+	canImg := info.SupportsVision
+	canPDF := info.SupportsPDF
+	if o.binaries == nil || !s.EnableMultimodal || (!canImg && !canPDF) {
 		return
 	}
 	budget := s.MaxImagesPerTurn
@@ -43,29 +47,26 @@ func (o *Orchestrator) attachImages(ctx context.Context, docs []llm.Document, hi
 		docByID[docs[i].ID] = &docs[i]
 	}
 
-	// Pass A: retrieved image chunks. Stash non-image parents for pass B.
+	// Pass A: retrieved media chunks. Stash non-media parents for pass B.
 	var parentIDs, parentSourceIDs []string
 	for _, h := range hits {
 		if budget <= 0 {
 			break
 		}
-		d := docByID[h.ID.String()]
-		if d == nil {
-			continue // hit beyond the doc cap — no Document to attach to
-		}
-		if isImageMime(h.MimeType) {
-			if img, ok := loadCachedImage(ctx, o.binaries, h.SourceType, h.SourceName, h.SourceID, h.MimeType, h.ID.String()); ok {
-				d.Images = append(d.Images, img)
-				budget--
-			}
+		if !isAttachableMedia(h.MimeType) {
+			parentIDs = append(parentIDs, h.ID.String())
+			parentSourceIDs = append(parentSourceIDs, h.SourceID)
 			continue
 		}
-		parentIDs = append(parentIDs, h.ID.String())
-		parentSourceIDs = append(parentSourceIDs, h.SourceID)
+		if d := docByID[h.ID.String()]; d != nil {
+			if o.attachOne(ctx, d, h.SourceType, h.SourceName, h.SourceID, h.MimeType, h.ID.String(), h.Title, canImg, canPDF) {
+				budget--
+			}
+		}
 	}
 
-	// Pass B: walk attachment_of for the non-image parents in one batched
-	// query, then hang each image attachment off the parent it references.
+	// Pass B: walk attachment_of for the non-media parents in one batched
+	// query, then hang each media attachment off the parent it references.
 	if budget <= 0 || o.attachments == nil || len(parentIDs) == 0 {
 		return
 	}
@@ -84,18 +85,36 @@ func (o *Orchestrator) attachImages(ctx context.Context, docs []llm.Document, hi
 		if budget <= 0 {
 			break
 		}
-		if !isImageMime(att.MimeType) {
+		if !isAttachableMedia(att.MimeType) {
 			continue
 		}
 		parent := attachmentParent(att, docByID, docBySourceID)
 		if parent == nil {
 			continue
 		}
-		if img, ok := loadCachedImage(ctx, o.binaries, att.SourceType, att.SourceName, att.SourceID, att.MimeType, att.ID); ok {
-			parent.Images = append(parent.Images, img)
+		if o.attachOne(ctx, parent, att.SourceType, att.SourceName, att.SourceID, att.MimeType, att.ID, att.Title, canImg, canPDF) {
 			budget--
 		}
 	}
+}
+
+// attachOne loads one cached binary and appends it to the doc as the right
+// payload kind (image for vision models, PDF for native-PDF models).
+// Returns true when it attached something (and thus consumed budget).
+func (o *Orchestrator) attachOne(ctx context.Context, d *llm.Document, sourceType, sourceName, sourceID, mime, citeID, filename string, canImg, canPDF bool) bool {
+	switch {
+	case canImg && isImageMime(mime):
+		if img, ok := loadCachedImage(ctx, o.binaries, sourceType, sourceName, sourceID, mime, citeID); ok {
+			d.Images = append(d.Images, img)
+			return true
+		}
+	case canPDF && isPDFMime(mime):
+		if pdf, ok := loadCachedPDF(ctx, o.binaries, sourceType, sourceName, sourceID, filename, citeID); ok {
+			d.PDFs = append(d.PDFs, pdf)
+			return true
+		}
+	}
+	return false
 }
 
 // attachmentParent resolves the Document an attachment chunk hangs off by
@@ -120,28 +139,57 @@ func attachmentParent(att model.Chunk, byID, bySourceID map[string]*llm.Document
 	return nil
 }
 
-// loadCachedImage reads a cached binary (cache-only) and wraps it as an
-// llm.Image, enforcing the per-image size cap. Returns ok=false on a nil
-// store, cache miss, oversize, or read error so the caller silently skips
-// it. Shared by the auto-attachment pass and the nexus_open_attachment
-// tool dispatcher.
-func loadCachedImage(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID, mime, citeID string) (llm.Image, bool) {
+// loadCachedBytes reads a cached binary (cache-only) enforcing the size
+// cap. Returns ok=false on a nil store, cache miss, oversize, or read
+// error so the caller silently skips it.
+func loadCachedBytes(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID string) ([]byte, bool) {
 	if store == nil {
-		return llm.Image{}, false
+		return nil, false
 	}
 	rc, err := store.Get(ctx, sourceType, sourceName, sourceID)
 	if err != nil {
-		return llm.Image{}, false
+		return nil, false
 	}
 	defer func() { _ = rc.Close() }()
-	data, err := io.ReadAll(io.LimitReader(rc, maxImageBytes+1))
-	if err != nil || len(data) == 0 || len(data) > maxImageBytes {
+	data, err := io.ReadAll(io.LimitReader(rc, maxAttachmentBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxAttachmentBytes {
+		return nil, false
+	}
+	return data, true
+}
+
+// loadCachedImage wraps loadCachedBytes as an llm.Image. Shared by the
+// auto-attach pass and the nexus_open_attachment tool dispatcher.
+func loadCachedImage(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID, mime, citeID string) (llm.Image, bool) {
+	data, ok := loadCachedBytes(ctx, store, sourceType, sourceName, sourceID)
+	if !ok {
 		return llm.Image{}, false
 	}
 	return llm.Image{MediaType: mime, Data: data, SourceID: citeID}, true
 }
 
+// loadCachedPDF wraps loadCachedBytes as an llm.PDF.
+func loadCachedPDF(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID, filename, citeID string) (llm.PDF, bool) {
+	data, ok := loadCachedBytes(ctx, store, sourceType, sourceName, sourceID)
+	if !ok {
+		return llm.PDF{}, false
+	}
+	return llm.PDF{MediaType: "application/pdf", Data: data, Filename: filename, SourceID: citeID}, true
+}
+
 // isImageMime reports whether a mime type is an image/* type.
 func isImageMime(mime string) bool {
 	return strings.HasPrefix(strings.ToLower(mime), "image/")
+}
+
+// isPDFMime reports whether a mime type is application/pdf.
+func isPDFMime(mime string) bool {
+	return strings.HasPrefix(strings.ToLower(mime), "application/pdf")
+}
+
+// isAttachableMedia reports whether a mime is something we can attach to a
+// capable model (image or PDF) — used to decide direct-attach vs. treat
+// the chunk as a parent to walk for attachments.
+func isAttachableMedia(mime string) bool {
+	return isImageMime(mime) || isPDFMime(mime)
 }

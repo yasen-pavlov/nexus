@@ -95,13 +95,16 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 		block := docToBlock(doc, req.EnableCache && isLast)
 		leadingDocBlocks = append(leadingDocBlocks, block)
 	}
-	// Multi-modal: append any attached images as base64 image blocks in
+	// Multi-modal: append any attached images + PDFs as content blocks in
 	// the same synthetic user message as the documents, so Claude reads
-	// them alongside the cited text. The orchestrator only populates
-	// Images for vision-capable models, so no capability check here.
+	// them alongside the cited text. The orchestrator only populates these
+	// for capable models, so no capability check here.
 	for _, doc := range req.Documents {
 		for _, img := range doc.Images {
 			leadingDocBlocks = append(leadingDocBlocks, ImageContentBlock(img))
+		}
+		for _, pdf := range doc.PDFs {
+			leadingDocBlocks = append(leadingDocBlocks, PDFContentBlock(pdf))
 		}
 	}
 
@@ -446,4 +449,27 @@ func sendOrCancel(ctx context.Context, out chan<- llm.Event, ev llm.Event) bool 
 // can map llm.Image → SDK block without re-importing base64.
 func ImageContentBlock(img llm.Image) sdk.ContentBlockParamUnion {
 	return sdk.NewImageBlockBase64(img.MediaType, base64.StdEncoding.EncodeToString(img.Data))
+}
+
+// PDFContentBlock builds a native-PDF document block from raw bytes (Phase
+// 6b). Claude reads the PDF's text AND renders its pages, so charts/scans/
+// signatures that text extraction loses become visible. Title carries the
+// filename for provenance.
+//
+// Citations MUST be enabled to match the text document blocks: Anthropic
+// rejects a request that mixes citations-enabled and citations-disabled
+// `document` blocks ("Citations must be either enabled or disabled on all
+// document blocks"). Since every retrieved-text block enables citations,
+// the PDF block must too.
+func PDFContentBlock(pdf llm.PDF) sdk.ContentBlockParamUnion {
+	block := sdk.DocumentBlockParam{
+		Source: sdk.DocumentBlockParamSourceUnion{
+			OfBase64: &sdk.Base64PDFSourceParam{Data: base64.StdEncoding.EncodeToString(pdf.Data)},
+		},
+		Citations: sdk.CitationsConfigParam{Enabled: sdk.Bool(true)},
+	}
+	if pdf.Filename != "" {
+		block.Title = sdk.String(pdf.Filename)
+	}
+	return sdk.ContentBlockParamUnion{OfDocument: &block}
 }

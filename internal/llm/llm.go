@@ -46,6 +46,10 @@ type Document struct {
 	Content string
 	// Optional multi-modal payload. Adapters that don't support vision drop it.
 	Images []Image
+	// Optional native-PDF payload. Anthropic + OpenAI accept PDF bytes
+	// directly (server-side text + page rendering); adapters without
+	// native PDF support drop it. Selected only for SupportsPDF models.
+	PDFs []PDF
 }
 
 // Image is an inline image attached to a Document. Adapters base64-encode as
@@ -56,6 +60,16 @@ type Image struct {
 	SourceID  string // for citation back-mapping
 }
 
+// PDF is a native PDF attached to a Document. Adapters base64-encode as
+// each provider's wire format requires (Anthropic document block / OpenAI
+// file content part).
+type PDF struct {
+	MediaType string // always "application/pdf" today
+	Data      []byte // raw bytes
+	Filename  string // for provenance / OpenAI's required filename
+	SourceID  string // for back-mapping
+}
+
 // CollectImages flattens every image attached across the documents, in
 // document order. Adapters mount the result on the user turn so a
 // vision-capable model sees them alongside the question it's answering.
@@ -63,6 +77,16 @@ func CollectImages(docs []Document) []Image {
 	var out []Image
 	for _, d := range docs {
 		out = append(out, d.Images...)
+	}
+	return out
+}
+
+// CollectPDFs flattens every PDF attached across the documents, in
+// document order. Mirrors CollectImages for the native-PDF path.
+func CollectPDFs(docs []Document) []PDF {
+	var out []PDF
+	for _, d := range docs {
+		out = append(out, d.PDFs...)
 	}
 	return out
 }
@@ -211,6 +235,10 @@ type ModelInfo struct {
 	SupportsCitations bool
 	SupportsTools     bool
 	SupportsVision    bool
+	// SupportsPDF is true when the provider accepts native PDF input
+	// (Anthropic document blocks, OpenAI file content parts). Ollama is
+	// false — it would need page rasterization, deferred.
+	SupportsPDF       bool
 	SupportsCaching   bool
 	InputCostPerMtok  float64
 	OutputCostPerMtok float64

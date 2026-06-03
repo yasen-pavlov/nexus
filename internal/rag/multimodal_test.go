@@ -65,7 +65,7 @@ func TestAttachImages_RetrievedImageChunk(t *testing.T) {
 	fis := &fakeImageStore{blobs: map[string][]byte{key("imap", "mail", "INBOX:1:att:0"): []byte("PNGDATA")}}
 	o := &Orchestrator{binaries: fis, log: zap.NewNop()}
 
-	o.attachImages(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
 		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
 
 	if len(docs[0].Images) != 1 {
@@ -94,7 +94,7 @@ func TestAttachImages_SkipWhenNoVisionOrDisabled(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			docs := buildLLMDocs(hits, 10)
-			o.attachImages(context.Background(), docs, hits, tc.info, tc.s)
+			o.attachMedia(context.Background(), docs, hits, tc.info, tc.s)
 			if len(docs[0].Images) != 0 {
 				t.Errorf("Images = %d, want 0", len(docs[0].Images))
 			}
@@ -114,7 +114,7 @@ func TestAttachImages_BudgetCap(t *testing.T) {
 		key("imap", "m", "s2"): []byte("2"),
 	}}
 	o := &Orchestrator{binaries: fis, log: zap.NewNop()}
-	o.attachImages(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
 		Settings{EnableMultimodal: true, MaxImagesPerTurn: 1})
 
 	total := len(docs[0].Images) + len(docs[1].Images)
@@ -131,11 +131,11 @@ func TestAttachImages_SkipsOversizeAndCacheMiss(t *testing.T) {
 	}
 	docs := buildLLMDocs(hits, 10)
 	fis := &fakeImageStore{blobs: map[string][]byte{
-		key("imap", "m", "big"): make([]byte, maxImageBytes+1), // over cap
+		key("imap", "m", "big"): make([]byte, maxAttachmentBytes+1), // over cap
 		// "miss" intentionally absent → cache miss
 	}}
 	o := &Orchestrator{binaries: fis, log: zap.NewNop()}
-	o.attachImages(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
 		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
 
 	if len(docs[0].Images) != 0 || len(docs[1].Images) != 0 {
@@ -158,7 +158,7 @@ func TestAttachImages_WalksAttachmentEdge(t *testing.T) {
 	fis := &fakeImageStore{blobs: map[string][]byte{key("imap", "mail", "INBOX:9:att:0"): []byte("JPEG")}}
 	o := &Orchestrator{binaries: fis, attachments: far, log: zap.NewNop()}
 
-	o.attachImages(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true},
 		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
 
 	if len(docs[0].Images) != 1 {
@@ -166,6 +166,103 @@ func TestAttachImages_WalksAttachmentEdge(t *testing.T) {
 	}
 	if string(docs[0].Images[0].Data) != "JPEG" {
 		t.Errorf("walked image payload wrong: %q", docs[0].Images[0].Data)
+	}
+}
+
+func TestAttachMedia_RetrievedPDFChunk(t *testing.T) {
+	id := uuid.New()
+	hits := []model.DocumentHit{{Document: model.Document{
+		ID: id, Title: "invoice.pdf", SourceType: "paperless", SourceName: "p", SourceID: "42", MimeType: "application/pdf",
+	}}}
+	docs := buildLLMDocs(hits, 10)
+	fis := &fakeImageStore{blobs: map[string][]byte{key("paperless", "p", "42"): []byte("%PDF-1.7...")}}
+	o := &Orchestrator{binaries: fis, log: zap.NewNop()}
+
+	// PDF-capable, NOT vision — proves the PDF path is independent of vision.
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsPDF: true},
+		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
+
+	if len(docs[0].PDFs) != 1 {
+		t.Fatalf("PDFs = %d, want 1", len(docs[0].PDFs))
+	}
+	if docs[0].PDFs[0].Filename != "invoice.pdf" || string(docs[0].PDFs[0].Data) != "%PDF-1.7..." {
+		t.Errorf("pdf payload wrong: %+v", docs[0].PDFs[0])
+	}
+	if len(docs[0].Images) != 0 {
+		t.Errorf("a PDF should not land in Images")
+	}
+}
+
+func TestAttachMedia_PDFSkippedWhenModelLacksPDF(t *testing.T) {
+	id := uuid.New()
+	hits := []model.DocumentHit{{Document: model.Document{
+		ID: id, Title: "invoice.pdf", SourceType: "paperless", SourceName: "p", SourceID: "42", MimeType: "application/pdf",
+	}}}
+	docs := buildLLMDocs(hits, 10)
+	fis := &fakeImageStore{blobs: map[string][]byte{key("paperless", "p", "42"): []byte("%PDF")}}
+	o := &Orchestrator{binaries: fis, log: zap.NewNop()}
+
+	// Vision-only model (e.g. ollama llama-vision): no native PDF → skip.
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsVision: true, SupportsPDF: false},
+		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
+
+	if len(docs[0].PDFs) != 0 {
+		t.Errorf("PDFs = %d, want 0 (model lacks native PDF)", len(docs[0].PDFs))
+	}
+}
+
+func TestOpenAttachment_PDFForPDFModel(t *testing.T) {
+	owner := uuid.New()
+	id := uuid.New().String()
+	far := &fakeAttachmentResolver{byID: map[string]*model.Chunk{id: {
+		ID: id, Title: "report.pdf", SourceType: "paperless", SourceName: "p", SourceID: "7",
+		MimeType: "application/pdf", Content: "Q3 report text", OwnerID: owner.String(),
+	}}}
+	fis := &fakeImageStore{blobs: map[string][]byte{key("paperless", "p", "7"): []byte("%PDF-data")}}
+	// vision=false, pdf=true — isolates the native-PDF branch.
+	d := newSearchToolDispatcher(nil, far, fis, owner, false, true, zap.NewNop())
+
+	out := d.Dispatch(context.Background(), openAttachCall(id))
+	if len(out.Docs) != 1 || len(out.Docs[0].PDFs) != 1 {
+		t.Fatalf("want 1 doc with 1 PDF, got %d docs", len(out.Docs))
+	}
+	if out.Docs[0].PDFs[0].Filename != "report.pdf" {
+		t.Errorf("pdf filename = %q, want report.pdf", out.Docs[0].PDFs[0].Filename)
+	}
+	if !strings.Contains(out.ResultText, "PDF attached") {
+		t.Errorf("ResultText = %q", out.ResultText)
+	}
+}
+
+func TestOpenAttachment_PDFFallsBackToTextWithoutPDFSupport(t *testing.T) {
+	owner := uuid.New()
+	id := uuid.New().String()
+	far := &fakeAttachmentResolver{byID: map[string]*model.Chunk{id: {
+		ID: id, Title: "report.pdf", SourceType: "paperless", MimeType: "application/pdf",
+		Content: "Q3 revenue up 12%", OwnerID: owner.String(),
+	}}}
+	// neither vision nor pdf → text path.
+	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, false, false, zap.NewNop())
+
+	out := d.Dispatch(context.Background(), openAttachCall(id))
+	if len(out.Docs) != 1 || len(out.Docs[0].PDFs) != 0 {
+		t.Fatalf("should attach no PDF, got %d pdfs", len(out.Docs[0].PDFs))
+	}
+	if !strings.Contains(out.ResultText, "Q3 revenue") {
+		t.Errorf("ResultText should carry extracted text: %q", out.ResultText)
+	}
+}
+
+func TestIsPDFMime(t *testing.T) {
+	for _, m := range []string{"application/pdf", "APPLICATION/PDF"} {
+		if !isPDFMime(m) {
+			t.Errorf("isPDFMime(%q) = false, want true", m)
+		}
+	}
+	for _, m := range []string{"", "image/png", "text/plain"} {
+		if isPDFMime(m) {
+			t.Errorf("isPDFMime(%q) = true, want false", m)
+		}
 	}
 }
 
@@ -207,7 +304,7 @@ func TestOpenAttachment_ImageHappyPath(t *testing.T) {
 		MimeType: "image/png", OwnerID: owner.String(),
 	}}}
 	fis := &fakeImageStore{blobs: map[string][]byte{key("imap", "mail", "INBOX:1:att:0"): []byte("PNG")}}
-	d := newSearchToolDispatcher(nil, far, fis, owner, true, zap.NewNop())
+	d := newSearchToolDispatcher(nil, far, fis, owner, true, false, zap.NewNop())
 
 	out := d.Dispatch(context.Background(), openAttachCall(id))
 	if len(out.Docs) != 1 || len(out.Docs[0].Images) != 1 {
@@ -234,7 +331,7 @@ func TestOpenAttachment_NonVisionReturnsText(t *testing.T) {
 		ID: id, Title: "notes.pdf", SourceType: "paperless", SourceName: "p", SourceID: "42",
 		MimeType: "application/pdf", Content: "quarterly revenue up 12%", OwnerID: owner.String(),
 	}}}
-	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, false, zap.NewNop())
+	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, false, false, zap.NewNop())
 
 	out := d.Dispatch(context.Background(), openAttachCall(id))
 	if len(out.Docs) != 1 || len(out.Docs[0].Images) != 0 {
@@ -252,7 +349,7 @@ func TestOpenAttachment_OwnershipDenied(t *testing.T) {
 	far := &fakeAttachmentResolver{byID: map[string]*model.Chunk{id: {
 		ID: id, Title: "secret.png", SourceType: "imap", MimeType: "image/png", OwnerID: other.String(), Shared: false,
 	}}}
-	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, true, zap.NewNop())
+	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, true, false, zap.NewNop())
 
 	out := d.Dispatch(context.Background(), openAttachCall(id))
 	if len(out.Docs) != 0 {
@@ -269,7 +366,7 @@ func TestOpenAttachment_SharedReadableByNonOwner(t *testing.T) {
 	far := &fakeAttachmentResolver{byID: map[string]*model.Chunk{id: {
 		ID: id, Title: "shared.txt", SourceType: "filesystem", Content: "hello", OwnerID: uuid.New().String(), Shared: true,
 	}}}
-	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, false, zap.NewNop())
+	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, false, false, zap.NewNop())
 
 	out := d.Dispatch(context.Background(), openAttachCall(id))
 	if len(out.Docs) != 1 {
@@ -280,7 +377,7 @@ func TestOpenAttachment_SharedReadableByNonOwner(t *testing.T) {
 func TestOpenAttachment_NotFoundAndBadArgs(t *testing.T) {
 	owner := uuid.New()
 	far := &fakeAttachmentResolver{byID: map[string]*model.Chunk{}}
-	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, true, zap.NewNop())
+	d := newSearchToolDispatcher(nil, far, &fakeImageStore{}, owner, true, false, zap.NewNop())
 
 	if out := d.Dispatch(context.Background(), openAttachCall("ghost")); !strings.Contains(out.ResultText, "no attachment found") {
 		t.Errorf("missing chunk: %q", out.ResultText)
@@ -294,7 +391,7 @@ func TestOpenAttachment_NotFoundAndBadArgs(t *testing.T) {
 }
 
 func TestOpenAttachment_UnavailableWhenNoResolver(t *testing.T) {
-	d := newSearchToolDispatcher(nil, nil, nil, uuid.New(), true, zap.NewNop())
+	d := newSearchToolDispatcher(nil, nil, nil, uuid.New(), true, false, zap.NewNop())
 	out := d.Dispatch(context.Background(), openAttachCall("x"))
 	if !strings.Contains(out.ResultText, "not available") {
 		t.Errorf("ResultText = %q, want unavailable", out.ResultText)

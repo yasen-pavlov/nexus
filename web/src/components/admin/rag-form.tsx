@@ -116,18 +116,19 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
         <label className="flex max-w-xl cursor-pointer items-start justify-between gap-4">
           <span className="flex flex-col gap-0.5">
             <span className="text-[13px] font-medium">
-              Attach images to vision models
+              Attach images &amp; PDFs to capable models
             </span>
             <span className="text-[12px] leading-[1.5] text-muted-foreground">
-              When a retrieved chunk (or its attachment) is a cached image and
-              the chosen model can see images, attach it to the prompt so the
-              model can describe what's in it.
+              When a retrieved chunk (or its attachment) is a cached image or
+              PDF and the chosen model supports it, attach it to the prompt so
+              the model can see charts, scans, and pictures — not just the
+              extracted text. Anthropic and OpenAI read PDFs natively.
             </span>
           </span>
           <Switch
             checked={form.enable_multimodal}
             onCheckedChange={(v) => patch({ enable_multimodal: v })}
-            aria-label="Attach images to vision models"
+            aria-label="Attach images and PDFs to capable models"
           />
         </label>
 
@@ -151,8 +152,9 @@ function RAGFormInner({ ctx }: Readonly<{ ctx: UseRAGSettings }>) {
             }
           />
           <p className="text-[12px] leading-[1.5] text-muted-foreground">
-            Cap on cached images fed to the model each turn. <code>0</code>{" "}
-            attaches none. Capped at {MAX_IMAGES} to keep token cost bounded.
+            Cap on cached attachments (images + PDFs, shared) fed to the model
+            each turn. <code>0</code> attaches none. Capped at {MAX_IMAGES} to
+            keep token cost bounded.
           </p>
         </div>
 

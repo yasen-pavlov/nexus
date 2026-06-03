@@ -42,6 +42,65 @@ func TestDocToBlock_AddsCachingAndContext(t *testing.T) {
 	}
 }
 
+func TestPDFContentBlock_BuildsBase64Document(t *testing.T) {
+	block := PDFContentBlock(llm.PDF{Data: []byte("%PDF-1.7 body"), Filename: "report.pdf"})
+	if block.OfDocument == nil {
+		t.Fatal("expected document content block")
+	}
+	if block.OfDocument.Source.OfBase64 == nil {
+		t.Fatal("expected base64 PDF source")
+	}
+	if block.OfDocument.Source.OfBase64.Data == "" {
+		t.Error("expected base64 data to be set")
+	}
+	if got := block.OfDocument.Title; got.Value != "report.pdf" {
+		t.Errorf("title = %v, want report.pdf", got)
+	}
+}
+
+func TestBuildParams_AttachesPDFAndImageBlocks(t *testing.T) {
+	c := New("k", "", nil)
+	params, err := c.buildParams(llm.GenerateRequest{
+		Model: "claude-x",
+		Documents: []llm.Document{{
+			ID: "d1", Content: "body",
+			Images: []llm.Image{{MediaType: "image/png", Data: []byte("img")}},
+			PDFs:   []llm.PDF{{Data: []byte("%PDF"), Filename: "f.pdf"}},
+		}},
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "describe these"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawImage, sawPDFOrDoc int
+	for _, m := range params.Messages {
+		for _, b := range m.Content {
+			if b.OfImage != nil {
+				sawImage++
+			}
+			if b.OfDocument != nil {
+				sawPDFOrDoc++
+			}
+		}
+	}
+	if sawImage != 1 {
+		t.Errorf("image blocks = %d, want 1", sawImage)
+	}
+	// One text document block (d1) + one PDF document block.
+	if sawPDFOrDoc != 2 {
+		t.Errorf("document blocks = %d, want 2 (text doc + PDF)", sawPDFOrDoc)
+	}
+	// Anthropic rejects a mix of citations-enabled and -disabled document
+	// blocks. Every document block (text + PDF) must enable citations.
+	for _, m := range params.Messages {
+		for _, b := range m.Content {
+			if b.OfDocument != nil && !b.OfDocument.Citations.Enabled.Value {
+				t.Error("a document block has citations disabled; Anthropic requires all-or-nothing")
+			}
+		}
+	}
+}
+
 func TestMapMessages_HandlesAllRoles(t *testing.T) {
 	in := []llm.Message{
 		{Role: llm.RoleSystem, Content: "skipped"},
