@@ -17,6 +17,7 @@ them. Highlighted snippets, hybrid ranking, and optional semantic search.
 
 - **One search box, many sources.** Filesystem, IMAP email, Telegram, Paperless-ngx — all queried together with per-source filters, highlighted snippets, and source-aware ranking.
 - **Hybrid search.** BM25 full-text retrieval and optional dense-vector retrieval are merged with reciprocal rank fusion (RRF), then re-scored by a dedicated reranker. Works in plain BM25 mode out of the box; light up the rest by configuring an embedding provider in Settings.
+- **Ask: grounded answers, not just links.** A chat mode that answers questions from your own data with inline citations back to the source, multi-turn memory, agentic follow-up search, and multi-modal reading of images and PDFs. Bring your own model — Anthropic, OpenAI, or local Ollama. See [Ask: grounded answers](#ask-grounded-answers).
 - **Plug-in connectors.** Each source is a Go package that implements `Connector` (fetch + cursor-based incremental sync). Adding a new one is a day's work.
 - **Scheduled syncs.** Cron-backed scheduler runs connectors automatically; every sync is recorded with progress streamed live over Server-Sent Events and a cancellation hook.
 - **Conversation browser.** Telegram and IMAP threads are indexed as conversation windows instead of one-message-per-document, so embeddings actually have context. A dedicated chat-style viewer lets you jump around inside a thread after a hit.
@@ -92,6 +93,38 @@ On top of that, a source-aware scoring layer applies:
 All three constants live next to the connector definition, so adding a new
 source requires one change.
 
+## Ask: grounded answers
+
+Search gives you a ranked list of sources. **Ask** gives you an answer —
+generated from those same sources and showing its work.
+
+- **Grounded + cited.** Every answer is written from chunks retrieved out of
+  your index, with inline citations that link back to the exact source. Click
+  a citation to see the snippet it came from; nothing is asserted without one.
+- **Conversational.** Multi-turn chats with history. A cheap "rewriter" model
+  resolves follow-ups ("and the previous one?") into self-contained queries,
+  and skips retrieval entirely when a question is answerable from the
+  conversation so far.
+- **Agentic.** When the initial evidence is thin, the model can call a
+  `nexus_search` tool to run further searches mid-answer (capped per turn), and
+  an optional, flag-gated `nexus_open_attachment` tool to pull a specific
+  document in full.
+- **Multi-modal.** For vision-capable models, retrieved images and PDFs are
+  attached to the prompt, so the model can read charts, scans, and signatures
+  that text extraction loses. Anthropic and OpenAI read PDFs natively.
+- **Bring your own model.** Anthropic (with native citations), OpenAI, and
+  local Ollama, picked per chat from an admin-curated allowlist. Provider keys
+  are encrypted at rest; configure them under **Settings → Ask**.
+
+Answers stream over Server-Sent Events; retrieval stays scoped to the calling
+user exactly like search, including tool-issued searches. Thumbs feedback and
+per-turn token/latency stats are recorded for tuning.
+
+For regression-testing the pipeline, `make rag-eval` runs a golden question set
+through the live orchestrator and grades each answer — citation correctness
+plus an LLM-as-judge for faithfulness, relevance, and abstention — then writes a
+markdown report diffed against the previous baseline.
+
 ## Configuration
 
 Everything is an environment variable prefixed with `NEXUS_`. Anything marked
@@ -117,6 +150,10 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 | `NEXUS_RERANK_PROVIDER`     | no       | (configured via UI)                                                       | `voyage` \| `cohere`.                                                 |
 | `NEXUS_RERANK_MODEL`        | no       | provider-specific                                                         | Overrides the default reranker model.                                 |
 | `NEXUS_RERANK_API_KEY`      | no       | falls back to `NEXUS_EMBEDDING_API_KEY` when the provider matches         | API key for the reranker.                                             |
+| `NEXUS_LLM_ANTHROPIC_API_KEY` | no     | (configured via UI)                                                       | Enables Claude models for Ask (native citations + PDF).               |
+| `NEXUS_LLM_OPENAI_API_KEY`  | no       | (configured via UI)                                                       | Enables GPT models for Ask.                                           |
+| `NEXUS_LLM_OLLAMA_URL`      | no       | falls back to `NEXUS_OLLAMA_URL`                                          | Dedicated Ollama endpoint for Ask (local models).                    |
+| `NEXUS_LLM_DEFAULT_MODEL`   | no       | first-boot picks the cheapest configured                                  | Provider-prefixed default model, e.g. `anthropic:claude-sonnet-4-6`.  |
 
 \* *Required in the strict sense that omitting it works, but every restart invalidates every session — not what you want in production.*
 
@@ -144,6 +181,8 @@ make test         # unit + integration tests
 make lint         # golangci-lint
 make coverage     # integration tests with coverage (floored at 90%)
 make build        # build binary to bin/nexus
+make rag-eval     # grade the Ask pipeline against the golden set
+
 ```
 
 Frontend-only targets (run inside `web/`):
@@ -189,6 +228,8 @@ run needs no setup beyond a working Docker socket. See
 - `internal/connector/` — connector interface + Filesystem / IMAP / Telegram / Paperless-ngx implementations.
 - `internal/pipeline/` — fetch → extract → chunk → embed → index.
 - `internal/search/` — OpenSearch client, hybrid retrieval, highlighting.
+- `internal/llm/` — provider adapters (Anthropic / OpenAI / Ollama) + the model catalog and registry.
+- `internal/rag/` — the Ask orchestrator: rewrite → retrieve → generate → tool-loop, citation handling, multi-modal attachment; `internal/rag/eval/` is the `make rag-eval` harness.
 - `internal/scheduler/` — cron-based automatic sync.
 - `internal/store/` — PostgreSQL access layer (no ORM; raw SQL via pgx).
 - `web/` — React + TypeScript + Vite frontend.
