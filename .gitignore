@@ -48,3 +48,8 @@ data/
 .DS_Store
 Thumbs.db
 .claude/
+
+# RAG eval harness — generated, corpus-specific.
+rag-eval-report.md
+internal/rag/testdata/golden/.baseline.json
+/rag-eval

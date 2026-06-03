@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration lint lint-sql coverage build swagger dev dev-db up down logs help
+.PHONY: test test-unit test-integration lint lint-sql coverage build swagger dev dev-db up down logs rag-eval help
 
 help:
 	@echo "Nexus — common targets:"
@@ -9,6 +9,7 @@ help:
 	@echo "  make test         Run all tests (unit + integration)"
 	@echo "  make lint         Run golangci-lint"
 	@echo "  make lint-sql     Run sqlfluff on every migration"
+	@echo "  make rag-eval     Offline RAG quality eval → rag-eval-report.md"
 	@echo "  make coverage     Run integration tests with coverage report"
 	@echo "  make build        Build binary to bin/nexus"
 
@@ -91,3 +92,16 @@ dev: dev-db
 		NEXUS_TIKA_URL=http://localhost:9998 \
 		NEXUS_FS_ROOT_PATH=./testdata \
 		go run ./cmd/nexus
+
+# Offline RAG quality eval against your live index. Same deps + env as the
+# server (LLM keys come from .env). Runs the golden set through the
+# orchestrator, judges with an LLM, and writes rag-eval-report.md diffed
+# against the previous baseline. Pass extra flags via ARGS, e.g.
+#   make rag-eval ARGS="-user muty -judge-model anthropic:claude-sonnet-4-6"
+rag-eval: dev-db
+	@test -f .env || { echo "Missing .env — run: cp .env.example .env && edit it"; exit 1; }
+	set -a && . ./.env && set +a && \
+		NEXUS_DATABASE_URL=postgres://nexus:nexus@localhost:5432/nexus?sslmode=disable \
+		NEXUS_OPENSEARCH_URL=http://localhost:9200 \
+		NEXUS_TIKA_URL=http://localhost:9998 \
+		go run ./cmd/rag-eval $(ARGS)
