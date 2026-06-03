@@ -30,7 +30,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          # Single source of truth — track the go directive in go.mod so
+          # CI and local toolchains stay in lockstep (no floating minor).
+          go-version-file: go.mod
           cache: true
 
       # Serialize the cross-compile. The hosted runner has ~16 GB of RAM

@@ -186,7 +186,10 @@ export type SyncStatus =
 // refactor but not yet in the generated schema until the next
 // `npm run gen:types` sweep — surfaced here as optional so the
 // types stay honest in the meantime.
-export type SyncJob = Omit<Req<Schemas["internal_api.SyncJob"]>, "status"> & {
+export type SyncJob = Omit<
+  Req<Schemas["internal_api.SyncJob"]>,
+  "status" | "scope"
+> & {
   status: SyncStatus;
   scope?: string;
 };
@@ -252,6 +255,40 @@ export interface RerankSettings {
   min_score: number;
 }
 
+// LLM admin settings power the RAG ask flow. Provider keys are independent
+// (mix-and-match Anthropic + OpenAI + Ollama). API keys arrive masked
+// ("****abcd"); blank + "Replace" on the frontend asks for a new plaintext
+// key. The allowlist filters which catalog models the model-picker surfaces;
+// empty allowlist = expose every catalog model whose provider has a key.
+export interface LLMSettings {
+  default_model: string;
+  anthropic_api_key: string;
+  openai_api_key: string;
+  ollama_url: string;
+  allowlist: string[];
+  // rewriter_model is the cheap-model id used for query rewriting and
+  // auto-titling. Empty disables both features.
+  rewriter_model: string;
+}
+
+// LLMModelInfo mirrors the JSON returned by GET /api/llm/models. Capability
+// flags drive composer affordances (vision/tools/citations chips) and let
+// the orchestrator skip image attachments on non-vision models.
+export interface LLMModelInfo {
+  id: string;             // provider-prefixed: "anthropic:claude-sonnet-4-6"
+  provider: string;
+  bare_id: string;
+  display_name: string;
+  context_window: number;
+  supports_citations: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_caching: boolean;
+  input_cost_per_mtok: number;
+  output_cost_per_mtok: number;
+  typical_ttft_ms: number;
+}
+
 // Retention: the sweeper reads these three keys every tick. The BE reports
 // `min_sweep_interval_minutes` as a hard floor the admin can't submit below.
 export interface RetentionSettings {
@@ -292,4 +329,137 @@ export interface BinaryStoreStats {
 export interface StorageWipeResult {
   deleted_count: number;
   bytes_freed: number;
+}
+
+// Chat / RAG. Hand-curated because the swagger annotations aren't lifted
+// for the chat handlers — see internal/model/chat.go for the BE shape.
+
+export type ChatRole = "user" | "assistant" | "tool";
+
+export interface ChatCitation {
+  doc_id: string;
+  cited_text?: string;
+  span_start: number;
+  span_end: number;
+}
+
+export interface ChatToolCall {
+  name: string;
+  args: string;
+  result_id?: string;
+  result_summary?: string;
+  // Denormalised per-call result chunks. Empty / undefined when the
+  // tool returned zero results — the FE persisted ToolTrace renders
+  // these in its expanded body so reloads no longer collapse to
+  // "No matching documents."
+  chunks?: ChunkPreview[];
+}
+
+// ChatToolEvent is the streaming-state shape of one tool round, fed by
+// the matching `tool_start` + `tool_result` SSE frames. The args /
+// summary / chunks merge into a single record as the frames arrive so
+// the FE can render a stable ToolTrace row even mid-stream. Persisted
+// turns reconstruct an equivalent shape from `ChatMessage.tool_calls`
+// + `ChatMessage.evidence` (chunks are joined client-side).
+export interface ChatToolEvent {
+  name: string;
+  args: string;
+  summary?: string;
+  chunks?: ChunkPreview[];
+}
+
+// RAGSettings is the wire shape for GET / PUT /api/settings/rag (admin).
+// max_tool_rounds is the cap on agentic tool-use rounds per turn; 0
+// disables agentic tool calls entirely (the orchestrator passes
+// Tools=nil on round 1, forcing a single-shot answer).
+export interface RAGSettings {
+  max_tool_rounds: number;
+  // Phase 6 multi-modal knobs. enable_multimodal is the global on/off for
+  // attaching cached images to vision models; max_images_per_turn caps how
+  // many per turn (0–8). enable_open_attachment exposes the flag-gated
+  // nexus_open_attachment tool.
+  max_images_per_turn: number;
+  enable_multimodal: boolean;
+  enable_open_attachment: boolean;
+}
+
+export interface ChatUsage {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+}
+
+export interface Chat {
+  id: string;
+  user_id: string;
+  title: string;
+  default_model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatListEntry extends Chat {
+  // Empty when the chat has no user messages yet (just-created), or when
+  // the BE preview LATERAL join didn't find one.
+  first_message_preview?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  chat_id: string;
+  role: ChatRole;
+  seq: number;
+  content: string;
+  model?: string;
+  citations?: ChatCitation[];
+  // Evidence chunks the orchestrator retrieved for this assistant
+  // turn. ChunkPreview.id is the OpenSearch chunk handle, so the
+  // field doubles as a stable graph link from the chat back to the
+  // grounding sources (resolves via /api/documents/:id).
+  evidence?: ChunkPreview[];
+  tool_calls?: ChatToolCall[];
+  usage?: ChatUsage;
+  stop_reason?: string;
+  // rewritten_query is the rewriter's normalised search query when the
+  // rewriter ran on this turn. Empty when rewriter was disabled or
+  // first turn. Used by the FE phase strip on chat reload.
+  rewritten_query?: string;
+  // skipped_retrieval is true when the rewriter judged the question
+  // answerable from chat history alone (greetings, meta questions,
+  // history-only follow-ups). Evidence is empty on these turns.
+  skipped_retrieval?: boolean;
+  // duration_ms is the orchestrator's runTurn wall-clock in ms
+  // (server-measured). The FE prefers this over locally-derived
+  // timings so the label stays stable across page refreshes.
+  duration_ms?: number;
+  // feedback is the user's thumbs rating on an assistant message:
+  // "up", "down", or null/absent (no rating). Set via the message
+  // feedback endpoint.
+  feedback?: "up" | "down" | null;
+  created_at: string;
+}
+
+export interface ListChatsResponse {
+  chats: ChatListEntry[];
+  total: number;
+}
+
+export interface ChatDetailResponse {
+  chat: Chat;
+  messages: ChatMessage[];
+}
+
+// ChunkPreview mirrors `internal/rag.ChunkPreview` — the minimal slice of
+// a retrieved chunk that the SSE evidence frame carries.
+export interface ChunkPreview {
+  id: string;
+  title: string;
+  source: string;
+  date?: string;
+  headline?: string;
+  // mime_type is the chunk's content type when known. An image/* value
+  // means the evidence card renders an inline thumbnail (fetched from
+  // /api/documents/{id}/content). Omitted for plain text chunks.
+  mime_type?: string;
 }

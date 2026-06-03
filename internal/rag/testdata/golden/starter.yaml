@@ -1,0 +1,32 @@
+# Starter golden set for `make rag-eval`. Extend this with questions whose
+# answers live in your own index — the harness scores each on relevance and
+# faithfulness (LLM-as-judge) and, when you fill in must_cite_doc_ids, on
+# citation correctness (the expected chunk ids are the `id` shown on a
+# search result / evidence card; subset match).
+#
+# Fields:
+#   name              short stable id (used in the report + baseline diff)
+#   query             the question to ask
+#   lang              en|de|bg (report grouping only)
+#   must_cite_doc_ids optional chunk handles the answer must cite
+#   should_abstain    true when the answer is NOT in the index (the model
+#                     should decline rather than hallucinate)
+#   notes             free text for you
+
+- name: anthropic-latest-invoice
+  query: "What is the most recent Anthropic invoice and how much was it for?"
+  lang: en
+  notes: "Anthropic receipts are in IMAP."
+
+- name: chatgpt-monthly-cost
+  query: "How much do I pay per month for ChatGPT Plus?"
+  lang: en
+
+- name: wolt-recent-orders
+  query: "What have I recently ordered through Wolt, and roughly how much did it cost?"
+  lang: en
+
+- name: wolt-letzte-bestellung-de
+  query: "Wie viel habe ich bei meiner letzten Wolt-Bestellung bezahlt?"
+  lang: de
+  notes: "German receipts/restaurants exist in the corpus."

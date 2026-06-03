@@ -30,6 +30,7 @@ const SECTIONS: Section[] = [
     title: "Navigation",
     rows: [
       { label: "Go to Search", keys: ["g", "s"] },
+      { label: "Go to Ask", keys: ["g", "k"] },
       { label: "Go to Connectors", keys: ["g", "c"] },
       { label: "Go to Admin Settings", keys: ["g", "a"], note: "admin only" },
     ],

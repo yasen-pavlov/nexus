@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelCombobox } from "@/components/ui/model-combobox";
 import {
   Select,
   SelectContent,
@@ -23,10 +23,8 @@ import {
   DEFAULT_RERANK_MODEL,
   RERANK_MODELS,
   RERANK_PROVIDERS,
-  type ModelOption,
   type RerankProvider,
 } from "@/lib/model-catalog";
-import { cn } from "@/lib/utils";
 
 function providerLabel(value: RerankProvider): string {
   return RERANK_PROVIDERS.find((p) => p.value === value)?.label ?? value;
@@ -143,6 +141,8 @@ function RerankFormInner({ ctx }: Readonly<{ ctx: UseRerankSettings }>) {
               value={form.model}
               onChange={(v) => setForm((f) => ({ ...f, model: v }))}
               options={RERANK_MODELS[form.provider] ?? []}
+              placeholder="e.g. rerank-v3.5"
+              showDimensions={false}
             />
           </Field>
         )}
@@ -281,171 +281,6 @@ function Field({
   );
 }
 
-/**
- * Local copy of the combobox — rerank has a smaller catalog (no dimension
- * chips, fewer notes) but the interaction is identical. Inlining avoids a
- * generic primitive pulling in EmbeddingProvider typing.
- *
- * Parents should `key={provider}` (or similar) this component so external
- * value changes reset its internal edit buffer via remount rather than a
- * useEffect(setQuery(value)) that the React Compiler rules flag.
- */
-function ModelCombobox({
-  value,
-  onChange,
-  options,
-}: Readonly<{
-  value: string;
-  onChange: (v: string) => void;
-  options: ModelOption[];
-}>) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(value);
-  const [highlighted, setHighlighted] = useState(0);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    // Pristine state — input still holds the saved value because the user
-    // hasn't typed anything yet. Show every option so opening the dropdown
-    // is a discovery surface, not a one-row self-match.
-    if (!q || q === value.trim().toLowerCase()) return options;
-    return options.filter(
-      (o) =>
-        o.value.toLowerCase().includes(q) ||
-        o.label.toLowerCase().includes(q) ||
-        (o.notes?.toLowerCase().includes(q) ?? false),
-    );
-  }, [options, query, value]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (
-        wrapperRef.current &&
-        !wrapperRef.current.contains(e.target as Node)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  const commit = (v: string) => {
-    onChange(v);
-    setQuery(v);
-    setOpen(false);
-    setHighlighted(0);
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setOpen(true);
-      setHighlighted((h) =>
-        Math.min(h + 1, Math.max(filtered.length - 1, 0)),
-      );
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((h) => Math.max(h - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (open && filtered[highlighted]) commit(filtered[highlighted].value);
-      else commit(query.trim());
-    } else if (e.key === "Escape") {
-      setOpen(false);
-    }
-  };
-
-  return (
-    <div ref={wrapperRef} className="relative">
-      <div className="relative">
-        <Input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => {
-            const v = e.target.value;
-            setQuery(v);
-            onChange(v);
-            setOpen(true);
-            setHighlighted(0);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={onKeyDown}
-          placeholder="e.g. rerank-v3.5"
-          className="h-10 pr-10 font-mono text-[13px]"
-          role="combobox"
-          aria-expanded={open}
-          aria-autocomplete="list"
-        />
-        <button
-          type="button"
-          onClick={() => {
-            setOpen((o) => !o);
-            inputRef.current?.focus();
-          }}
-          className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground"
-          aria-label="Toggle options"
-          tabIndex={-1}
-        >
-          <ChevronDown
-            className={cn("size-3.5 transition-transform", open && "rotate-180")}
-            aria-hidden
-          />
-        </button>
-      </div>
-
-      {open && (filtered.length > 0 || query.trim()) && (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-border bg-popover">
-          <ul
-            role="listbox"
-            className="max-h-64 overflow-y-auto py-1"
-          >
-            {filtered.map((opt, i) => (
-              <li
-                key={opt.value}
-                role="option"
-                aria-selected={i === highlighted}
-                data-highlighted={i === highlighted}
-                onMouseEnter={() => setHighlighted(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  commit(opt.value);
-                }}
-                className={cn(
-                  "flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-[13px] transition-colors",
-                  "data-[highlighted=true]:bg-accent data-[highlighted=true]:text-accent-foreground",
-                )}
-              >
-                <span className="font-mono tabular-nums">{opt.label}</span>
-                {opt.notes && (
-                  <span className="text-[11.5px] text-muted-foreground max-w-[180px] truncate">
-                    {opt.notes}
-                  </span>
-                )}
-              </li>
-            ))}
-            {filtered.length === 0 && query.trim() && (
-              <li
-                role="option"
-                aria-selected={true}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  commit(query.trim());
-                }}
-                className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2 text-[13px] hover:bg-accent"
-              >
-                <span className="text-muted-foreground">Use custom model</span>
-                <span className="font-mono text-[12px] text-foreground">
-                  {query.trim()}
-                </span>
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
+// ModelCombobox is now imported from @/components/ui/model-combobox; the
+// rerank form just passes showDimensions={false} since rerank options don't
+// carry dimensions.

@@ -49,6 +49,9 @@ func newHardeningRouter(t *testing.T, limiter *auth.LoginRateLimiter) (http.Hand
 	router := NewRouter(
 		st, sc, p, cm, em,
 		NewRerankManager(st, zap.NewNop()),
+		NewLLMManager(st, zap.NewNop()),
+		nil,
+		nil,
 		NewSyncJobManager(st, zap.NewNop()),
 		nil, nil, nil,
 		testJWTSecret,

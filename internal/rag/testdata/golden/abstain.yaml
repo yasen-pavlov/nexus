@@ -1,0 +1,13 @@
+# "Should abstain" cases — the answer is deliberately NOT in the index.
+# A good RAG system says it cannot find the information instead of inventing
+# one. The harness judges whether the assistant abstained.
+
+- name: abstain-google-employee-id
+  query: "What is my employee ID number at Google?"
+  lang: en
+  should_abstain: true
+
+- name: abstain-office-wifi
+  query: "What's the wifi password for the office network?"
+  lang: en
+  should_abstain: true

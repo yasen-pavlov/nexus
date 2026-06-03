@@ -31,6 +31,9 @@ func TestRankingRuntimeWiring_RecencyOverrideShiftsResults(t *testing.T) {
 	router := NewRouter(
 		st, sc, p, cm, em,
 		NewRerankManager(st, zap.NewNop()),
+		NewLLMManager(st, zap.NewNop()),
+		nil,
+		nil,
 		NewSyncJobManager(st, zap.NewNop()),
 		nil, nil, rankingMgr,
 		testJWTSecret, nil, nil, nil, zap.NewNop(),

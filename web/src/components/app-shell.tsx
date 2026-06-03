@@ -11,6 +11,7 @@ import {
   Moon,
   Search,
   Settings,
+  Sparkles,
   Sun,
   UserRound,
   Users,
@@ -49,10 +50,11 @@ import {
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-type NavItem = { to: "/" | "/connectors" | "/admin/settings" | "/admin/users" | "/admin/stats"; label: string; icon: typeof Search };
+type NavItem = { to: "/" | "/ask" | "/connectors" | "/admin/settings" | "/admin/users" | "/admin/stats"; label: string; icon: typeof Search };
 
 const MAIN_NAV: NavItem[] = [
   { to: "/", label: "Search", icon: Search },
+  { to: "/ask", label: "Ask", icon: Sparkles },
   { to: "/connectors", label: "Connectors", icon: Cable },
 ];
 
@@ -105,6 +107,9 @@ export function AppShell({ user, children }: Readonly<AppShellProps>) {
         case "a":
           if (isAdmin) navigate({ to: "/admin/settings" });
           return;
+        case "k":
+          navigate({ to: "/ask" });
+          return;
       }
     },
   });
@@ -116,6 +121,9 @@ export function AppShell({ user, children }: Readonly<AppShellProps>) {
     items.push(
       pageItem("Search", Search, "Find anything you've indexed", "g s", () =>
         navigate({ to: "/" }),
+      ),
+      pageItem("Ask", Sparkles, "Grounded answers with citations", "g k", () =>
+        navigate({ to: "/ask" }),
       ),
       pageItem("Connectors", Cable, "Manage data sources", "g c", () =>
         navigate({ to: "/connectors" }),

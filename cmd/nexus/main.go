@@ -34,6 +34,7 @@ import (
 	"github.com/muty/nexus/internal/lang"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/rag"
 	"github.com/muty/nexus/internal/scheduler"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
@@ -105,6 +106,21 @@ func run() error {
 		log.Warn("failed to load rerank settings", zap.Error(err))
 	}
 
+	// Set up LLM provider layer for the RAG ask flow. Hot-reloads via
+	// PUT /api/settings/llm without restarting the process.
+	lm := api.NewLLMManager(st, log)
+	if err := lm.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load llm settings", zap.Error(err))
+	}
+
+	// RAG runtime knobs (Phase 5: max_tool_rounds). Hot-reloads via
+	// PUT /api/settings/rag; the orchestrator reads o.settings() once
+	// per turn, so admin saves take effect without restart.
+	ragMgr := api.NewRAGManager(st, log)
+	if err := ragMgr.LoadFromDB(ctx, cfg); err != nil {
+		log.Warn("failed to load rag settings", zap.Error(err))
+	}
+
 	// Ranking config (per-source half-life, floor, trust weight, plus
 	// rerank min score + feature toggles). Overlays any persisted overrides
 	// on top of the compiled-in defaults.
@@ -120,7 +136,31 @@ func run() error {
 
 	revocationCache, loginLimiter := setupAuthCaches(st)
 
-	router := api.NewRouter(st, searchClient, p, cm, em, rm, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
+	// RAG orchestrator turns chat messages into streamed grounded answers.
+	// It calls the same hybrid retrieval pipeline as /api/search via the
+	// SearchService; here we construct an instance that the router will
+	// share with the HTTP handler.
+	searchService := api.NewSearchService(searchClient, em, rm, rankingMgr, log)
+	orchestrator := rag.NewOrchestrator(rag.Deps{
+		Registry: lm.Get,
+		Settings: func() rag.Settings {
+			return rag.Settings{
+				RewriterModel:        lm.RewriterModel(),
+				MaxToolRounds:        ragMgr.MaxToolRounds(),
+				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),
+				EnableMultimodal:     ragMgr.EnableMultimodal(),
+				EnableOpenAttachment: ragMgr.EnableOpenAttachment(),
+			}
+		},
+		Search:      api.NewRAGSearchProvider(searchService),
+		Chats:       st,
+		Cfg:         rag.DefaultConfig(),
+		Log:         log,
+		Binaries:    binaryStore,
+		Attachments: searchClient,
+	})
+
+	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, ragMgr, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
 	return serve(ctx, cfg.Port, router, sched, log)
 }

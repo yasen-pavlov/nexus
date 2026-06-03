@@ -12,8 +12,10 @@ var SensitiveFields = map[string][]string{
 // sensitiveSettingsKeys lists exact keys in the settings table that hold
 // secrets and must be encrypted at rest.
 var sensitiveSettingsKeys = map[string]bool{
-	"embedding_api_key": true,
-	"rerank_api_key":    true,
+	"embedding_api_key":     true,
+	"rerank_api_key":        true,
+	"llm_anthropic_api_key": true,
+	"llm_openai_api_key":    true,
 }
 
 // IsSensitiveSettingsKey returns true if the given settings key holds a

@@ -14,9 +14,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/connector"
-	"github.com/muty/nexus/internal/embedding"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/rag"
 	"github.com/muty/nexus/internal/rerank"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
@@ -36,19 +36,23 @@ const (
 )
 
 type handler struct {
-	store       *store.Store
-	search      *search.Client
-	pipeline    *pipeline.Pipeline
-	em          *EmbeddingManager
-	rm          *RerankManager
-	cm          *ConnectorManager
-	syncJobs    *SyncJobManager
-	binaryStore *storage.BinaryStore
-	sweeper     *syncruns.Sweeper
-	ranking     *RankingManager
-	jwtSecret   []byte
-	revocation  *auth.TokenRevocationCache
-	log         *zap.Logger
+	store         *store.Store
+	search        *search.Client
+	searchService *SearchService
+	pipeline      *pipeline.Pipeline
+	em            *EmbeddingManager
+	rm            *RerankManager
+	lm            *LLMManager
+	ragMgr        *RAGManager
+	rag           *rag.Orchestrator
+	cm            *ConnectorManager
+	syncJobs      *SyncJobManager
+	binaryStore   *storage.BinaryStore
+	sweeper       *syncruns.Sweeper
+	ranking       *RankingManager
+	jwtSecret     []byte
+	revocation    *auth.TokenRevocationCache
+	log           *zap.Logger
 	// loginLimiter throttles failed /auth/login attempts per
 	// (username, ip) bucket to defend weak passwords against online
 	// brute-force. Nil disables throttling (used in tests that don't
@@ -98,68 +102,28 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := buildSearchRequest(r, query)
+	explain := r.URL.Query().Get("score_details") == "true"
 
-	// Stage 1: retrieve candidates. Hybrid (BM25 + kNN) when embedder is
-	// available, otherwise BM25 only. The retrieve stage returns the FULL
-	// deduped candidate pool — pagination happens at the end of this pipeline,
-	// not here, so the reranker sees the full pool.
-	result, err := h.retrieveCandidates(r.Context(), query, req)
+	result, err := h.search2().Run(r.Context(), req, SearchOptions{IncludeScoreDetails: explain})
 	if err != nil {
 		h.log.Error("search failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return
 	}
 
-	// Stage 2: optional explain — capture the raw retrieval score before
-	// reranking rewrites it.
-	explain := r.URL.Query().Get("score_details") == "true"
-	if explain {
-		for i := range result.Documents {
-			result.Documents[i].ScoreDetails = &model.ScoreDetails{
-				Retrieval: result.Documents[i].Rank,
-			}
-		}
-	}
-
-	// Stage 3: rerank. Reorders documents by Voyage rerank-2 relevance score
-	// and rewrites Rank with the new score. No-op when no reranker is configured.
-	rerankerActive := h.rm.Get() != nil
-	result = h.rerankResults(r.Context(), query, result)
-
-	if explain {
-		for i := range result.Documents {
-			if result.Documents[i].ScoreDetails != nil {
-				result.Documents[i].ScoreDetails.Reranker = result.Documents[i].Rank
-			}
-		}
-	}
-
-	// Pull the current ranking config once per query; the manager returns a
-	// snapshot that's safe to read without further locking.
-	rankCfg := h.rankingConfig()
-
-	applySourceTrustWeights(result, rankCfg, rerankerActive)
-	applyRerankerFloor(result, rankCfg, rerankerActive)
-
-	// Stage 5: recency decay — boost recent documents, source-specific half-lives.
-	search.ApplyRecencyDecay(result, rankCfg)
-
-	// Stage 6: metadata bonus — boost results whose structured metadata matches
-	// query terms (filename, sender, tags, etc.).
-	if rankCfg.MetadataBonusEnabled {
-		search.ApplyMetadataBonus(result, query)
-	}
-
-	// Stage 6b: per-hit match attribution. For telegram window hits,
-	// map the BM25 highlight fragment back to the exact message_lines
-	// entry so the search card can render a pinpoint message row
-	// instead of a generic "N messages" window chip. No-op when the
-	// hit has no highlight (semantic-only) or isn't a telegram window.
-	applyWindowMatches(result)
-
 	paginateSearchResult(result, req)
-
 	writeJSON(w, http.StatusOK, result)
+}
+
+// search2 returns the configured SearchService, falling back to a
+// services constructed from the handler's individual managers when
+// nil. Tests that build &handler{...} directly hit the fallback;
+// production goes through NewRouter which wires it explicitly.
+func (h *handler) search2() *SearchService {
+	if h.searchService != nil {
+		return h.searchService
+	}
+	return NewSearchService(h.search, h.em, h.rm, h.ranking, h.log)
 }
 
 // buildSearchRequest parses and clamps the query-string pagination + filter
@@ -193,28 +157,6 @@ func buildSearchRequest(r *http.Request, query string) model.SearchRequest {
 		DateTo:      r.URL.Query().Get("date_to"),
 		OwnerID:     auth.UserIDFromContext(r.Context()).String(),
 	}
-}
-
-// retrieveCandidates fetches the candidate pool, preferring HybridSearch when
-// an embedder is configured and the query successfully embeds. Falls back to
-// BM25-only on any embed / hybrid error so a degraded embedding path never
-// turns into a user-visible failure.
-func (h *handler) retrieveCandidates(ctx context.Context, query string, req model.SearchRequest) (*model.SearchResult, error) {
-	var result *model.SearchResult
-	if embedder := h.em.Get(); embedder != nil {
-		embeddings, err := embedder.Embed(ctx, []string{query}, embedding.InputTypeQuery)
-		if err == nil && len(embeddings) > 0 {
-			result, err = h.search.HybridSearch(ctx, req, embeddings[0])
-			if err != nil {
-				h.log.Warn("hybrid search failed, falling back to BM25", zap.Error(err))
-				result = nil
-			}
-		}
-	}
-	if result != nil {
-		return result, nil
-	}
-	return h.search.Search(ctx, req)
 }
 
 // applySourceTrustWeights multiplies each hit's Rank by its per-source trust
@@ -727,44 +669,6 @@ func (h *handler) DeleteStorageCacheByConnector(w http.ResponseWriter, r *http.R
 		"deleted_count": count,
 		"bytes_freed":   bytesFreed,
 	})
-}
-
-// rankingConfig returns the active RankingConfig, falling back to compiled
-// defaults when the manager isn't wired (primarily in tests that don't
-// exercise ranking).
-func (h *handler) rankingConfig() search.RankingConfig {
-	if h.ranking == nil {
-		return search.DefaultRankingConfig()
-	}
-	return h.ranking.Get()
-}
-
-func (h *handler) rerankResults(ctx context.Context, query string, result *model.SearchResult) *model.SearchResult {
-	reranker := h.rm.Get()
-	if reranker == nil || len(result.Documents) <= 1 {
-		return result
-	}
-
-	// Drop near-duplicate docs before sending them to the reranker. This is
-	// common when an email newsletter is split into many chunks that share
-	// long boilerplate prefixes — without dedup, the reranker spends API
-	// budget reranking 12 copies of the same Hello Developer footer. We use
-	// a cheap content-prefix fingerprint; the input is already in pre-rerank
-	// rank order, so the first occurrence of each fingerprint wins.
-	result.Documents = dedupeNearDuplicates(result.Documents)
-
-	texts := make([]string, len(result.Documents))
-	for i, doc := range result.Documents {
-		texts[i] = doc.Title + " " + doc.Content
-	}
-
-	ranked, err := reranker.Rerank(ctx, query, texts)
-	if err != nil {
-		h.log.Warn("reranking failed, using original order", zap.Error(err))
-		return result
-	}
-
-	return reorderByRerankScores(result, ranked)
 }
 
 // dedupeNearDuplicates drops documents whose first 200 chars of

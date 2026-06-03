@@ -45,19 +45,41 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role str
 	}, nil
 }
 
+// firstAdminAdvisoryLock is the arbitrary, stable key for the
+// transaction-scoped advisory lock that serialises bootstrap-admin
+// registration (see CreateFirstAdmin).
+const firstAdminAdvisoryLock int64 = 0x6e65787573 // "nexus"
+
 // CreateFirstAdmin atomically creates the bootstrap admin user iff the users
-// table is empty. Returns ErrFirstAdminExists if any row already exists,
-// closing the check-then-insert race that the caller would otherwise have.
+// table is empty. Returns ErrFirstAdminExists if any row already exists.
+//
+// `INSERT ... WHERE NOT EXISTS` alone does NOT close the race: at READ
+// COMMITTED two concurrent registrations both evaluate the NOT EXISTS
+// against a snapshot where the table is still empty, so both insert and the
+// system ends up with multiple admins. We take a transaction-scoped
+// advisory lock first so the check-then-insert is genuinely serialised — the
+// first attempt commits a row, every other attempt then sees it and gets
+// RowsAffected() == 0.
 func (s *Store) CreateFirstAdmin(ctx context.Context, username, passwordHash string) (*model.User, error) {
 	id := uuid.New()
 	now := time.Now()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin first-admin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, firstAdminAdvisoryLock); err != nil {
+		return nil, fmt.Errorf("store: first-admin lock: %w", err)
+	}
 
 	query := `
 		INSERT INTO users (id, username, password_hash, role, created_at, updated_at)
 		SELECT $1, $2, $3, 'admin', $4, $4
 		WHERE NOT EXISTS (SELECT 1 FROM users)
 	`
-	tag, err := s.pool.Exec(ctx, query, id, username, passwordHash, now)
+	tag, err := tx.Exec(ctx, query, id, username, passwordHash, now)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -67,6 +89,9 @@ func (s *Store) CreateFirstAdmin(ctx context.Context, username, passwordHash str
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrFirstAdminExists
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit first admin: %w", err)
 	}
 	return &model.User{
 		ID:           id,

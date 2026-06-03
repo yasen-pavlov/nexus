@@ -266,6 +266,30 @@ test("admin visits Settings: Embeddings section renders with current provider", 
       body: JSON.stringify({ data: [] }),
     }),
   );
+  // LLM (Ask) settings — Phase 1 added the admin form below the existing
+  // engine sections; the e2e mocks were never extended.
+  await page.route("**/api/settings/llm", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          default_model: "anthropic:claude-sonnet-4-6",
+          anthropic_api_key: "",
+          openai_api_key: "",
+          ollama_url: "http://ollama:11434",
+          allowlist: [],
+        },
+      }),
+    }),
+  );
+  await page.route("**/api/llm/models", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
   await page.route("**/api/admin/stats", (route) =>
     route.fulfill({
       status: 200,
@@ -358,6 +382,30 @@ test("admin tunes the Telegram ranking preset and the save round-trips", async (
     }),
   );
   await page.route("**/api/storage/stats", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
+  // LLM (Ask) settings — Phase 1 added the admin form below the existing
+  // engine sections; the e2e mocks were never extended.
+  await page.route("**/api/settings/llm", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          default_model: "anthropic:claude-sonnet-4-6",
+          anthropic_api_key: "",
+          openai_api_key: "",
+          ollama_url: "http://ollama:11434",
+          allowlist: [],
+        },
+      }),
+    }),
+  );
+  await page.route("**/api/llm/models", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",

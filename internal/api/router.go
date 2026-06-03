@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/pipeline"
+	"github.com/muty/nexus/internal/rag"
 	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
@@ -26,6 +27,9 @@ func NewRouter(
 	cm *ConnectorManager,
 	em *EmbeddingManager,
 	rm *RerankManager,
+	lm *LLMManager,
+	ragMgr *RAGManager,
+	orchestrator *rag.Orchestrator,
 	syncJobs *SyncJobManager,
 	binaryStore *storage.BinaryStore,
 	sweeper *syncruns.Sweeper,
@@ -54,20 +58,24 @@ func NewRouter(
 	}))
 
 	h := &handler{
-		store:        store,
-		search:       search,
-		pipeline:     pipeline,
-		em:           em,
-		rm:           rm,
-		cm:           cm,
-		syncJobs:     syncJobs,
-		binaryStore:  binaryStore,
-		sweeper:      sweeper,
-		ranking:      ranking,
-		jwtSecret:    jwtSecret,
-		revocation:   revocation,
-		loginLimiter: loginLimiter,
-		log:          log,
+		store:         store,
+		search:        search,
+		searchService: NewSearchService(search, em, rm, ranking, log),
+		pipeline:      pipeline,
+		em:            em,
+		rm:            rm,
+		lm:            lm,
+		ragMgr:        ragMgr,
+		rag:           orchestrator,
+		cm:            cm,
+		syncJobs:      syncJobs,
+		binaryStore:   binaryStore,
+		sweeper:       sweeper,
+		ranking:       ranking,
+		jwtSecret:     jwtSecret,
+		revocation:    revocation,
+		loginLimiter:  loginLimiter,
+		log:           log,
 	}
 
 	// SSE endpoints — outside the timeout middleware (long-lived connections)
@@ -79,6 +87,8 @@ func NewRouter(
 		r.Get("/api/sync/progress", h.StreamAllSyncProgress)
 		// Per-job legacy stream, kept for backward compat.
 		r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
+		// RAG chat message stream — long-lived, per-turn SSE.
+		r.Post("/api/chats/{id}/messages", h.PostChatMessage)
 	})
 
 	r.Route("/api", func(r chi.Router) {
@@ -95,6 +105,17 @@ func NewRouter(
 			r.Get("/auth/me", h.Me)
 			r.Get("/me/identities", h.GetMyIdentities)
 			r.Get("/search", h.Search)
+			r.Get("/llm/models", h.GetLLMModels)
+			r.Get("/llm/default", h.GetLLMDefault)
+
+			r.Route("/chats", func(r chi.Router) {
+				r.Get("/", h.ListChats)
+				r.Post("/", h.CreateChat)
+				r.Get("/{id}", h.GetChat)
+				r.Patch("/{id}", h.UpdateChat)
+				r.Delete("/{id}", h.DeleteChat)
+				r.Put("/{id}/messages/{messageId}/feedback", h.SetMessageFeedback)
+			})
 
 			r.Get("/documents/by-source", h.GetDocumentBySource)
 			r.Get("/documents/{id}/content", h.DownloadDocument)
@@ -141,6 +162,10 @@ func NewRouter(
 					r.Put("/embedding", h.UpdateEmbeddingSettings)
 					r.Get("/rerank", h.GetRerankSettings)
 					r.Put("/rerank", h.UpdateRerankSettings)
+					r.Get("/llm", h.GetLLMSettings)
+					r.Put("/llm", h.UpdateLLMSettings)
+					r.Get("/rag", h.GetRAGSettings)
+					r.Put("/rag", h.UpdateRAGSettings)
 					r.Get("/retention", h.GetRetentionSettings)
 					r.Put("/retention", h.UpdateRetentionSettings)
 					r.Post("/retention/sweep", h.RunRetentionSweep)

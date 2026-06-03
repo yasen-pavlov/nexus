@@ -22,6 +22,13 @@ internal/api/static/*
 web/.playwright-mcp/
 web/test-results/
 ranking-verify*.png
+# Ad-hoc Ask/RAG visual-verification screenshots dropped in the repo root.
+redesign*.png
+sources*.png
+phase*.png
+
+# Local-only design & planning notes — kept out of the tree on purpose.
+plans/
 
 # Runtime: local binary cache for `make dev` / go run ./cmd/nexus
 data/
@@ -41,3 +48,8 @@ data/
 .DS_Store
 Thumbs.db
 .claude/
+
+# RAG eval harness — generated, corpus-specific.
+rag-eval-report.md
+internal/rag/testdata/golden/.baseline.json
+/rag-eval

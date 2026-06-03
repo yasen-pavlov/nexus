@@ -1040,6 +1040,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/llm/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List available LLM models
+         * @description Returns the visible LLM models filtered by configured providers and admin allowlist. Non-admin users see the same list. Used by the per-message model picker in the Ask UI.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.llmModelResponse"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/identities": {
         parameters: {
             query?: never;
@@ -1266,6 +1305,82 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["internal_api.embeddingSettingsResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get LLM settings
+         * @description Returns the configured LLM providers, default model, and allowlist. API keys are masked.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.llmSettingsResponse"];
+                    };
+                };
+            };
+        };
+        /**
+         * Update LLM settings
+         * @description Updates the configured providers, default model, and allowlist. Masked API keys (****...) are preserved from the existing values. Hot-swaps the registry on success — no restart required.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description LLM settings */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.llmSettingsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.llmSettingsResponse"];
                     };
                 };
                 /** @description Bad Request */
@@ -2483,6 +2598,15 @@ export interface components {
             error?: string;
             errors?: number;
             id?: string;
+            /**
+             * @description Scope is a free-form label from the connector naming its
+             *     current sub-unit of work — the IMAP folder, the Telegram
+             *     chat, the Paperless page. Surfaces in the UI alongside the
+             *     progress bar so "Syncing Archive…" beats a bare "0/327".
+             *     Empty when the connector hasn't declared a scope yet or
+             *     the sync has moved past the scoped portion.
+             */
+            scope?: string;
             started_at?: string;
             /** @description running | completed | failed | canceled */
             status?: string;
@@ -2561,6 +2685,34 @@ export interface components {
             has_avatar?: boolean;
             source_name?: string;
             source_type?: string;
+        };
+        "internal_api.llmModelResponse": {
+            bare_id?: string;
+            context_window?: number;
+            display_name?: string;
+            id?: string;
+            input_cost_per_mtok?: number;
+            output_cost_per_mtok?: number;
+            provider?: string;
+            supports_caching?: boolean;
+            supports_citations?: boolean;
+            supports_tools?: boolean;
+            supports_vision?: boolean;
+            typical_ttft_ms?: number;
+        };
+        "internal_api.llmSettingsRequest": {
+            allowlist?: string[];
+            anthropic_api_key?: string;
+            default_model?: string;
+            ollama_url?: string;
+            openai_api_key?: string;
+        };
+        "internal_api.llmSettingsResponse": {
+            allowlist?: string[];
+            anthropic_api_key?: string;
+            default_model?: string;
+            ollama_url?: string;
+            openai_api_key?: string;
         };
         "internal_api.loginRequest": {
             password?: string;

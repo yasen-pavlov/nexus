@@ -37,6 +37,9 @@ export async function fetchAPI<T>(
     unauthorizedHandler?.();
     throw new Error("Unauthorized");
   }
+  // 204 No Content is a real success path (DELETE flows). Any caller
+  // that types T as void doesn't expect a body anyway.
+  if (res.status === 204) return undefined as T;
   const body: APIResponse<T> = await res.json();
   if (body.error) throw new Error(body.error);
   return body.data as T;
@@ -71,6 +74,119 @@ export function openSyncProgressSSE<T = unknown>(
   };
   if (onError) es.onerror = onError;
   return es;
+}
+
+/**
+ * One parsed SSE frame. `event` is the named event (or the empty string
+ * for unnamed frames); `data` is the post-`data:`-line payload, joined
+ * across multiple `data:` lines per the spec. Comments and `id:` /
+ * `retry:` lines are dropped by the parser.
+ */
+export interface SSEFrame {
+  event: string;
+  data: string;
+}
+
+/**
+ * Open a streaming POST request that emits SSE frames. Used by the chat
+ * messages endpoint, which returns `text/event-stream` over POST.
+ *
+ * EventSource is GET-only and can't set an Authorization header, so we
+ * manage the stream ourselves with fetch + ReadableStream and a small
+ * line-buffered SSE parser. Tolerates frames split across chunks,
+ * multi-line `data:` (joined with `\n` per spec), `:` comment lines
+ * (proxy keep-alives), and `\r\n` line endings.
+ *
+ * Cancel via the AbortController passed in. The hook layer swallows the
+ * resulting AbortError on user-initiated cancel; the BE persists a
+ * partial assistant message marked cancelled.
+ */
+export async function* openChatMessageStream(
+  chatID: string,
+  body: { content: string; model?: string },
+  signal: AbortSignal,
+): AsyncGenerator<SSEFrame, void, void> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(`/api/chats/${chatID}/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (res.status === 401) {
+    clearToken();
+    unauthorizedHandler?.();
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    // Try to surface the backend's `{error}` envelope on a non-2xx
+    // pre-stream failure; fall back to a generic HTTP message.
+    let msg = `HTTP ${res.status}`;
+    try {
+      const env = (await res.json()) as { error?: string };
+      if (env.error) msg = env.error;
+    } catch {
+      // body wasn't JSON — leave msg as the HTTP code
+    }
+    throw new Error(msg);
+  }
+  if (!res.body) {
+    throw new Error("response body missing");
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  // Accumulators for the in-progress frame. SSE spec says a frame ends
+  // when we see a blank line; we keep accumulating event/data lines
+  // until then.
+  let event = "";
+  const dataLines: string[] = [];
+
+  const dispatch = (): SSEFrame | null => {
+    if (event === "" && dataLines.length === 0) return null;
+    const frame: SSEFrame = { event, data: dataLines.join("\n") };
+    event = "";
+    dataLines.length = 0;
+    return frame;
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+
+      // Split on \n; keep the trailing partial line (if any) in `buf`.
+      let nl = buf.indexOf("\n");
+      while (nl !== -1) {
+        let line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        // Strip the spec's optional CR before LF.
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") {
+          const f = dispatch();
+          if (f) yield f;
+        } else if (line.startsWith(":")) {
+          // SSE comment / keep-alive — ignore
+        } else if (line.startsWith("event:")) {
+          event = line.slice(6).trimStart();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+        // id:/retry: lines fall through silently — we don't need them
+        nl = buf.indexOf("\n");
+      }
+    }
+    // Flush any final frame that didn't end with a blank line.
+    const f = dispatch();
+    if (f) yield f;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // fetchAuthedBlob fetches an authenticated binary resource (e.g. a
