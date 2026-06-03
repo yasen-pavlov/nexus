@@ -60,7 +60,12 @@ describe("useRAGSettings", () => {
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
     await act(async () => {
-      await result.current.update.mutateAsync({ max_tool_rounds: 1 });
+      await result.current.update.mutateAsync({
+        max_tool_rounds: 1,
+        max_images_per_turn: 4,
+        enable_multimodal: true,
+        enable_open_attachment: false,
+      });
     });
     expect(toast.success).toHaveBeenCalledWith("RAG settings saved");
     await waitFor(() =>
@@ -86,7 +91,12 @@ describe("useRAGSettings", () => {
 
     await act(async () => {
       try {
-        await result.current.update.mutateAsync({ max_tool_rounds: 99 });
+        await result.current.update.mutateAsync({
+          max_tool_rounds: 99,
+          max_images_per_turn: 4,
+          enable_multimodal: true,
+          enable_open_attachment: false,
+        });
       } catch {
         // expected — non-2xx throws
       }

@@ -180,3 +180,83 @@ func TestBaselineRoundTrip(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestCaseResult_Passed_AllBranches(t *testing.T) {
+	yes, no := "yes", "no"
+	cases := []struct {
+		name string
+		r    CaseResult
+		want bool
+	}{
+		{"error fails", CaseResult{Error: "boom"}, false},
+		{"abstained passes (relevance ignored)", CaseResult{Abstained: boolPtr(true), Relevance: &no}, true},
+		{"did-not-abstain fails", CaseResult{Abstained: boolPtr(false)}, false},
+		{"cited-wrong fails", CaseResult{CitedCorrect: boolPtr(false)}, false},
+		{"unfaithful fails", CaseResult{Faithful: boolPtr(false)}, false},
+		{"relevance-no fails", CaseResult{Relevance: &no}, false},
+		{"all-good passes", CaseResult{CitedCorrect: boolPtr(true), Faithful: boolPtr(true), Relevance: &yes}, true},
+		{"nothing-judged passes", CaseResult{}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.r.Passed(); got != tc.want {
+			t.Errorf("%s: Passed() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestLoadGolden_MissingDirErrors(t *testing.T) {
+	if _, err := LoadGolden(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Error("expected error for missing golden dir")
+	}
+}
+
+func TestLoadBaseline_MalformedErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.json")
+	_ = os.WriteFile(path, []byte("{not json"), 0o600)
+	if _, err := LoadBaseline(path); err == nil {
+		t.Error("expected error for malformed baseline")
+	}
+}
+
+func TestParseVerdict_Fallbacks(t *testing.T) {
+	// No prefix match → contains-scan fallback.
+	if got := parseVerdict("definitely partial credit here"); got != "partial" {
+		t.Errorf("contains partial = %q", got)
+	}
+	if got := parseVerdict("absolutely yes indeed"); got != "yes" {
+		t.Errorf("contains yes = %q", got)
+	}
+}
+
+func TestRenderMarkdown_FailureDetailAndDeltas(t *testing.T) {
+	longAnswer := strings.Repeat("x", 400)
+	rep := Report{
+		Model: "m", JudgeModel: "j",
+		Results: []CaseResult{
+			// error + missing cites + long answer → exercises the Failures
+			// section, truncate, and the missing-citations line.
+			{Name: "errcase", Query: "q", Error: "boom", MissingCites: []string{"a", "b"}, Answer: longAnswer},
+			// cited wrong + cell renderers (tri false, relCell, abstain).
+			{Name: "citecase", Lang: "de", CitedCorrect: boolPtr(false), Faithful: boolPtr(false), Relevance: strPtr("partial")},
+			// a clean pass that was failing before → "✓ fixed" delta branch.
+			{Name: "fixed", Relevance: strPtr("yes")},
+			// unchanged pass → empty delta branch.
+			{Name: "same", Relevance: strPtr("yes")},
+		},
+	}
+	prev := Baseline{"errcase": true, "fixed": false, "same": true}
+	md := RenderMarkdown(rep, prev)
+
+	for _, want := range []string{"## Failures", "errcase", "boom", "missing citations: a, b", "…", "✓ fixed", "REGRESSED"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("report missing %q:\n%s", want, md)
+		}
+	}
+}
+
+func TestFaithfulnessPrompt_NoEvidence(t *testing.T) {
+	p := faithfulnessPrompt("some answer", nil)
+	if !strings.Contains(p, "no documents were retrieved") {
+		t.Errorf("empty-evidence prompt should note it:\n%s", p)
+	}
+}

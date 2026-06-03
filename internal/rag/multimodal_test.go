@@ -253,6 +253,56 @@ func TestOpenAttachment_PDFFallsBackToTextWithoutPDFSupport(t *testing.T) {
 	}
 }
 
+func TestAttachMedia_WalksPDFAttachment(t *testing.T) {
+	emailID := uuid.New()
+	hits := []model.DocumentHit{{Document: model.Document{
+		ID: emailID, Title: "Email with invoice", SourceType: "imap", SourceName: "mail", SourceID: "INBOX:5", MimeType: "message/rfc822",
+	}}}
+	docs := buildLLMDocs(hits, 10)
+	att := model.Chunk{
+		ID: uuid.New().String(), Title: "invoice.pdf", SourceType: "imap", SourceName: "mail", SourceID: "INBOX:5:att:0", MimeType: "application/pdf",
+		Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetID: emailID.String(), TargetSourceID: "INBOX:5"}},
+	}
+	far := &fakeAttachmentResolver{referencing: []model.Chunk{att}}
+	fis := &fakeImageStore{blobs: map[string][]byte{key("imap", "mail", "INBOX:5:att:0"): []byte("%PDF-data")}}
+	o := &Orchestrator{binaries: fis, attachments: far, log: zap.NewNop()}
+
+	// PDF-capable model → the walked PDF attaches to the parent email doc.
+	o.attachMedia(context.Background(), docs, hits, llm.ModelInfo{SupportsPDF: true},
+		Settings{EnableMultimodal: true, MaxImagesPerTurn: 4})
+
+	if len(docs[0].PDFs) != 1 || docs[0].PDFs[0].Filename != "invoice.pdf" {
+		t.Fatalf("walked PDF not attached to parent: %+v", docs[0].PDFs)
+	}
+}
+
+func TestAttachmentParent(t *testing.T) {
+	parentDoc := &llm.Document{ID: "parent-uuid"}
+	byID := map[string]*llm.Document{"parent-uuid": parentDoc}
+	bySourceID := map[string]*llm.Document{"INBOX:9": parentDoc}
+
+	// Match by relation TargetID.
+	att := model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetID: "parent-uuid"}}}
+	if got := attachmentParent(att, byID, bySourceID); got != parentDoc {
+		t.Error("should match parent by TargetID")
+	}
+	// Match by TargetSourceID when no doc-id target.
+	att = model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetSourceID: "INBOX:9"}}}
+	if got := attachmentParent(att, byID, bySourceID); got != parentDoc {
+		t.Error("should match parent by TargetSourceID")
+	}
+	// Non-attachment relation is skipped → no match.
+	att = model.Chunk{Relations: []model.Relation{{Type: "reply_to", TargetID: "parent-uuid"}}}
+	if got := attachmentParent(att, byID, bySourceID); got != nil {
+		t.Error("non-attachment_of relation must not match")
+	}
+	// Unknown target → nil.
+	att = model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetID: "nope"}}}
+	if got := attachmentParent(att, byID, bySourceID); got != nil {
+		t.Error("unknown target → nil")
+	}
+}
+
 func TestIsPDFMime(t *testing.T) {
 	for _, m := range []string{"application/pdf", "APPLICATION/PDF"} {
 		if !isPDFMime(m) {

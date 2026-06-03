@@ -7,8 +7,11 @@ import { RecentChatItem } from "../recent-chat-item";
 
 const chat: ChatListEntry = {
   id: "11111111-2222-3333-4444-555555555555",
+  user_id: "99999999-2222-3333-4444-555555555555",
   title: "Anthropic invoices",
+  default_model: "",
   first_message_preview: "find invoices",
+  created_at: "2026-06-03T09:00:00Z",
   updated_at: "2026-06-03T10:00:00Z",
 };
 

@@ -127,6 +127,22 @@ func TestRegistry_ModelsHidesUnconfiguredAndOutsideAllowlist(t *testing.T) {
 	}
 }
 
+func TestRegistry_AllConfiguredModelsIgnoresAllowlist(t *testing.T) {
+	r := NewRegistry(RegistryConfig{
+		Generators: map[string]Generator{ProviderAnthropic: &stubGen{}},
+		Allowlist:  []string{"anthropic:claude-haiku-4-5"},
+	})
+	// Models() honours the allowlist (1); AllConfiguredModels() ignores it
+	// and returns every configured-provider catalog model (all 3 Anthropic).
+	if got := len(r.Models()); got != 1 {
+		t.Fatalf("Models() = %d, want 1", got)
+	}
+	all := r.AllConfiguredModels()
+	if len(all) <= 1 {
+		t.Errorf("AllConfiguredModels() = %d, want > 1 (allowlist ignored)", len(all))
+	}
+}
+
 func TestRegistry_ExtrasResolveOutsideCatalog(t *testing.T) {
 	r := NewRegistry(RegistryConfig{
 		Generators: map[string]Generator{ProviderOllama: &stubGen{}},
@@ -268,5 +284,43 @@ func TestNewRetryGenerator_Defaults(t *testing.T) {
 	r := NewRetryGenerator(g, zap.NewNop())
 	if r.maxRetries != defaultMaxRetries || r.baseDelay != defaultBaseDelay {
 		t.Errorf("defaults = (%d, %s)", r.maxRetries, r.baseDelay)
+	}
+}
+
+// --- multi-modal collection helpers (Phase 6/6b) ---
+
+func TestCollectImagesAndPDFs(t *testing.T) {
+	docs := []Document{
+		{ID: "a", Images: []Image{{MediaType: "image/png", Data: []byte("1")}}},
+		{ID: "b"},
+		{ID: "c",
+			Images: []Image{{MediaType: "image/jpeg", Data: []byte("2")}},
+			PDFs:   []PDF{{Filename: "x.pdf", Data: []byte("p")}},
+		},
+	}
+	if imgs := CollectImages(docs); len(imgs) != 2 {
+		t.Errorf("CollectImages = %d, want 2", len(imgs))
+	}
+	pdfs := CollectPDFs(docs)
+	if len(pdfs) != 1 || pdfs[0].Filename != "x.pdf" {
+		t.Errorf("CollectPDFs = %+v, want one x.pdf", pdfs)
+	}
+	if len(CollectImages(nil)) != 0 || len(CollectPDFs(nil)) != 0 {
+		t.Error("nil docs should collect nothing")
+	}
+}
+
+func TestLastUserIndex(t *testing.T) {
+	msgs := []Message{
+		{Role: RoleSystem}, {Role: RoleUser}, {Role: RoleAssistant}, {Role: RoleUser},
+	}
+	if got := LastUserIndex(msgs); got != 3 {
+		t.Errorf("LastUserIndex = %d, want 3", got)
+	}
+	if got := LastUserIndex([]Message{{Role: RoleAssistant}}); got != -1 {
+		t.Errorf("no user → %d, want -1", got)
+	}
+	if got := LastUserIndex(nil); got != -1 {
+		t.Errorf("nil → %d, want -1", got)
 	}
 }
