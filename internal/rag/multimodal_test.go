@@ -283,22 +283,22 @@ func TestAttachmentParent(t *testing.T) {
 
 	// Match by relation TargetID.
 	att := model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetID: "parent-uuid"}}}
-	if got := attachmentParent(att, byID, bySourceID); got != parentDoc {
+	if attachmentParent(att, byID, bySourceID) != parentDoc {
 		t.Error("should match parent by TargetID")
 	}
 	// Match by TargetSourceID when no doc-id target.
 	att = model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetSourceID: "INBOX:9"}}}
-	if got := attachmentParent(att, byID, bySourceID); got != parentDoc {
+	if attachmentParent(att, byID, bySourceID) != parentDoc {
 		t.Error("should match parent by TargetSourceID")
 	}
 	// Non-attachment relation is skipped → no match.
 	att = model.Chunk{Relations: []model.Relation{{Type: "reply_to", TargetID: "parent-uuid"}}}
-	if got := attachmentParent(att, byID, bySourceID); got != nil {
+	if attachmentParent(att, byID, bySourceID) != nil {
 		t.Error("non-attachment_of relation must not match")
 	}
 	// Unknown target → nil.
 	att = model.Chunk{Relations: []model.Relation{{Type: model.RelationAttachmentOf, TargetID: "nope"}}}
-	if got := attachmentParent(att, byID, bySourceID); got != nil {
+	if attachmentParent(att, byID, bySourceID) != nil {
 		t.Error("unknown target → nil")
 	}
 }

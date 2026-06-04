@@ -84,6 +84,108 @@ export function RecentChatItem({
     e.stopPropagation();
   };
 
+  // The action zone wraps native <button>s. It exists only to stop a
+  // click (or keyboard activation) on the padding/gaps between those
+  // buttons from bubbling to the enclosing <Link> and navigating away.
+  // It has no action of its own, so the keyboard guard mirrors the
+  // pointer guard: swallow Enter/Space so they don't trigger the Link.
+  const stopKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.stopPropagation();
+    }
+  };
+
+  // The metadata-row action zone has three mutually-exclusive modes:
+  // the inline rename editor, the delete-confirm pill, or the default
+  // rename/delete buttons. Derived here rather than as a nested ternary
+  // in JSX for readability.
+  let actions: React.ReactNode;
+  if (editing) {
+    actions = (
+      <div className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
+        <span className="font-medium">Rename</span>
+        <button
+          type="button"
+          onClick={() => void commitEdit()}
+          disabled={saving}
+          aria-label="Save title"
+          className="inline-flex size-5 items-center justify-center rounded hover:bg-primary/20 disabled:opacity-50"
+        >
+          <Check className="size-3" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            stop(e);
+            setEditing(false);
+          }}
+          aria-label="Cancel rename"
+          className="inline-flex size-5 items-center justify-center rounded hover:bg-primary/20"
+        >
+          <X className="size-3" aria-hidden />
+        </button>
+      </div>
+    );
+  } else if (confirm) {
+    actions = (
+      <div className="flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
+        <span className="font-medium">Delete?</span>
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={deleting}
+          aria-label="Confirm delete"
+          className="inline-flex size-5 items-center justify-center rounded hover:bg-destructive/20 disabled:opacity-50"
+        >
+          <Check className="size-3" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            stop(e);
+            setConfirm(false);
+          }}
+          aria-label="Cancel delete"
+          className="inline-flex size-5 items-center justify-center rounded hover:bg-destructive/20"
+        >
+          <X className="size-3" aria-hidden />
+        </button>
+      </div>
+    );
+  } else {
+    actions = (
+      <>
+        <button
+          type="button"
+          onClick={startEdit}
+          aria-label="Rename chat"
+          className={cn(
+            "inline-flex size-6 items-center justify-center rounded text-muted-foreground/50 transition-colors",
+            "hover:bg-primary/10 hover:text-primary",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+          )}
+        >
+          <Pencil className="size-3.5" aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            stop(e);
+            setConfirm(true);
+          }}
+          aria-label="Delete chat"
+          className={cn(
+            "inline-flex size-6 items-center justify-center rounded text-muted-foreground/50 transition-colors",
+            "hover:bg-destructive/10 hover:text-destructive",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+          )}
+        >
+          <Trash2 className="size-3.5" aria-hidden />
+        </button>
+      </>
+    );
+  }
+
   return (
     <article
       aria-label={`Chat: ${title}`}
@@ -138,86 +240,13 @@ export function RecentChatItem({
         <span>{formatRelative(chat.updated_at)}</span>
         <span aria-hidden>·</span>
         <span className="font-mono tabular-nums opacity-70">{shortID}</span>
-        <div className="ml-auto flex items-center gap-0.5" onClick={stop}>
-          {editing ? (
-            <div className="flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-primary">
-              <span className="font-medium">Rename</span>
-              <button
-                type="button"
-                onClick={() => void commitEdit()}
-                disabled={saving}
-                aria-label="Save title"
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-primary/20 disabled:opacity-50"
-              >
-                <Check className="size-3" aria-hidden />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  stop(e);
-                  setEditing(false);
-                }}
-                aria-label="Cancel rename"
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-primary/20"
-              >
-                <X className="size-3" aria-hidden />
-              </button>
-            </div>
-          ) : confirm ? (
-            <div className="flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-destructive">
-              <span className="font-medium">Delete?</span>
-              <button
-                type="button"
-                onClick={handleDelete}
-                disabled={deleting}
-                aria-label="Confirm delete"
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-destructive/20 disabled:opacity-50"
-              >
-                <Check className="size-3" aria-hidden />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  stop(e);
-                  setConfirm(false);
-                }}
-                aria-label="Cancel delete"
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-destructive/20"
-              >
-                <X className="size-3" aria-hidden />
-              </button>
-            </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={startEdit}
-                aria-label="Rename chat"
-                className={cn(
-                  "inline-flex size-6 items-center justify-center rounded text-muted-foreground/50 transition-colors",
-                  "hover:bg-primary/10 hover:text-primary",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                )}
-              >
-                <Pencil className="size-3.5" aria-hidden />
-              </button>
-              <button
-                type="button"
-                onClick={(e) => {
-                  stop(e);
-                  setConfirm(true);
-                }}
-                aria-label="Delete chat"
-                className={cn(
-                  "inline-flex size-6 items-center justify-center rounded text-muted-foreground/50 transition-colors",
-                  "hover:bg-destructive/10 hover:text-destructive",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                )}
-              >
-                <Trash2 className="size-3.5" aria-hidden />
-              </button>
-            </>
-          )}
+        <div
+          role="presentation"
+          className="ml-auto flex items-center gap-0.5"
+          onClick={stop}
+          onKeyDown={stopKey}
+        >
+          {actions}
         </div>
       </div>
     </article>

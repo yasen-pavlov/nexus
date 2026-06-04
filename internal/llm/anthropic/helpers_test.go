@@ -214,17 +214,17 @@ func TestSchemaProperties_HandlesNilAndShapes(t *testing.T) {
 	}
 	props := map[string]any{"type": "string"}
 	full := map[string]any{"properties": props}
-	if got := schemaProperties(full); got == nil {
+	if schemaProperties(full) == nil {
 		t.Error("expected unwrapped properties")
 	}
 	flat := map[string]any{"type": "string"}
-	if got := schemaProperties(flat); got == nil {
+	if schemaProperties(flat) == nil {
 		t.Error("flat schema should pass through")
 	}
 }
 
 func TestSchemaRequired_HandlesShapes(t *testing.T) {
-	if r := schemaRequired(nil); r != nil {
+	if schemaRequired(nil) != nil {
 		t.Error("nil should be nil")
 	}
 	if r := schemaRequired(map[string]any{"required": []string{"q"}}); len(r) != 1 || r[0] != "q" {

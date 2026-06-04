@@ -70,49 +70,15 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 	if req.Temperature != nil {
 		params.Temperature = sdk.Float(float64(*req.Temperature))
 	}
-
-	// System prompt as a single text block; the orchestrator decides where
-	// to put cache breakpoints.
-	if req.System != "" {
-		sys := sdk.TextBlockParam{Text: req.System}
-		if req.EnableCache {
-			sys.CacheControl = sdk.NewCacheControlEphemeralParam()
-		}
-		params.System = []sdk.TextBlockParam{sys}
-	}
-
-	// Documents are passed as a *user* message with custom-content document
-	// blocks so Anthropic can emit citations bound to chunk titles. We
-	// prepend them to the conversation as a synthetic first user turn —
-	// this matches how the API expects retrieved-context to flow.
-	//
-	// Anthropic caps requests at 4 cache_control breakpoints. We only set
-	// cache_control on the LAST document — that single breakpoint marks the
-	// end of the cacheable docs prefix; everything before it gets cached too.
-	var leadingDocBlocks []sdk.ContentBlockParamUnion
-	for i, doc := range req.Documents {
-		isLast := i == len(req.Documents)-1
-		block := docToBlock(doc, req.EnableCache && isLast)
-		leadingDocBlocks = append(leadingDocBlocks, block)
-	}
-	// Multi-modal: append any attached images + PDFs as content blocks in
-	// the same synthetic user message as the documents, so Claude reads
-	// them alongside the cited text. The orchestrator only populates these
-	// for capable models, so no capability check here.
-	for _, doc := range req.Documents {
-		for _, img := range doc.Images {
-			leadingDocBlocks = append(leadingDocBlocks, ImageContentBlock(img))
-		}
-		for _, pdf := range doc.PDFs {
-			leadingDocBlocks = append(leadingDocBlocks, PDFContentBlock(pdf))
-		}
+	if sys := buildSystem(req); sys != nil {
+		params.System = sys
 	}
 
 	// Conversation history: replay messages in order. Documents (if any)
 	// are merged into the *first* user message so the citation index
 	// reflects document_index 0..N-1 from the start.
 	messages := mapMessages(req.Messages)
-	if len(leadingDocBlocks) > 0 {
+	if leadingDocBlocks := buildLeadingDocBlocks(req); len(leadingDocBlocks) > 0 {
 		messages = prependDocs(messages, leadingDocBlocks)
 	}
 	if len(messages) == 0 {
@@ -120,24 +86,81 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 	}
 	params.Messages = messages
 
-	if len(req.Tools) > 0 {
-		tools := make([]sdk.ToolUnionParam, 0, len(req.Tools))
-		for _, t := range req.Tools {
-			tools = append(tools, sdk.ToolUnionParam{
-				OfTool: &sdk.ToolParam{
-					Name:        t.Name,
-					Description: sdk.String(t.Description),
-					InputSchema: sdk.ToolInputSchemaParam{
-						Properties: schemaProperties(t.Schema),
-						Required:   schemaRequired(t.Schema),
-					},
-				},
-			})
-		}
+	if tools := buildTools(req.Tools); len(tools) > 0 {
 		params.Tools = tools
 	}
 
 	return params, nil
+}
+
+// buildSystem renders the system prompt as a single text block, or nil when
+// there's no system prompt. The orchestrator decides where to put cache
+// breakpoints.
+func buildSystem(req llm.GenerateRequest) []sdk.TextBlockParam {
+	if req.System == "" {
+		return nil
+	}
+	sys := sdk.TextBlockParam{Text: req.System}
+	if req.EnableCache {
+		sys.CacheControl = sdk.NewCacheControlEphemeralParam()
+	}
+	return []sdk.TextBlockParam{sys}
+}
+
+// buildLeadingDocBlocks assembles the document, image, and PDF content blocks
+// that get prepended to the first user message as a synthetic retrieved-context
+// turn.
+//
+// Anthropic caps requests at 4 cache_control breakpoints. We only set
+// cache_control on the LAST document — that single breakpoint marks the end of
+// the cacheable docs prefix; everything before it gets cached too.
+//
+// Multi-modal images + PDFs are appended in the same synthetic user message so
+// Claude reads them alongside the cited text. The orchestrator only populates
+// these for capable models, so no capability check here.
+func buildLeadingDocBlocks(req llm.GenerateRequest) []sdk.ContentBlockParamUnion {
+	var blocks []sdk.ContentBlockParamUnion
+	for i, doc := range req.Documents {
+		isLast := i == len(req.Documents)-1
+		blocks = append(blocks, docToBlock(doc, req.EnableCache && isLast))
+	}
+	for _, doc := range req.Documents {
+		for _, img := range doc.Images {
+			blocks = append(blocks, ImageContentBlock(img))
+		}
+		for _, pdf := range doc.PDFs {
+			blocks = append(blocks, PDFContentBlock(pdf))
+		}
+	}
+	return blocks
+}
+
+// buildTools maps llm.Tool definitions to the SDK's tool params.
+func buildTools(in []llm.Tool) []sdk.ToolUnionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	tools := make([]sdk.ToolUnionParam, 0, len(in))
+	for _, t := range in {
+		tools = append(tools, sdk.ToolUnionParam{
+			OfTool: &sdk.ToolParam{
+				Name:        t.Name,
+				Description: sdk.String(t.Description),
+				InputSchema: sdk.ToolInputSchemaParam{
+					Properties: schemaProperties(t.Schema),
+					Required:   schemaRequired(t.Schema),
+				},
+			},
+		})
+	}
+	return tools
+}
+
+// toolState tracks a streaming tool-use block's id+name so we know each tool
+// call's identity and can mark Final on content_block_stop.
+type toolState struct {
+	id   string
+	name string
 }
 
 // run drains the SDK stream and forwards events.
@@ -146,78 +169,23 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 
 	stream := c.api.Messages.NewStreaming(ctx, params)
 
-	// Per-block accumulators for tool-use blocks so we know each tool
-	// call's id+name and can mark Final on content_block_stop.
-	type toolState struct {
-		id   string
-		name string
-	}
 	tools := make(map[int64]toolState)
-
 	stopReason := llm.StopEnd
 	var usage *llm.Usage
 
 	for stream.Next() {
-		ev := stream.Current()
-		switch v := ev.AsAny().(type) {
-		case sdk.MessageStartEvent:
-			// Usage start is reported again in MessageDeltaEvent; nothing to do.
-			_ = v
+		switch v := stream.Current().AsAny().(type) {
 		case sdk.ContentBlockStartEvent:
-			if cb, ok := v.ContentBlock.AsAny().(sdk.ToolUseBlock); ok {
-				tools[v.Index] = toolState{id: cb.ID, name: cb.Name}
-				if !sendOrCancel(ctx, out, llm.Event{
-					Kind: llm.EventToolCall,
-					ToolCall: &llm.ToolCallDelta{
-						ID:       cb.ID,
-						Name:     cb.Name,
-						ArgsJSON: "",
-					},
-				}) {
-					return
-				}
+			if !handleBlockStart(ctx, v, tools, out) {
+				return
 			}
 		case sdk.ContentBlockDeltaEvent:
-			switch d := v.Delta.AsAny().(type) {
-			case sdk.TextDelta:
-				if d.Text != "" {
-					if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: d.Text}) {
-						return
-					}
-				}
-			case sdk.InputJSONDelta:
-				if t, ok := tools[v.Index]; ok && d.PartialJSON != "" {
-					if !sendOrCancel(ctx, out, llm.Event{
-						Kind: llm.EventToolCall,
-						ToolCall: &llm.ToolCallDelta{
-							ID:       t.id,
-							Name:     t.name,
-							ArgsJSON: d.PartialJSON,
-						},
-					}) {
-						return
-					}
-				}
-			case sdk.CitationsDelta:
-				if cit := mapCitation(d, req.Documents); cit != nil {
-					if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventCitation, Citation: cit}) {
-						return
-					}
-				}
+			if !handleBlockDelta(ctx, v, tools, req.Documents, out) {
+				return
 			}
 		case sdk.ContentBlockStopEvent:
-			if t, ok := tools[v.Index]; ok {
-				if !sendOrCancel(ctx, out, llm.Event{
-					Kind: llm.EventToolCall,
-					ToolCall: &llm.ToolCallDelta{
-						ID:    t.id,
-						Name:  t.name,
-						Final: true,
-					},
-				}) {
-					return
-				}
-				delete(tools, v.Index)
+			if !handleBlockStop(ctx, v, tools, out) {
+				return
 			}
 		case sdk.MessageDeltaEvent:
 			stopReason = mapStopReason(v.Delta.StopReason)
@@ -227,9 +195,6 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 				CacheReadTokens:  int(v.Usage.CacheReadInputTokens),
 				CacheWriteTokens: int(v.Usage.CacheCreationInputTokens),
 			}
-		case sdk.MessageStopEvent:
-			// Terminal; loop exits naturally.
-			_ = v
 		}
 	}
 
@@ -243,6 +208,72 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 	}
 
 	out <- llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+}
+
+// handleBlockStart records a new tool-use block and emits its opening
+// EventToolCall. Returns false if the send was cancelled.
+func handleBlockStart(ctx context.Context, v sdk.ContentBlockStartEvent, tools map[int64]toolState, out chan<- llm.Event) bool {
+	cb, ok := v.ContentBlock.AsAny().(sdk.ToolUseBlock)
+	if !ok {
+		return true
+	}
+	tools[v.Index] = toolState{id: cb.ID, name: cb.Name}
+	return sendOrCancel(ctx, out, llm.Event{
+		Kind: llm.EventToolCall,
+		ToolCall: &llm.ToolCallDelta{
+			ID:       cb.ID,
+			Name:     cb.Name,
+			ArgsJSON: "",
+		},
+	})
+}
+
+// handleBlockDelta forwards a text, tool-arg, or citation delta. Returns false
+// if the send was cancelled.
+func handleBlockDelta(ctx context.Context, v sdk.ContentBlockDeltaEvent, tools map[int64]toolState, docs []llm.Document, out chan<- llm.Event) bool {
+	switch d := v.Delta.AsAny().(type) {
+	case sdk.TextDelta:
+		if d.Text != "" {
+			return sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: d.Text})
+		}
+	case sdk.InputJSONDelta:
+		if t, ok := tools[v.Index]; ok && d.PartialJSON != "" {
+			return sendOrCancel(ctx, out, llm.Event{
+				Kind: llm.EventToolCall,
+				ToolCall: &llm.ToolCallDelta{
+					ID:       t.id,
+					Name:     t.name,
+					ArgsJSON: d.PartialJSON,
+				},
+			})
+		}
+	case sdk.CitationsDelta:
+		if cit := mapCitation(d, docs); cit != nil {
+			return sendOrCancel(ctx, out, llm.Event{Kind: llm.EventCitation, Citation: cit})
+		}
+	}
+	return true
+}
+
+// handleBlockStop marks a tool-use block Final and forgets it. Returns false if
+// the send was cancelled.
+func handleBlockStop(ctx context.Context, v sdk.ContentBlockStopEvent, tools map[int64]toolState, out chan<- llm.Event) bool {
+	t, ok := tools[v.Index]
+	if !ok {
+		return true
+	}
+	if !sendOrCancel(ctx, out, llm.Event{
+		Kind: llm.EventToolCall,
+		ToolCall: &llm.ToolCallDelta{
+			ID:    t.id,
+			Name:  t.name,
+			Final: true,
+		},
+	}) {
+		return false
+	}
+	delete(tools, v.Index)
+	return true
 }
 
 // docToBlock wraps a Document as a citation-enabled custom-content document
@@ -298,31 +329,9 @@ func mapMessages(in []llm.Message) []sdk.MessageParam {
 	for _, m := range in {
 		switch m.Role {
 		case llm.RoleUser:
-			blocks := []sdk.ContentBlockParamUnion{}
-			if m.Content != "" {
-				blocks = append(blocks, sdk.NewTextBlock(m.Content))
-			}
-			out = append(out, sdk.NewUserMessage(blocks...))
+			out = append(out, mapUserMessage(m))
 		case llm.RoleAssistant:
-			blocks := []sdk.ContentBlockParamUnion{}
-			if m.Content != "" {
-				blocks = append(blocks, sdk.NewTextBlock(m.Content))
-			}
-			for _, tc := range m.ToolCalls {
-				input := tc.ArgsJSON
-				if input == "" {
-					input = "{}"
-				}
-				// NewToolUseBlock takes `input any` and the SDK runs it
-				// through json.Marshal. Passing raw []byte would
-				// base64-encode it as a string ("Input should be a
-				// valid dictionary" 400 from Anthropic on round 2 of
-				// any tool-use turn). json.RawMessage embeds the
-				// already-formed JSON verbatim, which is what the
-				// API expects for tool_use.input.
-				blocks = append(blocks, sdk.NewToolUseBlock(tc.ID, json.RawMessage(input), tc.Name))
-			}
-			out = append(out, sdk.NewAssistantMessage(blocks...))
+			out = append(out, mapAssistantMessage(m))
 		case llm.RoleTool:
 			// Tool turns are rendered as user messages on Anthropic with
 			// a single tool_result block.
@@ -333,6 +342,38 @@ func mapMessages(in []llm.Message) []sdk.MessageParam {
 		}
 	}
 	return out
+}
+
+// mapUserMessage maps a user turn to an Anthropic user message.
+func mapUserMessage(m llm.Message) sdk.MessageParam {
+	blocks := []sdk.ContentBlockParamUnion{}
+	if m.Content != "" {
+		blocks = append(blocks, sdk.NewTextBlock(m.Content))
+	}
+	return sdk.NewUserMessage(blocks...)
+}
+
+// mapAssistantMessage maps an assistant turn, including any tool_use blocks.
+func mapAssistantMessage(m llm.Message) sdk.MessageParam {
+	blocks := []sdk.ContentBlockParamUnion{}
+	if m.Content != "" {
+		blocks = append(blocks, sdk.NewTextBlock(m.Content))
+	}
+	for _, tc := range m.ToolCalls {
+		input := tc.ArgsJSON
+		if input == "" {
+			input = "{}"
+		}
+		// NewToolUseBlock takes `input any` and the SDK runs it
+		// through json.Marshal. Passing raw []byte would
+		// base64-encode it as a string ("Input should be a
+		// valid dictionary" 400 from Anthropic on round 2 of
+		// any tool-use turn). json.RawMessage embeds the
+		// already-formed JSON verbatim, which is what the
+		// API expects for tool_use.input.
+		blocks = append(blocks, sdk.NewToolUseBlock(tc.ID, json.RawMessage(input), tc.Name))
+	}
+	return sdk.NewAssistantMessage(blocks...)
 }
 
 // prependDocs inserts the document blocks into the first user message so the

@@ -45,7 +45,7 @@ func TestBuildToolList_HonoursModelAndCap(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tools := BuildToolList(llm.ModelInfo{SupportsTools: tc.supportsTools}, tc.max, false)
-			if got := len(tools) > 0; got != tc.wantTools {
+			if (len(tools) > 0) != tc.wantTools {
 				t.Errorf("got tools=%d, want non-empty=%v", len(tools), tc.wantTools)
 			}
 		})

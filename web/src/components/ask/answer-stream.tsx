@@ -133,13 +133,24 @@ function withPills(
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
-      return splitSentinels(
+      const segments = splitSentinels(
         child,
         citations,
         evidenceByDocID,
         numberByDocID,
         onJump,
-      ).map((p, i) => <Fragment key={i}>{p}</Fragment>);
+      );
+      // CitationPill segments already carry a stable, content-derived
+      // key (doc id + span). Plain-text segments don't, so derive a
+      // stable key from the segment's own text content instead of its
+      // array index.
+      return segments.map((p) =>
+        isValidElement(p) ? (
+          p
+        ) : (
+          <Fragment key={`t-${String(p)}`}>{p}</Fragment>
+        ),
+      );
     }
     if (isValidElement(child)) {
       const el = child as ReactElement<{ children?: ReactNode }>;

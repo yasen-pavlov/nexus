@@ -132,6 +132,66 @@ function reducer(state: StreamingTurn, action: Action): StreamingTurn {
   }
 }
 
+function applyCitation(state: StreamingTurn, payload: unknown): StreamingTurn {
+  const c = payload as Partial<{
+    doc_id: string;
+    cited_text: string;
+    span: [number, number];
+  }>;
+  if (!c.doc_id || !Array.isArray(c.span)) return state;
+  const citation: ChatCitation = {
+    doc_id: c.doc_id,
+    cited_text: c.cited_text,
+    span_start: c.span[0],
+    span_end: c.span[1],
+  };
+  return { ...state, citations: [...state.citations, citation] };
+}
+
+function applyToolResult(state: StreamingTurn, payload: unknown): StreamingTurn {
+  const p = payload as {
+    name?: string;
+    summary?: string;
+    chunks?: ChunkPreview[];
+  };
+  if (!p.name) return state;
+  // Merge onto the most recent same-name event whose summary hasn't
+  // been set yet. If none exists (server sent tool_result without a
+  // matching tool_start — should not happen but tolerate), drop.
+  let merged = false;
+  const next = state.toolEvents.map((ev) => {
+    if (!merged && ev.name === p.name && ev.summary === undefined) {
+      merged = true;
+      return { ...ev, summary: p.summary, chunks: p.chunks ?? [] };
+    }
+    return ev;
+  });
+  if (!merged) return state;
+  return { ...state, toolEvents: next };
+}
+
+function applyDone(state: StreamingTurn, payload: unknown): StreamingTurn {
+  // The orchestrator always sends `done` last, even after an `error`
+  // frame. Preserve phase="error" so downstream consumers (e.g. the
+  // AssistantTurn red block) treat phase as the single source of truth
+  // for "did this turn fail?". `error` info on the turn stays
+  // untouched either way; we just don't let phase silently roll back
+  // to "done" once an error landed.
+  const d = payload as {
+    stop_reason?: string;
+    message_id?: string;
+    duration_ms?: number;
+  };
+  return {
+    ...state,
+    phase: state.phase === "error" ? "error" : "done",
+    stopReason: d.stop_reason,
+    messageID: d.message_id,
+    completedAt: Date.now(),
+    durationMs: typeof d.duration_ms === "number" ? d.duration_ms : state.durationMs,
+  };
+}
+
 function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
   // SSE payloads are JSON; if a frame fails to parse we drop it silently
   // rather than blowing up the whole turn — the next frame can still
@@ -173,21 +233,8 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
         answer: state.answer + delta,
       };
     }
-    case "citation": {
-      const c = payload as Partial<{
-        doc_id: string;
-        cited_text: string;
-        span: [number, number];
-      }>;
-      if (!c.doc_id || !Array.isArray(c.span)) return state;
-      const citation: ChatCitation = {
-        doc_id: c.doc_id,
-        cited_text: c.cited_text,
-        span_start: c.span[0],
-        span_end: c.span[1],
-      };
-      return { ...state, citations: [...state.citations, citation] };
-    }
+    case "citation":
+      return applyCitation(state, payload);
     case "usage":
       return { ...state, usage: payload as ChatUsage };
     case "title": {
@@ -223,48 +270,10 @@ function applyFrame(state: StreamingTurn, frame: SSEFrame): StreamingTurn {
         ],
       };
     }
-    case "tool_result": {
-      const p = payload as {
-        name?: string;
-        summary?: string;
-        chunks?: ChunkPreview[];
-      };
-      if (!p.name) return state;
-      // Merge onto the most recent same-name event whose summary hasn't
-      // been set yet. If none exists (server sent tool_result without a
-      // matching tool_start — should not happen but tolerate), drop.
-      let merged = false;
-      const next = state.toolEvents.map((ev) => {
-        if (!merged && ev.name === p.name && ev.summary === undefined) {
-          merged = true;
-          return { ...ev, summary: p.summary, chunks: p.chunks ?? [] };
-        }
-        return ev;
-      });
-      if (!merged) return state;
-      return { ...state, toolEvents: next };
-    }
-    case "done": {
-      // The orchestrator always sends `done` last, even after an `error`
-      // frame. Preserve phase="error" so downstream consumers (e.g. the
-      // AssistantTurn red block) treat phase as the single source of truth
-      // for "did this turn fail?". `error` info on the turn stays
-      // untouched either way; we just don't let phase silently roll back
-      // to "done" once an error landed.
-      const d = payload as {
-        stop_reason?: string;
-        message_id?: string;
-        duration_ms?: number;
-      };
-      return {
-        ...state,
-        phase: state.phase === "error" ? "error" : "done",
-        stopReason: d.stop_reason,
-        messageID: d.message_id,
-        completedAt: Date.now(),
-        durationMs: typeof d.duration_ms === "number" ? d.duration_ms : state.durationMs,
-      };
-    }
+    case "tool_result":
+      return applyToolResult(state, payload);
+    case "done":
+      return applyDone(state, payload);
     case "error": {
       const message =
         (payload as { message?: string }).message ?? "unknown error";

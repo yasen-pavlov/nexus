@@ -101,11 +101,14 @@ export interface SSEFrame {
  * resulting AbortError on user-initiated cancel; the BE persists a
  * partial assistant message marked cancelled.
  */
-export async function* openChatMessageStream(
+// Validates the pre-stream HTTP response and returns the streaming body.
+// Throws on auth failure (clearing the token) or any non-2xx status,
+// surfacing the backend's `{error}` envelope when present.
+async function openStreamBody(
   chatID: string,
   body: { content: string; model?: string },
   signal: AbortSignal,
-): AsyncGenerator<SSEFrame, void, void> {
+): Promise<NonNullable<Response["body"]>> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -137,22 +140,48 @@ export async function* openChatMessageStream(
   if (!res.body) {
     throw new Error("response body missing");
   }
+  return res.body;
+}
 
-  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
-  let buf = "";
-  // Accumulators for the in-progress frame. SSE spec says a frame ends
-  // when we see a blank line; we keep accumulating event/data lines
-  // until then.
-  let event = "";
-  const dataLines: string[] = [];
+// Accumulates SSE lines into frames. SSE spec says a frame ends when we
+// see a blank line; we keep accumulating event/data lines until then.
+// `feed` returns a frame when a blank line completes one, else null;
+// `flush` emits any final frame that didn't end with a blank line.
+class SSEFrameAssembler {
+  private event = "";
+  private readonly dataLines: string[] = [];
 
-  const dispatch = (): SSEFrame | null => {
-    if (event === "" && dataLines.length === 0) return null;
-    const frame: SSEFrame = { event, data: dataLines.join("\n") };
-    event = "";
-    dataLines.length = 0;
+  feed(line: string): SSEFrame | null {
+    if (line === "") return this.flush();
+    if (line.startsWith(":")) {
+      // SSE comment / keep-alive — ignore
+    } else if (line.startsWith("event:")) {
+      this.event = line.slice(6).trimStart();
+    } else if (line.startsWith("data:")) {
+      this.dataLines.push(line.slice(5).trimStart());
+    }
+    // id:/retry: lines fall through silently — we don't need them
+    return null;
+  }
+
+  flush(): SSEFrame | null {
+    if (this.event === "" && this.dataLines.length === 0) return null;
+    const frame: SSEFrame = { event: this.event, data: this.dataLines.join("\n") };
+    this.event = "";
+    this.dataLines.length = 0;
     return frame;
-  };
+  }
+}
+
+export async function* openChatMessageStream(
+  chatID: string,
+  body: { content: string; model?: string },
+  signal: AbortSignal,
+): AsyncGenerator<SSEFrame, void, void> {
+  const stream = await openStreamBody(chatID, body, signal);
+  const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+  let buf = "";
+  const assembler = new SSEFrameAssembler();
 
   try {
     while (true) {
@@ -167,22 +196,13 @@ export async function* openChatMessageStream(
         buf = buf.slice(nl + 1);
         // Strip the spec's optional CR before LF.
         if (line.endsWith("\r")) line = line.slice(0, -1);
-        if (line === "") {
-          const f = dispatch();
-          if (f) yield f;
-        } else if (line.startsWith(":")) {
-          // SSE comment / keep-alive — ignore
-        } else if (line.startsWith("event:")) {
-          event = line.slice(6).trimStart();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trimStart());
-        }
-        // id:/retry: lines fall through silently — we don't need them
+        const f = assembler.feed(line);
+        if (f) yield f;
         nl = buf.indexOf("\n");
       }
     }
     // Flush any final frame that didn't end with a blank line.
-    const f = dispatch();
+    const f = assembler.flush();
     if (f) yield f;
   } finally {
     reader.releaseLock();

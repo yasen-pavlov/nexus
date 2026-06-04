@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
@@ -66,9 +67,9 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
   if (defaultsKey !== nextDefaultsKey && models.length > 0) {
     setDefaultsKey(nextDefaultsKey);
     const lastUsed =
-      typeof globalThis.localStorage !== "undefined"
-        ? globalThis.localStorage.getItem(LAST_MODEL_KEY)
-        : null;
+      globalThis.localStorage === undefined
+        ? null
+        : globalThis.localStorage.getItem(LAST_MODEL_KEY);
     setModel(pickInitialModel(undefined, models, lastUsed, systemDefault));
   }
 
@@ -79,9 +80,9 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
     handedOff.current = true;
 
     const lastUsed =
-      typeof globalThis.localStorage !== "undefined"
-        ? globalThis.localStorage.getItem(LAST_MODEL_KEY)
-        : null;
+      globalThis.localStorage === undefined
+        ? null
+        : globalThis.localStorage.getItem(LAST_MODEL_KEY);
     const chosen = pickInitialModel(
       undefined,
       models,
@@ -109,7 +110,7 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
     if (!model) return;
     try {
       const chat = await create.mutateAsync({ default_model: model });
-      if (typeof globalThis.localStorage !== "undefined") {
+      if (globalThis.localStorage !== undefined) {
         globalThis.localStorage.setItem(LAST_MODEL_KEY, model);
       }
       await navigate({
@@ -121,6 +122,48 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
       toast.error(err instanceof Error ? err.message : "Failed to start chat");
     }
   };
+
+  let recentChats: ReactNode;
+  if (chats.isLoading) {
+    recentChats = (
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Skeleton className="h-20 w-full rounded-lg" />
+        <Skeleton className="h-20 w-full rounded-lg" />
+      </div>
+    );
+  } else if (chats.chats.length === 0) {
+    recentChats = (
+      <div
+        className={cn(
+          "rounded-lg border border-dashed border-border bg-card/50 p-6 text-center text-[13px] text-muted-foreground",
+        )}
+      >
+        No chats yet — your first one starts here.
+      </div>
+    );
+  } else {
+    recentChats = (
+      <>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {chats.chats.map((c) => (
+            <RecentChatItem
+              key={c.id}
+              chat={c}
+              onDelete={(id) => del.mutateAsync(id)}
+              onRename={async (id, title) => {
+                await rename.mutateAsync({ id, title });
+              }}
+            />
+          ))}
+        </div>
+        {chats.total > RECENT_LIMIT && (
+          <div className="text-[11px] text-muted-foreground/70">
+            Showing {RECENT_LIMIT} most recent
+          </div>
+        )}
+      </>
+    );
+  }
 
   if (handingOff) {
     return (
@@ -181,40 +224,7 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
           )}
         </header>
 
-        {chats.isLoading ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Skeleton className="h-20 w-full rounded-lg" />
-            <Skeleton className="h-20 w-full rounded-lg" />
-          </div>
-        ) : chats.chats.length === 0 ? (
-          <div
-            className={cn(
-              "rounded-lg border border-dashed border-border bg-card/50 p-6 text-center text-[13px] text-muted-foreground",
-            )}
-          >
-            No chats yet — your first one starts here.
-          </div>
-        ) : (
-          <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {chats.chats.map((c) => (
-                <RecentChatItem
-                  key={c.id}
-                  chat={c}
-                  onDelete={(id) => del.mutateAsync(id)}
-                  onRename={async (id, title) => {
-                    await rename.mutateAsync({ id, title });
-                  }}
-                />
-              ))}
-            </div>
-            {chats.total > RECENT_LIMIT && (
-              <div className="text-[11px] text-muted-foreground/70">
-                Showing {RECENT_LIMIT} most recent
-              </div>
-            )}
-          </>
-        )}
+        {recentChats}
       </section>
     </div>
   );

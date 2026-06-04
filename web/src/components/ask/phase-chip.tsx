@@ -189,12 +189,12 @@ export function PhaseChip({
     );
   }
 
-  const phaseLabel =
-    phase === "retrieving"
-      ? "Searching your corpus"
-      : phase === "streaming"
-        ? "Generating answer"
-        : "";
+  let phaseLabel = "";
+  if (phase === "retrieving") {
+    phaseLabel = "Searching your corpus";
+  } else if (phase === "streaming") {
+    phaseLabel = "Generating answer";
+  }
   if (!phaseLabel) return null;
 
   return (

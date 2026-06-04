@@ -237,6 +237,7 @@ func TestRetry_RetriesOnRetryableThenSucceeds(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	for range ch {
+		// drain the event channel until it closes
 	}
 	if g.calls != 3 {
 		t.Errorf("calls = %d, want 3", g.calls)
