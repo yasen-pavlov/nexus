@@ -54,72 +54,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	st, err := store.New(ctx, cfg.DatabaseURL, log)
+	st, err := openStore(ctx, cfg, log)
 	if err != nil {
-		return fmt.Errorf("connect db: %w", err)
+		return err
 	}
 	defer st.Close()
 
-	// Settings (provider API keys) are stored AES-encrypted; install the
-	// key so GetSettings decrypts them on read — without this the manager
-	// hands the ciphertext to the provider and every call 401s.
-	if cfg.EncryptionKey != "" {
-		key, err := crypto.NewKey(cfg.EncryptionKey)
-		if err != nil {
-			return fmt.Errorf("encryption key: %w", err)
-		}
-		st.SetEncryptionKey(key)
-	}
-
-	em := api.NewEmbeddingManager(st, log)
-	if err := em.LoadFromDB(ctx, cfg); err != nil {
-		return fmt.Errorf("load embedding settings: %w", err)
-	}
-	rm := api.NewRerankManager(st, log)
-	if err := rm.LoadFromDB(ctx, cfg); err != nil {
-		return fmt.Errorf("load rerank settings: %w", err)
-	}
-	rankingMgr := api.NewRankingManager(st, log)
-	if err := rankingMgr.LoadFromDB(ctx); err != nil {
-		return fmt.Errorf("load ranking settings: %w", err)
-	}
-	lm := api.NewLLMManager(st, log)
-	if err := lm.LoadFromDB(ctx, cfg); err != nil {
-		return fmt.Errorf("load llm settings: %w", err)
-	}
-	ragMgr := api.NewRAGManager(st, log)
-	if err := ragMgr.LoadFromDB(ctx, cfg); err != nil {
-		return fmt.Errorf("load rag settings: %w", err)
-	}
-
-	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, lang.Default())
+	stack, err := buildStack(ctx, cfg, st, log)
 	if err != nil {
-		return fmt.Errorf("connect opensearch: %w", err)
+		return err
 	}
-	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
-	if err != nil {
-		return fmt.Errorf("init binary store: %w", err)
-	}
-
-	searchService := api.NewSearchService(searchClient, em, rm, rankingMgr, log)
-	orch := rag.NewOrchestrator(rag.Deps{
-		Registry: lm.Get,
-		Settings: func() rag.Settings {
-			return rag.Settings{
-				RewriterModel:        lm.RewriterModel(),
-				MaxToolRounds:        ragMgr.MaxToolRounds(),
-				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),
-				EnableMultimodal:     ragMgr.EnableMultimodal(),
-				EnableOpenAttachment: ragMgr.EnableOpenAttachment(),
-			}
-		},
-		Search:      api.NewRAGSearchProvider(searchService),
-		Chats:       st,
-		Cfg:         rag.DefaultConfig(),
-		Log:         log,
-		Binaries:    binaryStore,
-		Attachments: searchClient,
-	})
+	lm := stack.lm
 
 	user, _, err := st.GetUserByUsername(ctx, *userName)
 	if err != nil {
@@ -139,7 +84,7 @@ func run() error {
 		return err
 	}
 
-	runner := makeRunner(orch, st, searchClient, user.ID, *runModel)
+	runner := makeRunner(stack.orch, st, stack.searchClient, user.ID, *runModel)
 
 	cases, err := eval.LoadGolden(*goldenDir)
 	if err != nil {
@@ -170,6 +115,90 @@ func run() error {
 	return nil
 }
 
+// openStore connects to Postgres and installs the AES encryption key when
+// one is configured. Settings (provider API keys) are stored encrypted, so
+// without the key GetSettings hands the ciphertext to the provider and every
+// call 401s.
+func openStore(ctx context.Context, cfg *config.Config, log *zap.Logger) (*store.Store, error) {
+	st, err := store.New(ctx, cfg.DatabaseURL, log)
+	if err != nil {
+		return nil, fmt.Errorf("connect db: %w", err)
+	}
+	if cfg.EncryptionKey != "" {
+		key, err := crypto.NewKey(cfg.EncryptionKey)
+		if err != nil {
+			st.Close()
+			return nil, fmt.Errorf("encryption key: %w", err)
+		}
+		st.SetEncryptionKey(key)
+	}
+	return st, nil
+}
+
+// evalStack groups the live RAG dependencies the harness wires up so run
+// can hand them to the runner + judge.
+type evalStack struct {
+	lm           *api.LLMManager
+	searchClient *search.Client
+	orch         *rag.Orchestrator
+}
+
+// buildStack loads every settings manager from the DB and wires the live
+// search service + orchestrator exactly as the server does.
+func buildStack(ctx context.Context, cfg *config.Config, st *store.Store, log *zap.Logger) (evalStack, error) {
+	em := api.NewEmbeddingManager(st, log)
+	if err := em.LoadFromDB(ctx, cfg); err != nil {
+		return evalStack{}, fmt.Errorf("load embedding settings: %w", err)
+	}
+	rm := api.NewRerankManager(st, log)
+	if err := rm.LoadFromDB(ctx, cfg); err != nil {
+		return evalStack{}, fmt.Errorf("load rerank settings: %w", err)
+	}
+	rankingMgr := api.NewRankingManager(st, log)
+	if err := rankingMgr.LoadFromDB(ctx); err != nil {
+		return evalStack{}, fmt.Errorf("load ranking settings: %w", err)
+	}
+	lm := api.NewLLMManager(st, log)
+	if err := lm.LoadFromDB(ctx, cfg); err != nil {
+		return evalStack{}, fmt.Errorf("load llm settings: %w", err)
+	}
+	ragMgr := api.NewRAGManager(st, log)
+	if err := ragMgr.LoadFromDB(ctx, cfg); err != nil {
+		return evalStack{}, fmt.Errorf("load rag settings: %w", err)
+	}
+
+	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, lang.Default())
+	if err != nil {
+		return evalStack{}, fmt.Errorf("connect opensearch: %w", err)
+	}
+	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
+	if err != nil {
+		return evalStack{}, fmt.Errorf("init binary store: %w", err)
+	}
+
+	searchService := api.NewSearchService(searchClient, em, rm, rankingMgr, log)
+	orch := rag.NewOrchestrator(rag.Deps{
+		Registry: lm.Get,
+		Settings: func() rag.Settings {
+			return rag.Settings{
+				RewriterModel:        lm.RewriterModel(),
+				MaxToolRounds:        ragMgr.MaxToolRounds(),
+				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),
+				EnableMultimodal:     ragMgr.EnableMultimodal(),
+				EnableOpenAttachment: ragMgr.EnableOpenAttachment(),
+			}
+		},
+		Search:      api.NewRAGSearchProvider(searchService),
+		Chats:       st,
+		Cfg:         rag.DefaultConfig(),
+		Log:         log,
+		Binaries:    binaryStore,
+		Attachments: searchClient,
+	})
+
+	return evalStack{lm: lm, searchClient: searchClient, orch: orch}, nil
+}
+
 // makeRunner returns a TurnRunner that creates an ephemeral chat, runs one
 // turn through the orchestrator, drains the event stream into a TurnOutput,
 // and deletes the chat afterwards.
@@ -187,43 +216,7 @@ func makeRunner(orch *rag.Orchestrator, st *store.Store, sc *search.Client, user
 		if err != nil {
 			return eval.TurnOutput{}, err
 		}
-		var out eval.TurnOutput
-		var runErr string
-		citedSeen := map[string]struct{}{}
-		evidenceSeen := map[string]struct{}{}
-		var evidenceIDs []string
-		note := func(docID string) {
-			if docID == "" {
-				return
-			}
-			if _, dup := evidenceSeen[docID]; !dup {
-				evidenceSeen[docID] = struct{}{}
-				evidenceIDs = append(evidenceIDs, docID)
-			}
-		}
-		for ev := range events {
-			switch ev.Kind {
-			case rag.EvText:
-				out.Answer += ev.TextDelta
-			case rag.EvCitation:
-				if ev.Citation != nil {
-					if _, dup := citedSeen[ev.Citation.DocID]; !dup {
-						citedSeen[ev.Citation.DocID] = struct{}{}
-						out.CitedDocIDs = append(out.CitedDocIDs, ev.Citation.DocID)
-					}
-				}
-			case rag.EvEvidence:
-				for _, c := range ev.Evidence {
-					note(c.DocID)
-				}
-			case rag.EvToolResult:
-				for _, c := range ev.ToolChunks {
-					note(c.DocID)
-				}
-			case rag.EvError:
-				runErr = ev.Err
-			}
-		}
+		out, evidenceIDs, runErr := drainTurnEvents(events)
 		if runErr != "" {
 			return out, fmt.Errorf("orchestrator: %s", runErr)
 		}
@@ -233,6 +226,67 @@ func makeRunner(orch *rag.Orchestrator, st *store.Store, sc *search.Client, user
 		out.Evidence = fetchEvidenceText(ctx, sc, evidenceIDs)
 		return out, nil
 	}
+}
+
+// drainTurnEvents consumes the orchestrator's event stream into a
+// TurnOutput, collecting the answer text, deduped cited doc ids, and the
+// deduped evidence ids (in first-seen order) for later full-text fetch. The
+// returned string is the orchestrator error message, if any.
+func drainTurnEvents(events <-chan rag.Event) (eval.TurnOutput, []string, string) {
+	c := turnCollector{cited: map[string]struct{}{}, evidence: map[string]struct{}{}}
+	for ev := range events {
+		switch ev.Kind {
+		case rag.EvText:
+			c.out.Answer += ev.TextDelta
+		case rag.EvCitation:
+			if ev.Citation != nil {
+				c.noteCitation(ev.Citation.DocID)
+			}
+		case rag.EvEvidence:
+			for _, ch := range ev.Evidence {
+				c.noteEvidence(ch.DocID)
+			}
+		case rag.EvToolResult:
+			for _, ch := range ev.ToolChunks {
+				c.noteEvidence(ch.DocID)
+			}
+		case rag.EvError:
+			c.runErr = ev.Err
+		}
+	}
+	return c.out, c.evidenceIDs, c.runErr
+}
+
+// turnCollector accumulates the answer text, deduped cited doc ids, and
+// deduped evidence ids (in first-seen order) while draining an orchestrator
+// event stream.
+type turnCollector struct {
+	out         eval.TurnOutput
+	runErr      string
+	cited       map[string]struct{}
+	evidence    map[string]struct{}
+	evidenceIDs []string
+}
+
+// noteCitation records a cited doc id once, preserving first-seen order.
+func (c *turnCollector) noteCitation(docID string) {
+	if _, dup := c.cited[docID]; dup {
+		return
+	}
+	c.cited[docID] = struct{}{}
+	c.out.CitedDocIDs = append(c.out.CitedDocIDs, docID)
+}
+
+// noteEvidence records an evidence doc id once, preserving first-seen order.
+func (c *turnCollector) noteEvidence(docID string) {
+	if docID == "" {
+		return
+	}
+	if _, dup := c.evidence[docID]; dup {
+		return
+	}
+	c.evidence[docID] = struct{}{}
+	c.evidenceIDs = append(c.evidenceIDs, docID)
 }
 
 // fetchEvidenceText resolves chunk ids to their full content (truncated)

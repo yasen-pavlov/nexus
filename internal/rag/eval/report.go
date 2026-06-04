@@ -80,15 +80,22 @@ func delta(prev Baseline, name string, passed bool) string {
 // against prev.
 func RenderMarkdown(rep Report, prev Baseline) string {
 	var b strings.Builder
-	total := len(rep.Results)
-	passed := rep.PassCount()
 
 	fmt.Fprintf(&b, "# RAG eval report\n\n")
 	fmt.Fprintf(&b, "- Model: `%s`\n", rep.Model)
 	fmt.Fprintf(&b, "- Judge: `%s`\n", rep.JudgeModel)
-	fmt.Fprintf(&b, "- **Passed: %d / %d**\n\n", passed, total)
+	fmt.Fprintf(&b, "- **Passed: %d / %d**\n\n", rep.PassCount(), len(rep.Results))
 
-	// Regression callout first — that's the reason this report exists.
+	renderRegressionCallout(&b, rep, prev)
+	renderResultsTable(&b, rep, prev)
+	renderFailures(&b, rep)
+
+	return b.String()
+}
+
+// renderRegressionCallout writes the regression banner first — that's the
+// reason this report exists.
+func renderRegressionCallout(b *strings.Builder, rep Report, prev Baseline) {
 	var regressions []string
 	for _, r := range rep.Results {
 		if delta(prev, r.Name, r.Passed()) == "⚠ REGRESSED" {
@@ -96,46 +103,52 @@ func RenderMarkdown(rep Report, prev Baseline) string {
 		}
 	}
 	if len(regressions) > 0 {
-		fmt.Fprintf(&b, "> ⚠ **%d regression(s):** %s\n\n", len(regressions), strings.Join(regressions, ", "))
+		fmt.Fprintf(b, "> ⚠ **%d regression(s):** %s\n\n", len(regressions), strings.Join(regressions, ", "))
 	}
+}
 
-	fmt.Fprintf(&b, "| Case | Lang | Cited | Faithful | Relevant | Abstain | Pass | Δ |\n")
-	fmt.Fprintf(&b, "|------|------|-------|----------|----------|---------|------|---|\n")
+// renderResultsTable writes the per-case scoring table.
+func renderResultsTable(b *strings.Builder, rep Report, prev Baseline) {
+	fmt.Fprintf(b, "| Case | Lang | Cited | Faithful | Relevant | Abstain | Pass | Δ |\n")
+	fmt.Fprintf(b, "|------|------|-------|----------|----------|---------|------|---|\n")
 	for _, r := range rep.Results {
 		pass := "✓"
 		if !r.Passed() {
 			pass = "✗"
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			r.Name, dash(r.Lang), tri(r.CitedCorrect), tri(r.Faithful),
 			relCell(r.Relevance), tri(r.Abstained), pass, delta(prev, r.Name, r.Passed()))
 	}
+}
 
-	// Per-case detail for failures (so the report is actionable).
+// renderFailures writes the per-case detail for failures so the report is
+// actionable.
+func renderFailures(b *strings.Builder, rep Report) {
 	var failed []CaseResult
 	for _, r := range rep.Results {
 		if !r.Passed() {
 			failed = append(failed, r)
 		}
 	}
-	if len(failed) > 0 {
-		fmt.Fprintf(&b, "\n## Failures\n\n")
-		for _, r := range failed {
-			fmt.Fprintf(&b, "### %s\n", r.Name)
-			fmt.Fprintf(&b, "- query: %s\n", r.Query)
-			if r.Error != "" {
-				fmt.Fprintf(&b, "- error: %s\n", r.Error)
-			}
-			if len(r.MissingCites) > 0 {
-				fmt.Fprintf(&b, "- missing citations: %s\n", strings.Join(r.MissingCites, ", "))
-			}
-			if r.Answer != "" {
-				fmt.Fprintf(&b, "- answer: %s\n", truncate(r.Answer, 280))
-			}
-			b.WriteString("\n")
-		}
+	if len(failed) == 0 {
+		return
 	}
-	return b.String()
+	fmt.Fprintf(b, "\n## Failures\n\n")
+	for _, r := range failed {
+		fmt.Fprintf(b, "### %s\n", r.Name)
+		fmt.Fprintf(b, "- query: %s\n", r.Query)
+		if r.Error != "" {
+			fmt.Fprintf(b, "- error: %s\n", r.Error)
+		}
+		if len(r.MissingCites) > 0 {
+			fmt.Fprintf(b, "- missing citations: %s\n", strings.Join(r.MissingCites, ", "))
+		}
+		if r.Answer != "" {
+			fmt.Fprintf(b, "- answer: %s\n", truncate(r.Answer, 280))
+		}
+		b.WriteString("\n")
+	}
 }
 
 func dash(s string) string {

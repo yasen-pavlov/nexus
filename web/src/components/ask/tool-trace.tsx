@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Search } from "lucide-react";
 
 import type { ChunkPreview } from "@/lib/api-types";
@@ -51,6 +51,25 @@ export function ToolTrace({
   const pending = summary === undefined && !chunks;
   const hasChunks = (chunks?.length ?? 0) > 0;
 
+  let label: ReactNode;
+  if (summary) {
+    label = summary;
+  } else if (displayQuery) {
+    label = (
+      <>
+        Searched{" "}
+        <span
+          className="italic font-normal text-muted-foreground"
+          title={derivedQuery === displayQuery ? undefined : derivedQuery}
+        >
+          {displayQuery}
+        </span>
+      </>
+    );
+  } else {
+    label = "Searched the index";
+  }
+
   return (
     <div className="flex flex-col">
       <button
@@ -73,21 +92,7 @@ export function ToolTrace({
           )}
         />
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
-          {summary ? (
-            summary
-          ) : displayQuery ? (
-            <>
-              Searched{" "}
-              <span
-                className="italic font-normal text-muted-foreground"
-                title={derivedQuery !== displayQuery ? derivedQuery : undefined}
-              >
-                {displayQuery}
-              </span>
-            </>
-          ) : (
-            "Searched the index"
-          )}
+          {label}
         </span>
         {hasChunks && (
           <span

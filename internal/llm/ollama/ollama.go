@@ -154,40 +154,11 @@ func (c *Client) runStream(ctx context.Context, resp *http.Response, out chan<- 
 			return
 		}
 
-		if chunk.Message.Content != "" {
-			if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: chunk.Message.Content}) {
-				return
-			}
+		ok, done := emitChunkEvents(ctx, chunk, &stopReason, &usage, out)
+		if !ok {
+			return
 		}
-
-		// Ollama emits tool calls as a complete object on the final chunk
-		// (or one per chunk on some models). Treat each as a fully-formed
-		// call, fanning Final=true so the orchestrator can run it.
-		for _, tc := range chunk.Message.ToolCalls {
-			argsBytes, _ := json.Marshal(tc.Function.Arguments)
-			if !sendOrCancel(ctx, out, llm.Event{
-				Kind: llm.EventToolCall,
-				ToolCall: &llm.ToolCallDelta{
-					Name:     tc.Function.Name,
-					ArgsJSON: string(argsBytes),
-					Final:    true,
-				},
-			}) {
-				return
-			}
-			stopReason = llm.StopToolUse
-		}
-
-		if chunk.Done {
-			if chunk.DoneReason != "" {
-				stopReason = mapDoneReason(chunk.DoneReason)
-			}
-			if chunk.EvalCount > 0 || chunk.PromptEvalCount > 0 {
-				usage = &llm.Usage{
-					InputTokens:  chunk.PromptEvalCount,
-					OutputTokens: chunk.EvalCount,
-				}
-			}
+		if done {
 			break
 		}
 	}
@@ -202,6 +173,50 @@ func (c *Client) runStream(ctx context.Context, resp *http.Response, out chan<- 
 	}
 
 	out <- llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+}
+
+// emitChunkEvents forwards the text and tool-call events carried by one
+// streaming NDJSON frame, updating stopReason/usage. It returns ok=false when a
+// send was cancelled (caller should bail) and done=true when this was the final
+// frame (caller should stop reading).
+func emitChunkEvents(ctx context.Context, chunk chatResponseChunk, stopReason *llm.StopReason, usage **llm.Usage, out chan<- llm.Event) (ok, done bool) {
+	if chunk.Message.Content != "" {
+		if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: chunk.Message.Content}) {
+			return false, false
+		}
+	}
+
+	// Ollama emits tool calls as a complete object on the final chunk
+	// (or one per chunk on some models). Treat each as a fully-formed
+	// call, fanning Final=true so the orchestrator can run it.
+	for _, tc := range chunk.Message.ToolCalls {
+		argsBytes, _ := json.Marshal(tc.Function.Arguments)
+		if !sendOrCancel(ctx, out, llm.Event{
+			Kind: llm.EventToolCall,
+			ToolCall: &llm.ToolCallDelta{
+				Name:     tc.Function.Name,
+				ArgsJSON: string(argsBytes),
+				Final:    true,
+			},
+		}) {
+			return false, false
+		}
+		*stopReason = llm.StopToolUse
+	}
+
+	if chunk.Done {
+		if chunk.DoneReason != "" {
+			*stopReason = mapDoneReason(chunk.DoneReason)
+		}
+		if chunk.EvalCount > 0 || chunk.PromptEvalCount > 0 {
+			*usage = &llm.Usage{
+				InputTokens:  chunk.PromptEvalCount,
+				OutputTokens: chunk.EvalCount,
+			}
+		}
+		return true, true
+	}
+	return true, false
 }
 
 // runOneShot reads a single non-streaming response. Used as the fallback
@@ -262,11 +277,26 @@ func buildBody(req llm.GenerateRequest, stream bool) ([]byte, error) {
 		body.Messages = append(body.Messages, chatMsg{Role: "system", Content: systemBody})
 	}
 
-	// Multi-modal: base64 images ride on the LAST user message's "images"
-	// field (Ollama's wire format). The orchestrator only attaches images
-	// for vision-capable models.
+	body.Messages = append(body.Messages, mapMessages(req)...)
+	if len(body.Messages) == 0 {
+		return nil, errors.New("ollama: at least one message required")
+	}
+
+	body.Options = buildOptions(req)
+	body.Tools = buildTools(req.Tools)
+
+	return json.Marshal(body)
+}
+
+// mapMessages maps the conversation history to Ollama chat messages.
+//
+// Multi-modal: base64 images ride on the LAST user message's "images" field
+// (Ollama's wire format). The orchestrator only attaches images for
+// vision-capable models.
+func mapMessages(req llm.GenerateRequest) []chatMsg {
 	images := llm.CollectImages(req.Documents)
 	lastUser := llm.LastUserIndex(req.Messages)
+	out := make([]chatMsg, 0, len(req.Messages))
 	for i, m := range req.Messages {
 		switch m.Role {
 		case llm.RoleSystem:
@@ -278,38 +308,54 @@ func buildBody(req llm.GenerateRequest, stream bool) ([]byte, error) {
 					um.Images = append(um.Images, EncodeImage(img))
 				}
 			}
-			body.Messages = append(body.Messages, um)
+			out = append(out, um)
 		case llm.RoleAssistant:
-			am := chatMsg{Role: "assistant", Content: m.Content}
-			for _, tc := range m.ToolCalls {
-				args := map[string]any{}
-				if tc.ArgsJSON != "" {
-					_ = json.Unmarshal([]byte(tc.ArgsJSON), &args)
-				}
-				am.ToolCalls = append(am.ToolCalls, chatToolCall{Function: chatToolFunc{Name: tc.Name, Arguments: args}})
-			}
-			body.Messages = append(body.Messages, am)
+			out = append(out, mapAssistantMessage(m))
 		case llm.RoleTool:
-			body.Messages = append(body.Messages, chatMsg{Role: "tool", Content: m.Content})
+			out = append(out, chatMsg{Role: "tool", Content: m.Content})
 		}
 	}
+	return out
+}
 
-	if len(body.Messages) == 0 {
-		return nil, errors.New("ollama: at least one message required")
+// mapAssistantMessage maps an assistant turn, decoding any tool-call argument
+// JSON back into the structured map Ollama expects.
+func mapAssistantMessage(m llm.Message) chatMsg {
+	am := chatMsg{Role: "assistant", Content: m.Content}
+	for _, tc := range m.ToolCalls {
+		args := map[string]any{}
+		if tc.ArgsJSON != "" {
+			_ = json.Unmarshal([]byte(tc.ArgsJSON), &args)
+		}
+		am.ToolCalls = append(am.ToolCalls, chatToolCall{Function: chatToolFunc{Name: tc.Name, Arguments: args}})
 	}
+	return am
+}
 
+// buildOptions assembles the Ollama options map from temperature/max-tokens,
+// or nil when neither is set.
+func buildOptions(req llm.GenerateRequest) map[string]any {
+	var opts map[string]any
 	if req.Temperature != nil {
-		body.Options = map[string]any{"temperature": float64(*req.Temperature)}
+		opts = map[string]any{"temperature": float64(*req.Temperature)}
 	}
 	if req.MaxTokens > 0 {
-		if body.Options == nil {
-			body.Options = map[string]any{}
+		if opts == nil {
+			opts = map[string]any{}
 		}
-		body.Options["num_predict"] = req.MaxTokens
+		opts["num_predict"] = req.MaxTokens
 	}
+	return opts
+}
 
-	for _, t := range req.Tools {
-		body.Tools = append(body.Tools, chatToolDef{
+// buildTools maps llm.Tool definitions to Ollama tool defs.
+func buildTools(in []llm.Tool) []chatToolDef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]chatToolDef, 0, len(in))
+	for _, t := range in {
+		out = append(out, chatToolDef{
 			Type: "function",
 			Function: chatToolDefFn{
 				Name:        t.Name,
@@ -318,8 +364,7 @@ func buildBody(req llm.GenerateRequest, stream bool) ([]byte, error) {
 			},
 		})
 	}
-
-	return json.Marshal(body)
+	return out
 }
 
 // buildDocumentsBlock renders retrieved docs the same way as the OpenAI

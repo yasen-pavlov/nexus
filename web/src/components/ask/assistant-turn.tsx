@@ -1,5 +1,5 @@
 import { AlertCircle, Copy, RotateCcw, ThumbsDown, ThumbsUp } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 import { useMessageFeedback, type Feedback } from "@/hooks/use-message-feedback";
 import { Button } from "@/components/ui/button";
@@ -136,15 +136,17 @@ export function AssistantTurn({
     // evidence union.
     if (message) {
       const toolChunkIDs = new Set<string>();
-      const toolEventsList = (message.tool_calls ?? []).map((tc) => {
-        for (const c of tc.chunks ?? []) toolChunkIDs.add(c.id);
-        return {
-          name: tc.name,
-          args: tc.args,
-          summary: tc.result_summary,
-          chunks: tc.chunks,
-        } as ChatToolEvent;
-      });
+      const toolEventsList: ChatToolEvent[] = (message.tool_calls ?? []).map(
+        (tc) => {
+          for (const c of tc.chunks ?? []) toolChunkIDs.add(c.id);
+          return {
+            name: tc.name,
+            args: tc.args,
+            summary: tc.result_summary,
+            chunks: tc.chunks,
+          };
+        },
+      );
 
       const initialChunks = (message.evidence ?? []).filter(
         (c) => !toolChunkIDs.has(c.id),
@@ -169,31 +171,12 @@ export function AssistantTurn({
 
     return out;
   }, [streaming, message, prevUserContent]);
-  // Wall-clock duration. Prefers the server-measured duration_ms
-  // (carried on the `done` SSE frame for streaming, persisted on the
-  // chat_messages row for refreshed views) so the label is stable
-  // across page reload. Falls back to FE-side timestamps for messages
-  // that predate migration 019. The phase chip handles the live ticker
-  // DURING streaming; we only show this label after the turn finishes.
-  let durationLabel = "";
-  if (streaming) {
-    if (typeof streaming.durationMs === "number") {
-      durationLabel = formatDuration(streaming.durationMs);
-    } else if (streaming.startedAt && streaming.completedAt) {
-      durationLabel = formatDuration(
-        streaming.completedAt - streaming.startedAt,
-      );
-    }
-  } else if (!r.isStreaming && message) {
-    if (typeof message.duration_ms === "number") {
-      durationLabel = formatDuration(message.duration_ms);
-    } else if (prevTurnCreatedAt) {
-      durationLabel = formatDuration(
-        new Date(message.created_at).getTime() -
-          new Date(prevTurnCreatedAt).getTime(),
-      );
-    }
-  }
+  const durationLabel = deriveDurationLabel({
+    streaming,
+    message,
+    isStreaming: r.isStreaming,
+    prevTurnCreatedAt,
+  });
 
   const onCopy = async () => {
     const txt = buildCopyText(r.text, r.citations, evidence);
@@ -208,6 +191,26 @@ export function AssistantTurn({
   };
 
   const showActions = !r.isStreaming && (r.text.length > 0 || r.isError);
+
+  // Footer status indicator: a live pulse while streaming, the model
+  // label once the turn settles, or nothing. Derived here rather than a
+  // nested ternary in the footer JSX.
+  let statusIndicator: ReactNode = null;
+  if (r.isStreaming) {
+    statusIndicator = (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+        <span
+          className="size-1.5 animate-pulse rounded-full bg-primary"
+          aria-hidden
+        />
+        {"Live"}
+      </span>
+    );
+  } else if (modelLabel) {
+    statusIndicator = (
+      <span className="font-medium text-foreground/80">{modelLabel}</span>
+    );
+  }
 
   return (
     <article aria-label="Assistant turn" className="flex flex-col gap-1">
@@ -260,14 +263,7 @@ export function AssistantTurn({
           "text-[12px] text-muted-foreground",
         )}
       >
-        {r.isStreaming ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
-            <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
-            Live
-          </span>
-        ) : modelLabel ? (
-          <span className="font-medium text-foreground/80">{modelLabel}</span>
-        ) : null}
+        {statusIndicator}
 
         {durationLabel && (
           <span className="tabular-nums" title="Wall-clock from your message to the assistant's done event">
@@ -367,6 +363,49 @@ function FeedbackButtons({ message }: Readonly<{ message: ChatMessage }>) {
       </Button>
     </div>
   );
+}
+
+/**
+ * Wall-clock duration label for the metadata footer. Prefers the
+ * server-measured duration_ms (carried on the `done` SSE frame for
+ * streaming, persisted on the chat_messages row for refreshed views) so
+ * the label is stable across page reload. Falls back to FE-side
+ * timestamps for messages that predate migration 019. The phase chip
+ * handles the live ticker DURING streaming; this label only shows after
+ * the turn finishes.
+ */
+function deriveDurationLabel({
+  streaming,
+  message,
+  isStreaming,
+  prevTurnCreatedAt,
+}: {
+  streaming?: StreamingTurn;
+  message?: ChatMessage;
+  isStreaming: boolean;
+  prevTurnCreatedAt?: string;
+}): string {
+  if (streaming) {
+    if (typeof streaming.durationMs === "number") {
+      return formatDuration(streaming.durationMs);
+    }
+    if (streaming.startedAt && streaming.completedAt) {
+      return formatDuration(streaming.completedAt - streaming.startedAt);
+    }
+    return "";
+  }
+  if (!isStreaming && message) {
+    if (typeof message.duration_ms === "number") {
+      return formatDuration(message.duration_ms);
+    }
+    if (prevTurnCreatedAt) {
+      return formatDuration(
+        new Date(message.created_at).getTime() -
+          new Date(prevTurnCreatedAt).getTime(),
+      );
+    }
+  }
+  return "";
 }
 
 function formatTokens(n: number | undefined): string {

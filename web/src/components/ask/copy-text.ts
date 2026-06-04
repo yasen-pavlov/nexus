@@ -29,7 +29,10 @@ export function buildCopyText(
 
   if (evidence.length === 0) return body;
   const legend = evidence
-    .map((c, i) => `[${i + 1}] ${c.title}${c.date ? ` — ${c.date}` : ""}`)
+    .map((c, i) => {
+      const datePart = c.date ? ` — ${c.date}` : "";
+      return `[${i + 1}] ${c.title}${datePart}`;
+    })
     .join("\n");
   return `${body}\n\nSources:\n${legend}`;
 }

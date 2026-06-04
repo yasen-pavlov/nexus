@@ -141,7 +141,7 @@ type searchToolDispatcher struct {
 	// when the host didn't wire multimodal deps — open_attachment then
 	// returns a graceful "unavailable" outcome instead of panicking.
 	chunks         AttachmentResolver
-	binaries       ImageStore
+	binaries       Getter
 	userID         uuid.UUID
 	supportsVision bool
 	supportsPDF    bool
@@ -154,7 +154,7 @@ type searchToolDispatcher struct {
 // stays inside the calling user's permissions. supportsVision / supportsPDF
 // decide whether nexus_open_attachment returns an image block, a native PDF
 // block, or just extracted text.
-func newSearchToolDispatcher(search SearchProvider, chunks AttachmentResolver, binaries ImageStore, userID uuid.UUID, supportsVision, supportsPDF bool, log *zap.Logger) *searchToolDispatcher {
+func newSearchToolDispatcher(search SearchProvider, chunks AttachmentResolver, binaries Getter, userID uuid.UUID, supportsVision, supportsPDF bool, log *zap.Logger) *searchToolDispatcher {
 	return &searchToolDispatcher{
 		search:         search,
 		chunks:         chunks,
@@ -328,44 +328,52 @@ func (d *searchToolDispatcher) dispatchOpenAttachment(ctx context.Context, call 
 		MimeType: chunk.MimeType,
 	}
 
-	// Media path: attach the picture (vision models) or the native PDF
-	// (PDF-capable models) when the binary is cached within the size cap.
-	// Otherwise the extracted text already on the doc carries the content.
 	title := chunk.Title
 	if title == "" {
 		title = args.ChunkID
 	}
-	attached := "" // "image" | "pdf" | ""
-	switch {
-	case d.supportsVision && isImageMime(chunk.MimeType):
-		if img, ok := loadCachedImage(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, chunk.MimeType, args.ChunkID); ok {
-			doc.Images = append(doc.Images, img)
-			attached = "image"
-		}
-	case d.supportsPDF && isPDFMime(chunk.MimeType):
-		if pdf, ok := loadCachedPDF(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, title, args.ChunkID); ok {
-			doc.PDFs = append(doc.PDFs, pdf)
-			attached = "pdf"
-		}
-	}
-
-	var resultText string
-	switch {
-	case attached == "image":
-		resultText = fmt.Sprintf("Opened attachment %q (image attached below).", title)
-	case attached == "pdf":
-		resultText = fmt.Sprintf("Opened attachment %q (PDF attached below).", title)
-	case content != "":
-		resultText = fmt.Sprintf("Opened attachment %q:\n%s", title, content)
-	default:
-		resultText = fmt.Sprintf("Opened attachment %q, but it has no viewable content or extractable text.", title)
-	}
+	attached := d.attachChunkMedia(ctx, &doc, chunk, args.ChunkID, title)
 
 	return ToolOutcome{
-		ResultText: resultText,
+		ResultText: openAttachmentResultText(attached, title, content),
 		Summary:    fmt.Sprintf("Opened %q", title),
 		Chunks:     []ChunkPreview{preview},
 		Docs:       []llm.Document{doc},
+	}
+}
+
+// attachChunkMedia attaches the picture (vision models) or native PDF
+// (PDF-capable models) to doc when the binary is cached within the size
+// cap, returning the attached kind ("image" | "pdf" | ""). Otherwise the
+// extracted text already on the doc carries the content.
+func (d *searchToolDispatcher) attachChunkMedia(ctx context.Context, doc *llm.Document, chunk *model.Chunk, citeID, title string) string {
+	switch {
+	case d.supportsVision && isImageMime(chunk.MimeType):
+		if img, ok := loadCachedImage(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, chunk.MimeType, citeID); ok {
+			doc.Images = append(doc.Images, img)
+			return "image"
+		}
+	case d.supportsPDF && isPDFMime(chunk.MimeType):
+		if pdf, ok := loadCachedPDF(ctx, d.binaries, chunk.SourceType, chunk.SourceName, chunk.SourceID, title, citeID); ok {
+			doc.PDFs = append(doc.PDFs, pdf)
+			return "pdf"
+		}
+	}
+	return ""
+}
+
+// openAttachmentResultText picks the tool_result prose for an opened
+// attachment based on what (if anything) was attached.
+func openAttachmentResultText(attached, title, content string) string {
+	switch {
+	case attached == "image":
+		return fmt.Sprintf("Opened attachment %q (image attached below).", title)
+	case attached == "pdf":
+		return fmt.Sprintf("Opened attachment %q (PDF attached below).", title)
+	case content != "":
+		return fmt.Sprintf("Opened attachment %q:\n%s", title, content)
+	default:
+		return fmt.Sprintf("Opened attachment %q, but it has no viewable content or extractable text.", title)
 	}
 }
 

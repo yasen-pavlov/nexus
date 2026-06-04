@@ -104,7 +104,7 @@ export function useGlobalShortcuts(handlers: GlobalShortcutHandlers) {
         if (k === "s" || k === "c" || k === "a" || k === "k") {
           e.preventDefault();
           cancelChord();
-          h.onChord(k as ChordKey);
+          h.onChord(k);
           return;
         }
         // Any other key — cancel the chord and let the key fall through.

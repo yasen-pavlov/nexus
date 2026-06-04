@@ -30,7 +30,7 @@ export interface ChatThreadProps {
 const LAST_MODEL_KEY = "nexus_last_used_model";
 
 function readLastUsedModel(): string | null {
-  if (typeof globalThis.localStorage === "undefined") return null;
+  if (globalThis.localStorage === undefined) return null;
   return globalThis.localStorage.getItem(LAST_MODEL_KEY);
 }
 
@@ -82,7 +82,7 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
 
   const handleSubmit = (content: string) => {
     if (!model) return;
-    if (typeof globalThis.localStorage !== "undefined") {
+    if (globalThis.localStorage !== undefined) {
       globalThis.localStorage.setItem(LAST_MODEL_KEY, model);
     }
     void stream.start({ content, model });

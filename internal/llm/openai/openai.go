@@ -70,11 +70,28 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.ChatCompletionNewPara
 		IncludeUsage: sdk.Bool(true),
 	}
 
+	messages := buildMessages(req)
+	if len(messages) == 0 {
+		return sdk.ChatCompletionNewParams{}, errors.New("openai: at least one message required")
+	}
+	params.Messages = messages
+
+	if tools := buildTools(req.Tools); len(tools) > 0 {
+		params.Tools = tools
+	}
+
+	return params, nil
+}
+
+// buildMessages assembles the full message list: an optional system message
+// carrying the retrieved-context document block, followed by the mapped
+// conversation history.
+//
+// The orchestrator's [N] parser pulls citations out of generated text by
+// mapping back to the order documents appear in the system block.
+func buildMessages(req llm.GenerateRequest) []sdk.ChatCompletionMessageParamUnion {
 	messages := make([]sdk.ChatCompletionMessageParamUnion, 0, len(req.Messages)+2)
 
-	// System prompt + retrieved-context document block. The orchestrator's
-	// [N] parser pulls citations out of generated text by mapping back to
-	// the order documents appear here.
 	if req.System != "" || len(req.Documents) > 0 {
 		systemBody := req.System
 		if len(req.Documents) > 0 {
@@ -94,44 +111,49 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.ChatCompletionNewPara
 		case llm.RoleSystem:
 			// Already collapsed into the synthetic system message above.
 		case llm.RoleUser:
-			if i == lastUser && (len(images) > 0 || len(pdfs) > 0) {
-				parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(images)+len(pdfs)+1)
-				parts = append(parts, sdk.TextContentPart(m.Content))
-				for _, img := range images {
-					parts = append(parts, ImageContentBlock(img))
-				}
-				for _, pdf := range pdfs {
-					parts = append(parts, PDFContentBlock(pdf))
-				}
-				messages = append(messages, sdk.UserMessage(parts))
-			} else {
-				messages = append(messages, sdk.UserMessage(m.Content))
-			}
+			messages = append(messages, userMessage(m, i == lastUser, images, pdfs))
 		case llm.RoleAssistant:
 			messages = append(messages, assistantMessage(m))
 		case llm.RoleTool:
 			messages = append(messages, sdk.ToolMessage(m.Content, m.ToolCallID))
 		}
 	}
-	if len(messages) == 0 {
-		return sdk.ChatCompletionNewParams{}, errors.New("openai: at least one message required")
-	}
-	params.Messages = messages
+	return messages
+}
 
-	if len(req.Tools) > 0 {
-		tools := make([]sdk.ChatCompletionToolUnionParam, 0, len(req.Tools))
-		for _, t := range req.Tools {
-			fn := shared.FunctionDefinitionParam{
-				Name:        t.Name,
-				Description: sdk.String(t.Description),
-				Parameters:  shared.FunctionParameters(t.Schema),
-			}
-			tools = append(tools, sdk.ChatCompletionFunctionTool(fn))
+// userMessage builds a user message. When this is the last user turn and media
+// is attached, the content becomes a text+image+file content-part array;
+// otherwise it's a plain text message.
+func userMessage(m llm.Message, isLast bool, images []llm.Image, pdfs []llm.PDF) sdk.ChatCompletionMessageParamUnion {
+	if !isLast || (len(images) == 0 && len(pdfs) == 0) {
+		return sdk.UserMessage(m.Content)
+	}
+	parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(images)+len(pdfs)+1)
+	parts = append(parts, sdk.TextContentPart(m.Content))
+	for _, img := range images {
+		parts = append(parts, ImageContentBlock(img))
+	}
+	for _, pdf := range pdfs {
+		parts = append(parts, PDFContentBlock(pdf))
+	}
+	return sdk.UserMessage(parts)
+}
+
+// buildTools maps llm.Tool definitions to OpenAI tool params.
+func buildTools(in []llm.Tool) []sdk.ChatCompletionToolUnionParam {
+	if len(in) == 0 {
+		return nil
+	}
+	tools := make([]sdk.ChatCompletionToolUnionParam, 0, len(in))
+	for _, t := range in {
+		fn := shared.FunctionDefinitionParam{
+			Name:        t.Name,
+			Description: sdk.String(t.Description),
+			Parameters:  shared.FunctionParameters(t.Schema),
 		}
-		params.Tools = tools
+		tools = append(tools, sdk.ChatCompletionFunctionTool(fn))
 	}
-
-	return params, nil
+	return tools
 }
 
 // run drains the SDK stream into the unified event channel.
@@ -150,43 +172,11 @@ func (c *Client) run(ctx context.Context, params sdk.ChatCompletionNewParams, ou
 			return
 		}
 
-		// Stream text deltas as they arrive.
-		if len(chunk.Choices) > 0 {
-			ch := chunk.Choices[0]
-			if ch.Delta.Content != "" {
-				if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ch.Delta.Content}) {
-					return
-				}
-			}
-
-			// NB: we deliberately do NOT forward the raw streamed
-			// tool-call fragments here. OpenAI streams parallel tool calls
-			// with the id+name only on the FIRST fragment per `index` and
-			// empty-id continuation fragments carrying just argument text —
-			// forwarding those makes the orchestrator (which buffers by id)
-			// synthesise phantom calls with empty names. Instead we let the
-			// SDK accumulator reassemble each call and emit it once, complete,
-			// below.
-
-			if string(ch.FinishReason) != "" {
-				stopReason = mapFinishReason(string(ch.FinishReason))
-			}
+		if !emitTextDelta(ctx, chunk, &stopReason, out) {
+			return
 		}
-
-		// Emit each tool call exactly once, fully assembled (id + name +
-		// complete arguments), the moment the accumulator reports it done.
-		if tc, ok := acc.JustFinishedToolCall(); ok {
-			if !sendOrCancel(ctx, out, llm.Event{
-				Kind: llm.EventToolCall,
-				ToolCall: &llm.ToolCallDelta{
-					ID:       tc.ID,
-					Name:     tc.Name,
-					ArgsJSON: tc.Arguments,
-					Final:    true,
-				},
-			}) {
-				return
-			}
+		if !emitFinishedToolCall(ctx, &acc, out) {
+			return
 		}
 	}
 
@@ -207,6 +197,50 @@ func (c *Client) run(ctx context.Context, params sdk.ChatCompletionNewParams, ou
 		}
 	}
 	out <- llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+}
+
+// emitTextDelta forwards the chunk's text delta (if any) and updates stopReason
+// from the finish_reason. Returns false if a send was cancelled.
+//
+// NB: we deliberately do NOT forward the raw streamed tool-call fragments here.
+// OpenAI streams parallel tool calls with the id+name only on the FIRST
+// fragment per `index` and empty-id continuation fragments carrying just
+// argument text — forwarding those makes the orchestrator (which buffers by id)
+// synthesise phantom calls with empty names. Instead we let the SDK accumulator
+// reassemble each call and emit it once, complete, in emitFinishedToolCall.
+func emitTextDelta(ctx context.Context, chunk sdk.ChatCompletionChunk, stopReason *llm.StopReason, out chan<- llm.Event) bool {
+	if len(chunk.Choices) == 0 {
+		return true
+	}
+	ch := chunk.Choices[0]
+	if ch.Delta.Content != "" {
+		if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ch.Delta.Content}) {
+			return false
+		}
+	}
+	if string(ch.FinishReason) != "" {
+		*stopReason = mapFinishReason(string(ch.FinishReason))
+	}
+	return true
+}
+
+// emitFinishedToolCall emits each tool call exactly once, fully assembled (id +
+// name + complete arguments), the moment the accumulator reports it done.
+// Returns false if a send was cancelled.
+func emitFinishedToolCall(ctx context.Context, acc *sdk.ChatCompletionAccumulator, out chan<- llm.Event) bool {
+	tc, ok := acc.JustFinishedToolCall()
+	if !ok {
+		return true
+	}
+	return sendOrCancel(ctx, out, llm.Event{
+		Kind: llm.EventToolCall,
+		ToolCall: &llm.ToolCallDelta{
+			ID:       tc.ID,
+			Name:     tc.Name,
+			ArgsJSON: tc.Arguments,
+			Final:    true,
+		},
+	})
 }
 
 // buildDocumentsBlock renders retrieved chunks as XML-ish blocks the model can

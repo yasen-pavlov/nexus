@@ -47,7 +47,26 @@ func (o *Orchestrator) attachMedia(ctx context.Context, docs []llm.Document, hit
 		docByID[docs[i].ID] = &docs[i]
 	}
 
+	caps := mediaCaps{img: canImg, pdf: canPDF}
+
 	// Pass A: retrieved media chunks. Stash non-media parents for pass B.
+	budget, parentIDs, parentSourceIDs := o.attachDirectMedia(ctx, hits, docByID, budget, caps)
+
+	// Pass B: walk attachment_of for the non-media parents in one batched
+	// query, then hang each media attachment off the parent it references.
+	o.attachParentMedia(ctx, hits, docByID, parentIDs, parentSourceIDs, budget, caps)
+}
+
+// mediaCaps bundles which payload kinds the target model can consume, so
+// the attach helpers carry one value instead of two parallel bools.
+type mediaCaps struct {
+	img, pdf bool
+}
+
+// attachDirectMedia runs pass A: attaches retrieved chunks that are
+// themselves attachable media (consuming budget) and returns the remaining
+// budget plus the id/sourceID lists of the non-media hits to walk in pass B.
+func (o *Orchestrator) attachDirectMedia(ctx context.Context, hits []model.DocumentHit, docByID map[string]*llm.Document, budget int, caps mediaCaps) (int, []string, []string) {
 	var parentIDs, parentSourceIDs []string
 	for _, h := range hits {
 		if budget <= 0 {
@@ -59,14 +78,18 @@ func (o *Orchestrator) attachMedia(ctx context.Context, docs []llm.Document, hit
 			continue
 		}
 		if d := docByID[h.ID.String()]; d != nil {
-			if o.attachOne(ctx, d, h.SourceType, h.SourceName, h.SourceID, h.MimeType, h.ID.String(), h.Title, canImg, canPDF) {
+			if o.attachOne(ctx, d, h.SourceType, h.SourceName, h.SourceID, h.MimeType, h.ID.String(), h.Title, caps.img, caps.pdf) {
 				budget--
 			}
 		}
 	}
+	return budget, parentIDs, parentSourceIDs
+}
 
-	// Pass B: walk attachment_of for the non-media parents in one batched
-	// query, then hang each media attachment off the parent it references.
+// attachParentMedia runs pass B: walks the reverse attachment_of edge for
+// the non-media parents in one batched query and hangs each media
+// attachment off the parent it references, until the budget is spent.
+func (o *Orchestrator) attachParentMedia(ctx context.Context, hits []model.DocumentHit, docByID map[string]*llm.Document, parentIDs, parentSourceIDs []string, budget int, caps mediaCaps) {
 	if budget <= 0 || o.attachments == nil || len(parentIDs) == 0 {
 		return
 	}
@@ -92,7 +115,7 @@ func (o *Orchestrator) attachMedia(ctx context.Context, docs []llm.Document, hit
 		if parent == nil {
 			continue
 		}
-		if o.attachOne(ctx, parent, att.SourceType, att.SourceName, att.SourceID, att.MimeType, att.ID, att.Title, canImg, canPDF) {
+		if o.attachOne(ctx, parent, att.SourceType, att.SourceName, att.SourceID, att.MimeType, att.ID, att.Title, caps.img, caps.pdf) {
 			budget--
 		}
 	}
@@ -142,7 +165,7 @@ func attachmentParent(att model.Chunk, byID, bySourceID map[string]*llm.Document
 // loadCachedBytes reads a cached binary (cache-only) enforcing the size
 // cap. Returns ok=false on a nil store, cache miss, oversize, or read
 // error so the caller silently skips it.
-func loadCachedBytes(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID string) ([]byte, bool) {
+func loadCachedBytes(ctx context.Context, store Getter, sourceType, sourceName, sourceID string) ([]byte, bool) {
 	if store == nil {
 		return nil, false
 	}
@@ -160,7 +183,7 @@ func loadCachedBytes(ctx context.Context, store ImageStore, sourceType, sourceNa
 
 // loadCachedImage wraps loadCachedBytes as an llm.Image. Shared by the
 // auto-attach pass and the nexus_open_attachment tool dispatcher.
-func loadCachedImage(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID, mime, citeID string) (llm.Image, bool) {
+func loadCachedImage(ctx context.Context, store Getter, sourceType, sourceName, sourceID, mime, citeID string) (llm.Image, bool) {
 	data, ok := loadCachedBytes(ctx, store, sourceType, sourceName, sourceID)
 	if !ok {
 		return llm.Image{}, false
@@ -169,7 +192,7 @@ func loadCachedImage(ctx context.Context, store ImageStore, sourceType, sourceNa
 }
 
 // loadCachedPDF wraps loadCachedBytes as an llm.PDF.
-func loadCachedPDF(ctx context.Context, store ImageStore, sourceType, sourceName, sourceID, filename, citeID string) (llm.PDF, bool) {
+func loadCachedPDF(ctx context.Context, store Getter, sourceType, sourceName, sourceID, filename, citeID string) (llm.PDF, bool) {
 	data, ok := loadCachedBytes(ctx, store, sourceType, sourceName, sourceID)
 	if !ok {
 		return llm.PDF{}, false

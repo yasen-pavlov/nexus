@@ -204,10 +204,10 @@ func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	var m model.ChatMessage
 	var modelStr, stopReason, rewrittenQuery, feedback *string
 	var durationMs *int
-	var citationsJSON, evidenceJSON, toolCallsJSON, usageJSON []byte
+	var j chatMessageJSON
 	err := scan(
 		&m.ID, &m.ChatID, &m.Role, &m.Seq, &m.Content,
-		&modelStr, &citationsJSON, &evidenceJSON, &toolCallsJSON, &usageJSON, &stopReason,
+		&modelStr, &j.citations, &j.evidence, &j.toolCalls, &j.usage, &stopReason,
 		&rewrittenQuery, &m.SkippedRetrieval, &durationMs, &feedback, &m.CreatedAt,
 	)
 	if err != nil {
@@ -215,36 +215,47 @@ func scanChatMessage(scan func(dest ...any) error) (*model.ChatMessage, error) {
 	}
 	m.DurationMs = durationMs
 	m.Feedback = feedback
-	if modelStr != nil {
-		m.Model = *modelStr
-	}
-	if stopReason != nil {
-		m.StopReason = *stopReason
-	}
-	if rewrittenQuery != nil {
-		m.RewrittenQuery = *rewrittenQuery
-	}
-	if len(citationsJSON) > 0 {
-		if err := json.Unmarshal(citationsJSON, &m.Citations); err != nil {
-			return nil, fmt.Errorf("store: unmarshal citations: %w", err)
-		}
-	}
-	if len(evidenceJSON) > 0 {
-		if err := json.Unmarshal(evidenceJSON, &m.Evidence); err != nil {
-			return nil, fmt.Errorf("store: unmarshal evidence: %w", err)
-		}
-	}
-	if len(toolCallsJSON) > 0 {
-		if err := json.Unmarshal(toolCallsJSON, &m.ToolCalls); err != nil {
-			return nil, fmt.Errorf("store: unmarshal tool_calls: %w", err)
-		}
-	}
-	if len(usageJSON) > 0 {
-		if err := json.Unmarshal(usageJSON, &m.Usage); err != nil {
-			return nil, fmt.Errorf("store: unmarshal usage: %w", err)
-		}
+	m.Model = derefString(modelStr)
+	m.StopReason = derefString(stopReason)
+	m.RewrittenQuery = derefString(rewrittenQuery)
+	if err := unmarshalMessageJSON(&m, j); err != nil {
+		return nil, err
 	}
 	return &m, nil
+}
+
+// derefString returns the pointed-to string, or "" for a nil pointer.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// unmarshalMessageJSON decodes the four JSONB columns into the message,
+// skipping any that stored JSON NULL (nil bytes).
+func unmarshalMessageJSON(m *model.ChatMessage, j chatMessageJSON) error {
+	if len(j.citations) > 0 {
+		if err := json.Unmarshal(j.citations, &m.Citations); err != nil {
+			return fmt.Errorf("store: unmarshal citations: %w", err)
+		}
+	}
+	if len(j.evidence) > 0 {
+		if err := json.Unmarshal(j.evidence, &m.Evidence); err != nil {
+			return fmt.Errorf("store: unmarshal evidence: %w", err)
+		}
+	}
+	if len(j.toolCalls) > 0 {
+		if err := json.Unmarshal(j.toolCalls, &m.ToolCalls); err != nil {
+			return fmt.Errorf("store: unmarshal tool_calls: %w", err)
+		}
+	}
+	if len(j.usage) > 0 {
+		if err := json.Unmarshal(j.usage, &m.Usage); err != nil {
+			return fmt.Errorf("store: unmarshal usage: %w", err)
+		}
+	}
+	return nil
 }
 
 // ListMessages returns all messages in a chat, ordered by seq ascending.
@@ -272,6 +283,32 @@ func (s *Store) ListMessages(ctx context.Context, chatID uuid.UUID) ([]model.Cha
 	return msgs, nil
 }
 
+// chatMessageJSON holds the four marshalled JSONB columns of a chat
+// message so AppendMessage can pass them as a single bundle.
+type chatMessageJSON struct {
+	citations, evidence, toolCalls, usage []byte
+}
+
+// marshalMessageJSON marshals the message's four JSONB columns, returning
+// the first marshalling error annotated with the column name.
+func marshalMessageJSON(msg *model.ChatMessage) (chatMessageJSON, error) {
+	var j chatMessageJSON
+	var err error
+	if j.citations, err = marshalNullable(msg.Citations); err != nil {
+		return j, fmt.Errorf("store: marshal citations: %w", err)
+	}
+	if j.evidence, err = marshalNullable(msg.Evidence); err != nil {
+		return j, fmt.Errorf("store: marshal evidence: %w", err)
+	}
+	if j.toolCalls, err = marshalNullable(msg.ToolCalls); err != nil {
+		return j, fmt.Errorf("store: marshal tool_calls: %w", err)
+	}
+	if j.usage, err = marshalNullable(msg.Usage); err != nil {
+		return j, fmt.Errorf("store: marshal usage: %w", err)
+	}
+	return j, nil
+}
+
 // AppendMessage inserts a new message at the next monotonic seq for its
 // chat. Locks the chat row inside a tx so concurrent appends serialise.
 // Bumps chats.updated_at as a side effect.
@@ -283,21 +320,9 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 		msg.CreatedAt = time.Now()
 	}
 
-	citationsJSON, err := marshalNullable(msg.Citations)
+	j, err := marshalMessageJSON(msg)
 	if err != nil {
-		return fmt.Errorf("store: marshal citations: %w", err)
-	}
-	evidenceJSON, err := marshalNullable(msg.Evidence)
-	if err != nil {
-		return fmt.Errorf("store: marshal evidence: %w", err)
-	}
-	toolCallsJSON, err := marshalNullable(msg.ToolCalls)
-	if err != nil {
-		return fmt.Errorf("store: marshal tool_calls: %w", err)
-	}
-	usageJSON, err := marshalNullable(msg.Usage)
-	if err != nil {
-		return fmt.Errorf("store: marshal usage: %w", err)
+		return err
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -329,7 +354,7 @@ func (s *Store) AppendMessage(ctx context.Context, msg *model.ChatMessage) error
 	_, err = tx.Exec(ctx,
 		`INSERT INTO chat_messages (`+chatMessageCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 		msg.ID, msg.ChatID, msg.Role, msg.Seq, msg.Content,
-		nullableString(msg.Model), citationsJSON, evidenceJSON, toolCallsJSON, usageJSON,
+		nullableString(msg.Model), j.citations, j.evidence, j.toolCalls, j.usage,
 		nullableString(msg.StopReason), nullableString(msg.RewrittenQuery), msg.SkippedRetrieval,
 		msg.DurationMs, msg.Feedback, msg.CreatedAt,
 	)

@@ -52,10 +52,10 @@ export function ModelCombobox({
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (
-        wrapperRef.current &&
-        !wrapperRef.current.contains(e.target as Node)
-      ) {
+      const target = e.target;
+      const inside =
+        target instanceof Node && wrapperRef.current?.contains(target);
+      if (wrapperRef.current && !inside) {
         setOpen(false);
       }
     };

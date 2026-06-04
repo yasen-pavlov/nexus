@@ -70,7 +70,7 @@ func (h *handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	var req createChatRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
+			writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 			return
 		}
 	}
@@ -142,7 +142,7 @@ func (h *handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 
 	var req updateChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 
@@ -192,7 +192,7 @@ func (h *handler) SetMessageFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	var req messageFeedbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	if req.Feedback != nil && *req.Feedback != "up" && *req.Feedback != "down" {
@@ -239,7 +239,7 @@ func (h *handler) PostChatMessage(w http.ResponseWriter, r *http.Request) {
 
 	var req postMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
 		return
 	}
 	if req.Content == "" {
