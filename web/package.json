@@ -16,7 +16,7 @@
     "coverage:unit": "NODE_OPTIONS=--no-experimental-webstorage COVERAGE=1 vitest run",
     "coverage:e2e": "playwright test",
     "coverage:report": "node scripts/coverage-report.mjs",
-    "coverage:all": "npm run coverage:clean && npm run coverage:unit && (npm run coverage:e2e; npm run coverage:report)",
+    "coverage:all": "npm run coverage:clean && npm run coverage:unit && npm run coverage:e2e && npm run coverage:report",
     "gen:types": "bash scripts/gen-api-types.sh"
   },
   "dependencies": {
