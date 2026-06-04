@@ -199,15 +199,20 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 	}
 
 	if err := stream.Err(); err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-			return
-		}
-		out <- llm.Event{Kind: llm.EventError, Err: fmt.Errorf("anthropic: stream: %w", err)}
+		out <- streamErrEvent(ctx, err)
 		return
 	}
 
 	out <- llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+}
+
+// streamErrEvent maps a stream error to the terminal event: a cancelled Done
+// when the context was cancelled or timed out, otherwise a wrapped Error.
+func streamErrEvent(ctx context.Context, err error) llm.Event {
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
+	}
+	return llm.Event{Kind: llm.EventError, Err: fmt.Errorf("anthropic: stream: %w", err)}
 }
 
 // handleBlockStart records a new tool-use block and emits its opening
