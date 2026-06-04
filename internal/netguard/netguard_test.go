@@ -41,6 +41,18 @@ func TestControl_RejectsLoopback(t *testing.T) {
 	}
 }
 
+func TestControl_ErrorPaths(t *testing.T) {
+	// Address without a port → SplitHostPort fails.
+	if err := control("tcp", "no-port", nil); err == nil {
+		t.Error("expected error for address without host:port")
+	}
+	// Host:port whose host isn't a parseable IP (control runs post-resolution,
+	// so a non-IP host is unexpected) → parse error.
+	if err := control("tcp", "example.com:443", nil); err == nil {
+		t.Error("expected error for non-IP host")
+	}
+}
+
 func TestNewClient_NotNil(t *testing.T) {
 	if NewClient(0) == nil {
 		t.Fatal("NewClient returned nil")
