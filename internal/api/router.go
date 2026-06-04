@@ -43,7 +43,13 @@ func NewRouter(
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	// Deliberately NOT using chimw.RealIP: it rewrites r.RemoteAddr from
+	// X-Forwarded-For / X-Real-IP unconditionally, which is spoofable and
+	// would let an attacker bypass the per-IP login rate limiter by forging
+	// the header (chi deprecated it for this reason — GHSA-3fxj-6jh8-hvhx et
+	// al.). We key the limiter on the real connection IP instead. If this is
+	// ever deployed behind a trusted reverse proxy, add a proxy-aware parser
+	// that only trusts XFF from known proxy addresses.
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(10 * time.Minute))
 	if len(corsOrigins) == 0 {
