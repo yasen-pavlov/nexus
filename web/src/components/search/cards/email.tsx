@@ -50,9 +50,14 @@ function parseAddress(raw: string): {
   address: string | null;
 } {
   const trimmed = raw.trim();
-  const m = /^(.*?)\s*<([^>]+)>\s*$/.exec(trimmed);
+  // `[^<]*` (rather than `.*?\s*`) matches the display-name part
+  // deterministically up to the first `<`, so there's no backtracking
+  // ambiguity over whitespace — ReDoS-safe. The trailing space before `<`
+  // is captured into m[1] and stripped by the trim() below before the
+  // quote-unwrap, preserving the original behavior for quoted names.
+  const m = /^([^<]*)<([^>]+)>\s*$/.exec(trimmed);
   if (m) {
-    const name = m[1].replace(/^"(.*)"$/, "$1").trim();
+    const name = m[1].trim().replace(/^"(.*)"$/, "$1").trim();
     return { name: name || null, address: m[2].trim() || null };
   }
   if (trimmed.includes("@")) return { name: null, address: trimmed };
