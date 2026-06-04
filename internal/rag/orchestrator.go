@@ -776,19 +776,26 @@ const contextTokenMargin = 8000
 // enough to the model's context window that adding another tool round risks
 // overflowing it. Returns false when the window is unknown (treat as ample).
 func (l *roundLoop) contextNearLimit() bool {
-	window := l.info.ContextWindow
+	return contextNearLimit(l.info.ContextWindow, l.st.o.cfg.MaxTokens,
+		l.st.o.cfg.SystemPrompt, l.documents, l.rolledMessages)
+}
+
+// contextNearLimit is the pure core of the budget check, split out so it's
+// unit-testable without constructing a full turn. Returns false when the
+// window is unknown (treat as ample).
+func contextNearLimit(window, maxTokens int, systemPrompt string, docs []llm.Document, msgs []llm.Message) bool {
 	if window <= 0 {
 		return false
 	}
-	chars := len(l.st.o.cfg.SystemPrompt)
-	for i := range l.documents {
-		chars += len(l.documents[i].Title) + len(l.documents[i].Content)
+	chars := len(systemPrompt)
+	for i := range docs {
+		chars += len(docs[i].Title) + len(docs[i].Content)
 	}
-	for i := range l.rolledMessages {
-		chars += len(l.rolledMessages[i].Content)
+	for i := range msgs {
+		chars += len(msgs[i].Content)
 	}
 	estTokens := chars / 4
-	budget := window - l.st.o.cfg.MaxTokens - contextTokenMargin
+	budget := window - maxTokens - contextTokenMargin
 	return budget > 0 && estTokens >= budget
 }
 

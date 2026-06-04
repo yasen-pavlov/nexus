@@ -134,6 +134,24 @@ func TestOpenAI_Embed(t *testing.T) {
 	}
 }
 
+func TestOpenAI_Embed_ReordersByResponseIndex(t *testing.T) {
+	// Returned out of order (index 1 first) → must be placed by index.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"data":[{"embedding":[9,9],"index":1},{"embedding":[1,1],"index":0}]}`)) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+
+	o := NewOpenAI("key", "test", zap.NewNop())
+	o.baseURL = srv.URL
+	embeddings, err := o.Embed(context.Background(), []string{"a", "b"}, InputTypeDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddings) != 2 || embeddings[0][0] != 1 || embeddings[1][0] != 9 {
+		t.Errorf("not reordered by index: %v", embeddings)
+	}
+}
+
 func TestOpenAI_Embed_Error(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -230,6 +248,30 @@ func TestVoyage_Embed_Error(t *testing.T) {
 	_, err := v.Embed(context.Background(), []string{"hello"}, InputTypeDocument)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestVoyage_Embed_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{not json`)) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+	v := NewVoyage("key", "test", zap.NewNop())
+	v.baseURL = srv.URL
+	if _, err := v.Embed(context.Background(), []string{"x"}, InputTypeDocument); err == nil {
+		t.Fatal("expected decode error")
+	}
+}
+
+func TestOpenAI_Embed_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{not json`)) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+	o := NewOpenAI("key", "test", zap.NewNop())
+	o.baseURL = srv.URL
+	if _, err := o.Embed(context.Background(), []string{"x"}, InputTypeDocument); err == nil {
+		t.Fatal("expected decode error")
 	}
 }
 

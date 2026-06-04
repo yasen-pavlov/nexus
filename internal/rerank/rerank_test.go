@@ -350,6 +350,12 @@ func TestRerankError(t *testing.T) {
 		t.Error("429 should be retryable")
 	}
 
+	// With a captured body, the message includes the provider's detail.
+	eb := &RerankError{StatusCode: 400, Provider: "cohere", Body: "invalid model"}
+	if eb.Error() != "cohere: rerank request failed with status 400: invalid model" {
+		t.Errorf("Error() with body = %q", eb.Error())
+	}
+
 	e400 := &RerankError{StatusCode: 400, Provider: "test"}
 	if e400.IsRetryable() {
 		t.Error("400 should not be retryable")

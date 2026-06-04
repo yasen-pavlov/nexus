@@ -625,6 +625,32 @@ func TestRun_EmptyAnswer_GetsPlaceholderAndNoTitle(t *testing.T) {
 	}
 }
 
+func TestContextNearLimit(t *testing.T) {
+	big := strings.Repeat("x", 5000) // ~1250 estimated tokens (4 chars/token)
+	const maxTokens = 1000
+	tests := []struct {
+		name   string
+		window int
+		sys    string
+		docs   []llm.Document
+		msgs   []llm.Message
+		want   bool
+	}{
+		{"unknown window → ample", 0, big, nil, nil, false},
+		{"budget non-positive → false", 5000, big, nil, nil, false}, // 5000-1000-8000 < 0
+		{"well under budget", 1_000_000, "tiny", nil, nil, false},
+		{"over budget via system prompt", 10_000, big, nil, nil, true}, // budget 1000 tok; 1250 ≥
+		{"over budget via docs+messages", 10_000, "", []llm.Document{{Content: big}}, []llm.Message{{Content: big}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := contextNearLimit(tt.window, maxTokens, tt.sys, tt.docs, tt.msgs); got != tt.want {
+				t.Errorf("contextNearLimit = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParserDocsFromLLM_PreservesOrder(t *testing.T) {
 	docs := []llm.Document{
 		{ID: "x"},

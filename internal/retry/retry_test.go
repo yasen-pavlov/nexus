@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 func TestBackoff_GrowsWithJitter(t *testing.T) {
@@ -49,6 +51,24 @@ func TestDo_SucceedsAfterRetries(t *testing.T) {
 	}
 	if got != 42 || calls != 3 {
 		t.Errorf("got=%d calls=%d, want 42 / 3", got, calls)
+	}
+}
+
+func TestDo_LogsBetweenRetries(t *testing.T) {
+	// Exercise the log != nil branch with a real (no-op) logger.
+	calls := 0
+	got, err := Do(context.Background(), zap.NewNop(), "test", 2, time.Microsecond,
+		func() (string, error) {
+			calls++
+			if calls < 2 {
+				return "", errors.New("transient")
+			}
+			return "ok", nil
+		},
+		func(error) bool { return true },
+	)
+	if err != nil || got != "ok" || calls != 2 {
+		t.Fatalf("got=%q err=%v calls=%d", got, err, calls)
 	}
 }
 
