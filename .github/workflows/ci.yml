@@ -198,7 +198,39 @@ jobs:
           name: frontend-coverage
           path: web/coverage
 
+      # The scanner CLI download from binaries.sonarsource.com intermittently
+      # 403s (transient WAF/rate-limit hitting the runner), failing the whole
+      # pipeline on an otherwise-green commit. Retry up to 3 times with backoff;
+      # the 403 happens during download, before any analysis/upload, so a failed
+      # attempt is a no-op on SonarCloud's side and retrying is safe. Only the
+      # final attempt is allowed to fail the job.
       - name: SonarQube Scan
+        id: sonar1
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+      - name: Backoff before Sonar retry 1
+        if: steps.sonar1.outcome == 'failure'
+        run: sleep 45
+
+      - name: SonarQube Scan (retry 1)
+        id: sonar2
+        if: steps.sonar1.outcome == 'failure'
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+      - name: Backoff before Sonar retry 2
+        if: steps.sonar1.outcome == 'failure' && steps.sonar2.outcome == 'failure'
+        run: sleep 90
+
+      - name: SonarQube Scan (retry 2)
+        if: steps.sonar1.outcome == 'failure' && steps.sonar2.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
