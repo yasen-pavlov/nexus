@@ -168,6 +168,356 @@ const docTemplate = `{
                 }
             }
         },
+        "/chats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the calling user's chats, ordered by updated_at desc.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "List chats",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Max chats to return (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Number of chats to skip",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.listChatsResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new empty chat owned by the requesting user. Both title and default_model are optional.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Create a chat",
+                "parameters": [
+                    {
+                        "description": "Initial chat fields",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.createChatRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_muty_nexus_internal_model.Chat"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/chats/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the chat plus its full message history. Owner-only; non-owners (including admins) get 404 to avoid leaking chat existence.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Get a chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chat ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.chatDetailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Removes the chat and (via ON DELETE CASCADE) all its messages. Owner-only; non-owners get 404 to avoid leaking chat existence.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Delete a chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chat ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Applies a partial update (title and/or default_model). Owner-only; non-owners get 404 to avoid leaking chat existence.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Update a chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chat ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Fields to update",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.updateChatRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_muty_nexus_internal_model.Chat"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/chats/{id}/messages": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Submits a user turn and streams the RAG orchestrator's events back as Server-Sent Events (retrieving, evidence, text, citation, tool_start/result, usage, title, done, error). Owner-only; non-owners get 404 to avoid leaking chat existence. The response is a long-lived text/event-stream, not a single JSON body.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Send a chat message (SSE stream)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chat ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "User message",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.postMessageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE event stream",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "RAG orchestrator not configured",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/chats/{id}/messages/{messageId}/feedback": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Records a thumbs rating (\"up\"/\"down\", or null to clear) on a message. Owner-only; non-owners get 404 to avoid leaking chat existence.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "chats"
+                ],
+                "summary": "Rate an assistant message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Chat ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Message ID",
+                        "name": "messageId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Feedback",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.messageFeedbackRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/connectors": {
             "get": {
                 "security": [
@@ -879,6 +1229,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/llm/default": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the configured default model id (provider-prefixed). The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "llm"
+                ],
+                "summary": "Get the system-wide default LLM model",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.llmDefaultResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/llm/models": {
             "get": {
                 "security": [
@@ -886,7 +1261,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the visible LLM models filtered by configured providers and admin allowlist. Non-admin users see the same list. Used by the per-message model picker in the Ask UI.",
+                "description": "Returns LLM models filtered by configured providers and (by default) admin allowlist. The per-message picker uses the default response. Pass ` + "`" + `?include_disallowed=true` + "`" + ` (admin-only) to get the pre-allowlist set — used by the admin allowlist editor so deselected rows stay visible for re-ticking.",
                 "produces": [
                     "application/json"
                 ],
@@ -894,6 +1269,14 @@ const docTemplate = `{
                     "llm"
                 ],
                 "summary": "List available LLM models",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "When true, ignore the allowlist filter (admin-only)",
+                        "name": "include_disallowed",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -1177,6 +1560,74 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/internal_api.llmSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/rag": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the runtime knobs the RAG orchestrator reads per turn (currently the agentic-tool round cap).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Get RAG runtime settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ragSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Updates the runtime knobs the RAG orchestrator reads per turn. Hot-reloads on success — no restart required. max_tool_rounds must be between 0 and 5; 0 disables agentic tool calls entirely.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "Update RAG runtime settings",
+                "parameters": [
+                    {
+                        "description": "RAG settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ragSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ragSettingsResponse"
                         }
                     },
                     "400": {
@@ -2033,6 +2484,216 @@ const docTemplate = `{
                 }
             }
         },
+        "github_com_muty_nexus_internal_model.Chat": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "default_model": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChatCitation": {
+            "type": "object",
+            "properties": {
+                "cited_text": {
+                    "type": "string"
+                },
+                "doc_id": {
+                    "type": "string"
+                },
+                "span_end": {
+                    "type": "integer"
+                },
+                "span_start": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChatListEntry": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "default_model": {
+                    "type": "string"
+                },
+                "first_message_preview": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChatMessage": {
+            "type": "object",
+            "properties": {
+                "chat_id": {
+                    "type": "string"
+                },
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatCitation"
+                    }
+                },
+                "content": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "duration_ms": {
+                    "description": "DurationMs is the wall-clock time the orchestrator's runTurn\ntook, in milliseconds. Persisted at orchestrator-side so the FE\ncan render a consistent label across the live (in-flight) view\nand the post-refresh persisted view. Nil for messages written\nbefore migration 019 and for user messages.",
+                    "type": "integer"
+                },
+                "evidence": {
+                    "description": "Evidence is the chunks the orchestrator retrieved for THIS turn\n(the same payload that streamed in EvEvidence). Persisting them\nalongside citations preserves the citation→source link end-to-end:\nChunkPreview.DocID is the OpenSearch chunk handle, so historical\nchats stay grounded — citations can render as numbered pills, the\nFE evidence rail repopulates, and any future feature can hop\n/api/documents/{id}, /related, /conversations, /blob from the\nstored handles.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChunkPreview"
+                    }
+                },
+                "feedback": {
+                    "description": "Feedback is the user's thumbs rating on an assistant message:\n\"up\", \"down\", or nil (no rating). Set via the message-feedback\nendpoint; used for Phase 7 telemetry. Always nil for user messages.",
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "rewritten_query": {
+                    "description": "RewrittenQuery is the rewriter's normalised search query when the\nrewriter ran on this turn. Empty when the rewriter was disabled\nor this was the first user turn (rewriter only runs when prior\nassistant turns exist). Persisted so the FE phase strip can\nrepopulate \"Searching for: \u003crewritten\u003e\" on chat reload, and so\nthe Phase 7 eval harness knows which query actually hit OpenSearch.",
+                    "type": "string"
+                },
+                "role": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatRole"
+                },
+                "seq": {
+                    "type": "integer"
+                },
+                "skipped_retrieval": {
+                    "description": "SkippedRetrieval is true when the rewriter judged the question\nanswerable from chat history alone (greetings, meta questions,\nhistory-only follow-ups). On these turns no OpenSearch call ran\nand Evidence is empty.",
+                    "type": "boolean"
+                },
+                "stop_reason": {
+                    "type": "string"
+                },
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatToolCall"
+                    }
+                },
+                "usage": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatUsage"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChatRole": {
+            "type": "string",
+            "enum": [
+                "user",
+                "assistant",
+                "tool"
+            ],
+            "x-enum-varnames": [
+                "ChatRoleUser",
+                "ChatRoleAssistant",
+                "ChatRoleTool"
+            ]
+        },
+        "github_com_muty_nexus_internal_model.ChatToolCall": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "string"
+                },
+                "chunks": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChunkPreview"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "result_id": {
+                    "type": "string"
+                },
+                "result_summary": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChatUsage": {
+            "type": "object",
+            "properties": {
+                "cache_read": {
+                    "type": "integer"
+                },
+                "cache_write": {
+                    "type": "integer"
+                },
+                "input": {
+                    "type": "integer"
+                },
+                "output": {
+                    "type": "integer"
+                }
+            }
+        },
+        "github_com_muty_nexus_internal_model.ChunkPreview": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string"
+                },
+                "headline": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "mime_type": {
+                    "description": "MimeType is the retrieved chunk's content type when known. The FE\nuses an image/* prefix to render an inline thumbnail (fetched via\n/api/documents/{id}/content) below the evidence card. Empty for\nchunks with no binary (most text chunks).",
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_muty_nexus_internal_model.ConnectorConfig": {
             "type": "object",
             "properties": {
@@ -2483,6 +3144,20 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_api.chatDetailResponse": {
+            "type": "object",
+            "properties": {
+                "chat": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.Chat"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatMessage"
+                    }
+                }
+            }
+        },
         "internal_api.connectorResponse": {
             "type": "object",
             "properties": {
@@ -2545,6 +3220,17 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "next_before": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.createChatRequest": {
+            "type": "object",
+            "properties": {
+                "default_model": {
+                    "type": "string"
+                },
+                "title": {
                     "type": "string"
                 }
             }
@@ -2655,6 +3341,28 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_api.listChatsResponse": {
+            "type": "object",
+            "properties": {
+                "chats": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/github_com_muty_nexus_internal_model.ChatListEntry"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_api.llmDefaultResponse": {
+            "type": "object",
+            "properties": {
+                "default_model": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_api.llmModelResponse": {
             "type": "object",
             "properties": {
@@ -2716,6 +3424,9 @@ const docTemplate = `{
                 },
                 "openai_api_key": {
                     "type": "string"
+                },
+                "rewriter_model": {
+                    "type": "string"
                 }
             }
         },
@@ -2739,6 +3450,10 @@ const docTemplate = `{
                 },
                 "openai_api_key": {
                     "type": "string"
+                },
+                "rewriter_model": {
+                    "description": "RewriterModel is the cheap model used for query rewriting and\nauto-titling. Empty disables both features.",
+                    "type": "string"
                 }
             }
         },
@@ -2750,6 +3465,59 @@ const docTemplate = `{
                 },
                 "username": {
                     "type": "string"
+                }
+            }
+        },
+        "internal_api.messageFeedbackRequest": {
+            "type": "object",
+            "properties": {
+                "feedback": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.postMessageRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "model": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.ragSettingsRequest": {
+            "type": "object",
+            "properties": {
+                "enable_multimodal": {
+                    "type": "boolean"
+                },
+                "enable_open_attachment": {
+                    "type": "boolean"
+                },
+                "max_images_per_turn": {
+                    "type": "integer"
+                },
+                "max_tool_rounds": {
+                    "type": "integer"
+                }
+            }
+        },
+        "internal_api.ragSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "enable_multimodal": {
+                    "type": "boolean"
+                },
+                "enable_open_attachment": {
+                    "type": "boolean"
+                },
+                "max_images_per_turn": {
+                    "type": "integer"
+                },
+                "max_tool_rounds": {
+                    "type": "integer"
                 }
             }
         },
@@ -2890,6 +3658,17 @@ const docTemplate = `{
                 },
                 "sweep_interval_minutes": {
                     "type": "integer"
+                }
+            }
+        },
+        "internal_api.updateChatRequest": {
+            "type": "object",
+            "properties": {
+                "default_model": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
                 }
             }
         },

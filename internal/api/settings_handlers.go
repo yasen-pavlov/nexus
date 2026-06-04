@@ -518,8 +518,14 @@ func parseIntOr(s string, fallback int) int {
 }
 
 func maskAPIKey(key string) string {
+	if key == "" {
+		return ""
+	}
 	if len(key) <= 4 {
-		return key
+		// Too short to partially reveal without exposing most of it. Emit a
+		// fixed-length mask (still recognized by isMasked, so a re-submitted
+		// masked value is preserved rather than overwriting the real secret).
+		return "********"
 	}
 	return "****" + key[len(key)-4:]
 }

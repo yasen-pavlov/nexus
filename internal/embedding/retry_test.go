@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/muty/nexus/internal/retry"
 )
 
 type mockEmbedder struct {
@@ -223,20 +225,17 @@ func TestRetry_Dimension(t *testing.T) {
 }
 
 func TestRetry_BackoffIncreases(t *testing.T) {
-	r := &RetryEmbedder{baseDelay: 100 * time.Millisecond}
-	d0 := r.backoff(0)
-	d1 := r.backoff(1)
-	d2 := r.backoff(2)
+	base := 100 * time.Millisecond
+	d0 := retry.Backoff(0, base)
+	d2 := retry.Backoff(2, base)
 
-	// With jitter, d1 should generally be > d0 base, d2 > d1 base
-	// Base values: 100ms, 200ms, 400ms (plus 0-100ms jitter)
+	// Base values: 100ms, 400ms (plus 0-100ms jitter).
 	if d0 > 250*time.Millisecond {
-		t.Errorf("backoff(0) = %v, expected <= 250ms", d0)
+		t.Errorf("Backoff(0) = %v, expected <= 250ms", d0)
 	}
 	if d2 < 400*time.Millisecond {
-		t.Errorf("backoff(2) = %v, expected >= 400ms", d2)
+		t.Errorf("Backoff(2) = %v, expected >= 400ms", d2)
 	}
-	_ = d1
 }
 
 // --- EmbedError tests ---
@@ -287,8 +286,9 @@ func TestIsRetryable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if isRetryable(tt.err) != tt.retryable {
-				t.Errorf("isRetryable() = %v, want %v", isRetryable(tt.err), tt.retryable)
+			got := retry.Retryable(tt.err, embedErrorRetryable)
+			if got != tt.retryable {
+				t.Errorf("Retryable() = %v, want %v", got, tt.retryable)
 			}
 		})
 	}

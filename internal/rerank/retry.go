@@ -3,15 +3,11 @@ package rerank
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
 	"time"
 
 	"go.uber.org/zap"
-)
 
-const (
-	defaultMaxRetries = 3
-	defaultBaseDelay  = time.Second
+	"github.com/muty/nexus/internal/retry"
 )
 
 // RetryReranker wraps a Reranker with retry logic and exponential backoff.
@@ -26,59 +22,22 @@ type RetryReranker struct {
 func NewRetryReranker(inner Reranker, log *zap.Logger) *RetryReranker {
 	return &RetryReranker{
 		inner:      inner,
-		maxRetries: defaultMaxRetries,
-		baseDelay:  defaultBaseDelay,
+		maxRetries: retry.DefaultMaxRetries,
+		baseDelay:  retry.DefaultBaseDelay,
 		log:        log,
 	}
 }
 
 func (r *RetryReranker) Rerank(ctx context.Context, query string, documents []string) ([]Result, error) {
-	var lastErr error
-
-	for attempt := range r.maxRetries + 1 {
-		result, err := r.inner.Rerank(ctx, query, documents)
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-
-		if !isRetryable(err) {
-			return nil, err
-		}
-
-		if attempt >= r.maxRetries {
-			break
-		}
-
-		delay := r.backoff(attempt)
-		r.log.Warn("rerank request failed, retrying",
-			zap.Int("attempt", attempt+1),
-			zap.Int("max_retries", r.maxRetries),
-			zap.Duration("backoff", delay),
-			zap.Error(err),
-		)
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-
-	return nil, lastErr
+	return retry.Do(ctx, r.log, "rerank request", r.maxRetries, r.baseDelay,
+		func() ([]Result, error) { return r.inner.Rerank(ctx, query, documents) },
+		rerankErrorRetryable,
+	)
 }
 
-func (r *RetryReranker) backoff(attempt int) time.Duration {
-	delay := r.baseDelay << attempt
-	jitter := time.Duration(rand.Int64N(int64(r.baseDelay)))
-	return delay + jitter
-}
-
-func isRetryable(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
+// rerankErrorRetryable is the typed predicate for retry.Do: a typed RerankError
+// uses its own IsRetryable; unrecognized (network) errors retry.
+func rerankErrorRetryable(err error) bool {
 	var rerankErr *RerankError
 	if errors.As(err, &rerankErr) {
 		return rerankErr.IsRetryable()

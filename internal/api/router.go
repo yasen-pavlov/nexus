@@ -84,16 +84,23 @@ func NewRouter(
 		log:           log,
 	}
 
-	// SSE endpoints — outside the timeout middleware (long-lived connections)
-	// Protected by auth (Bearer header or ?token= query param for EventSource).
+	// SSE endpoints — outside the timeout middleware (long-lived connections).
+	// The GET progress streams are consumed by the browser EventSource API,
+	// which cannot set an Authorization header, so they accept a ?token= query
+	// param via SSEMiddleware. The chat stream is a POST issued with fetch(),
+	// so it uses the standard header-only Middleware — no URL-borne token.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(jwtSecret))
+		r.Use(auth.SSEMiddleware(jwtSecret))
 		r.Use(auth.RevocationMiddleware(revocation))
 		// Multiplexed stream: one connection, all visible jobs.
 		r.Get("/api/sync/progress", h.StreamAllSyncProgress)
 		// Per-job legacy stream, kept for backward compat.
 		r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
-		// RAG chat message stream — long-lived, per-turn SSE.
+	})
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(jwtSecret))
+		r.Use(auth.RevocationMiddleware(revocation))
+		// RAG chat message stream — long-lived, per-turn SSE over fetch().
 		r.Post("/api/chats/{id}/messages", h.PostChatMessage)
 	})
 

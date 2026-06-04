@@ -1,4 +1,5 @@
 import type { DocumentHit } from "@/lib/api-types";
+import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -36,7 +37,7 @@ export function SnippetBody({
           "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
           className,
         )}
-        dangerouslySetInnerHTML={{ __html: hit.headline }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHighlight(hit.headline) }}
       />
     );
   }

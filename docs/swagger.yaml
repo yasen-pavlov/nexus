@@ -11,6 +11,177 @@ definitions:
       total_size:
         type: integer
     type: object
+  github_com_muty_nexus_internal_model.Chat:
+    properties:
+      created_at:
+        type: string
+      default_model:
+        type: string
+      id:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.ChatCitation:
+    properties:
+      cited_text:
+        type: string
+      doc_id:
+        type: string
+      span_end:
+        type: integer
+      span_start:
+        type: integer
+    type: object
+  github_com_muty_nexus_internal_model.ChatListEntry:
+    properties:
+      created_at:
+        type: string
+      default_model:
+        type: string
+      first_message_preview:
+        type: string
+      id:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.ChatMessage:
+    properties:
+      chat_id:
+        type: string
+      citations:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatCitation'
+        type: array
+      content:
+        type: string
+      created_at:
+        type: string
+      duration_ms:
+        description: |-
+          DurationMs is the wall-clock time the orchestrator's runTurn
+          took, in milliseconds. Persisted at orchestrator-side so the FE
+          can render a consistent label across the live (in-flight) view
+          and the post-refresh persisted view. Nil for messages written
+          before migration 019 and for user messages.
+        type: integer
+      evidence:
+        description: |-
+          Evidence is the chunks the orchestrator retrieved for THIS turn
+          (the same payload that streamed in EvEvidence). Persisting them
+          alongside citations preserves the citation→source link end-to-end:
+          ChunkPreview.DocID is the OpenSearch chunk handle, so historical
+          chats stay grounded — citations can render as numbered pills, the
+          FE evidence rail repopulates, and any future feature can hop
+          /api/documents/{id}, /related, /conversations, /blob from the
+          stored handles.
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChunkPreview'
+        type: array
+      feedback:
+        description: |-
+          Feedback is the user's thumbs rating on an assistant message:
+          "up", "down", or nil (no rating). Set via the message-feedback
+          endpoint; used for Phase 7 telemetry. Always nil for user messages.
+        type: string
+      id:
+        type: string
+      model:
+        type: string
+      rewritten_query:
+        description: |-
+          RewrittenQuery is the rewriter's normalised search query when the
+          rewriter ran on this turn. Empty when the rewriter was disabled
+          or this was the first user turn (rewriter only runs when prior
+          assistant turns exist). Persisted so the FE phase strip can
+          repopulate "Searching for: <rewritten>" on chat reload, and so
+          the Phase 7 eval harness knows which query actually hit OpenSearch.
+        type: string
+      role:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatRole'
+      seq:
+        type: integer
+      skipped_retrieval:
+        description: |-
+          SkippedRetrieval is true when the rewriter judged the question
+          answerable from chat history alone (greetings, meta questions,
+          history-only follow-ups). On these turns no OpenSearch call ran
+          and Evidence is empty.
+        type: boolean
+      stop_reason:
+        type: string
+      tool_calls:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatToolCall'
+        type: array
+      usage:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatUsage'
+    type: object
+  github_com_muty_nexus_internal_model.ChatRole:
+    enum:
+    - user
+    - assistant
+    - tool
+    type: string
+    x-enum-varnames:
+    - ChatRoleUser
+    - ChatRoleAssistant
+    - ChatRoleTool
+  github_com_muty_nexus_internal_model.ChatToolCall:
+    properties:
+      args:
+        type: string
+      chunks:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChunkPreview'
+        type: array
+      name:
+        type: string
+      result_id:
+        type: string
+      result_summary:
+        type: string
+    type: object
+  github_com_muty_nexus_internal_model.ChatUsage:
+    properties:
+      cache_read:
+        type: integer
+      cache_write:
+        type: integer
+      input:
+        type: integer
+      output:
+        type: integer
+    type: object
+  github_com_muty_nexus_internal_model.ChunkPreview:
+    properties:
+      date:
+        type: string
+      headline:
+        type: string
+      id:
+        type: string
+      mime_type:
+        description: |-
+          MimeType is the retrieved chunk's content type when known. The FE
+          uses an image/* prefix to render an inline thumbnail (fetched via
+          /api/documents/{id}/content) below the evidence card. Empty for
+          chunks with no binary (most text chunks).
+        type: string
+      source:
+        type: string
+      title:
+        type: string
+    type: object
   github_com_muty_nexus_internal_model.ConnectorConfig:
     properties:
       config:
@@ -331,6 +502,15 @@ definitions:
       password:
         type: string
     type: object
+  internal_api.chatDetailResponse:
+    properties:
+      chat:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.Chat'
+      messages:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatMessage'
+        type: array
+    type: object
   internal_api.connectorResponse:
     properties:
       config:
@@ -378,6 +558,13 @@ definitions:
       next_after:
         type: string
       next_before:
+        type: string
+    type: object
+  internal_api.createChatRequest:
+    properties:
+      default_model:
+        type: string
+      title:
         type: string
     type: object
   internal_api.createConnectorRequest:
@@ -449,6 +636,20 @@ definitions:
       source_type:
         type: string
     type: object
+  internal_api.listChatsResponse:
+    properties:
+      chats:
+        items:
+          $ref: '#/definitions/github_com_muty_nexus_internal_model.ChatListEntry'
+        type: array
+      total:
+        type: integer
+    type: object
+  internal_api.llmDefaultResponse:
+    properties:
+      default_model:
+        type: string
+    type: object
   internal_api.llmModelResponse:
     properties:
       bare_id:
@@ -490,6 +691,8 @@ definitions:
         type: string
       openai_api_key:
         type: string
+      rewriter_model:
+        type: string
     type: object
   internal_api.llmSettingsResponse:
     properties:
@@ -505,6 +708,11 @@ definitions:
         type: string
       openai_api_key:
         type: string
+      rewriter_model:
+        description: |-
+          RewriterModel is the cheap model used for query rewriting and
+          auto-titling. Empty disables both features.
+        type: string
     type: object
   internal_api.loginRequest:
     properties:
@@ -512,6 +720,40 @@ definitions:
         type: string
       username:
         type: string
+    type: object
+  internal_api.messageFeedbackRequest:
+    properties:
+      feedback:
+        type: string
+    type: object
+  internal_api.postMessageRequest:
+    properties:
+      content:
+        type: string
+      model:
+        type: string
+    type: object
+  internal_api.ragSettingsRequest:
+    properties:
+      enable_multimodal:
+        type: boolean
+      enable_open_attachment:
+        type: boolean
+      max_images_per_turn:
+        type: integer
+      max_tool_rounds:
+        type: integer
+    type: object
+  internal_api.ragSettingsResponse:
+    properties:
+      enable_multimodal:
+        type: boolean
+      enable_open_attachment:
+        type: boolean
+      max_images_per_turn:
+        type: integer
+      max_tool_rounds:
+        type: integer
     type: object
   internal_api.rankingSettings:
     properties:
@@ -606,6 +848,13 @@ definitions:
         type: integer
       sweep_interval_minutes:
         type: integer
+    type: object
+  internal_api.updateChatRequest:
+    properties:
+      default_model:
+        type: string
+      title:
+        type: string
     type: object
   internal_api.updateConnectorRequest:
     properties:
@@ -739,6 +988,237 @@ paths:
       summary: Register first admin user
       tags:
       - auth
+  /chats:
+    get:
+      description: Returns the calling user's chats, ordered by updated_at desc.
+      parameters:
+      - description: Max chats to return (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      - description: Number of chats to skip
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.listChatsResponse'
+      security:
+      - BearerAuth: []
+      summary: List chats
+      tags:
+      - chats
+    post:
+      consumes:
+      - application/json
+      description: Creates a new empty chat owned by the requesting user. Both title
+        and default_model are optional.
+      parameters:
+      - description: Initial chat fields
+        in: body
+        name: request
+        schema:
+          $ref: '#/definitions/internal_api.createChatRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.Chat'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Create a chat
+      tags:
+      - chats
+  /chats/{id}:
+    delete:
+      description: Removes the chat and (via ON DELETE CASCADE) all its messages.
+        Owner-only; non-owners get 404 to avoid leaking chat existence.
+      parameters:
+      - description: Chat ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete a chat
+      tags:
+      - chats
+    get:
+      description: Returns the chat plus its full message history. Owner-only; non-owners
+        (including admins) get 404 to avoid leaking chat existence.
+      parameters:
+      - description: Chat ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.chatDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a chat
+      tags:
+      - chats
+    patch:
+      consumes:
+      - application/json
+      description: Applies a partial update (title and/or default_model). Owner-only;
+        non-owners get 404 to avoid leaking chat existence.
+      parameters:
+      - description: Chat ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.updateChatRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_muty_nexus_internal_model.Chat'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a chat
+      tags:
+      - chats
+  /chats/{id}/messages:
+    post:
+      consumes:
+      - application/json
+      description: Submits a user turn and streams the RAG orchestrator's events back
+        as Server-Sent Events (retrieving, evidence, text, citation, tool_start/result,
+        usage, title, done, error). Owner-only; non-owners get 404 to avoid leaking
+        chat existence. The response is a long-lived text/event-stream, not a single
+        JSON body.
+      parameters:
+      - description: Chat ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: User message
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.postMessageRequest'
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE event stream
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "503":
+          description: RAG orchestrator not configured
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Send a chat message (SSE stream)
+      tags:
+      - chats
+  /chats/{id}/messages/{messageId}/feedback:
+    put:
+      consumes:
+      - application/json
+      description: Records a thumbs rating ("up"/"down", or null to clear) on a message.
+        Owner-only; non-owners get 404 to avoid leaking chat existence.
+      parameters:
+      - description: Chat ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Message ID
+        in: path
+        name: messageId
+        required: true
+        type: string
+      - description: Feedback
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.messageFeedbackRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Rate an assistant message
+      tags:
+      - chats
   /connectors:
     get:
       produces:
@@ -1218,11 +1698,35 @@ paths:
       summary: Health check
       tags:
       - system
+  /llm/default:
+    get:
+      description: Returns the configured default model id (provider-prefixed). The
+        per-message picker falls back to this value when the user has no chat-level
+        override; lets admin choices propagate to all users without requiring localStorage
+        clears.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.llmDefaultResponse'
+      security:
+      - BearerAuth: []
+      summary: Get the system-wide default LLM model
+      tags:
+      - llm
   /llm/models:
     get:
-      description: Returns the visible LLM models filtered by configured providers
-        and admin allowlist. Non-admin users see the same list. Used by the per-message
-        model picker in the Ask UI.
+      description: Returns LLM models filtered by configured providers and (by default)
+        admin allowlist. The per-message picker uses the default response. Pass `?include_disallowed=true`
+        (admin-only) to get the pre-allowlist set — used by the admin allowlist editor
+        so deselected rows stay visible for re-ticking.
+      parameters:
+      - description: When true, ignore the allowlist filter (admin-only)
+        in: query
+        name: include_disallowed
+        type: boolean
       produces:
       - application/json
       responses:
@@ -1421,6 +1925,51 @@ paths:
       security:
       - BearerAuth: []
       summary: Update LLM settings
+      tags:
+      - settings
+  /settings/rag:
+    get:
+      description: Returns the runtime knobs the RAG orchestrator reads per turn (currently
+        the agentic-tool round cap).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.ragSettingsResponse'
+      security:
+      - BearerAuth: []
+      summary: Get RAG runtime settings
+      tags:
+      - settings
+    put:
+      consumes:
+      - application/json
+      description: Updates the runtime knobs the RAG orchestrator reads per turn.
+        Hot-reloads on success — no restart required. max_tool_rounds must be between
+        0 and 5; 0 disables agentic tool calls entirely.
+      parameters:
+      - description: RAG settings
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.ragSettingsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.ragSettingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Update RAG runtime settings
       tags:
       - settings
   /settings/ranking:

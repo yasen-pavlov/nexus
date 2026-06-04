@@ -11,6 +11,52 @@ func docs3() []ParserDoc {
 	}
 }
 
+func TestCitationParser_CyrillicPrefixUTF16Span(t *testing.T) {
+	p := NewCitationParser(docs3())
+	// "Привет " is 7 characters, each a single UTF-16 code unit (13 bytes).
+	// The span must be 7 (UTF-16), not 13 (bytes), so the FE pill lands right.
+	out, cites := p.Feed("Привет [1]!")
+	if out != "Привет !" {
+		t.Errorf("out=%q want %q", out, "Привет !")
+	}
+	if len(cites) != 1 {
+		t.Fatalf("want 1 citation, got %d", len(cites))
+	}
+	if cites[0].SpanStart != 7 || cites[0].SpanEnd != 7 {
+		t.Errorf("span=[%d,%d] want [7,7]", cites[0].SpanStart, cites[0].SpanEnd)
+	}
+}
+
+func TestCitationParser_EmojiPrefixSurrogatePair(t *testing.T) {
+	p := NewCitationParser(docs3())
+	// "👍 " is 3 UTF-16 code units (emoji is a surrogate pair = 2, plus space).
+	_, cites := p.Feed("👍 [2] done")
+	if len(cites) != 1 {
+		t.Fatalf("want 1 citation, got %d", len(cites))
+	}
+	if cites[0].SpanStart != 3 {
+		t.Errorf("span=%d want 3", cites[0].SpanStart)
+	}
+	if cites[0].DocID != "b" {
+		t.Errorf("docID=%q want b", cites[0].DocID)
+	}
+}
+
+func TestCitationParser_MultibyteRuneSplitAcrossFeeds(t *testing.T) {
+	p := NewCitationParser(docs3())
+	// Split the 2-byte 'и' across two deltas; the cursor must still count it
+	// as a single UTF-16 unit. "ии" = 2 units, then "[1]" closes at 2.
+	b := []byte("ии[1]")
+	out1, _ := p.Feed(string(b[:3])) // "и" + first byte of second "и"
+	out2, cites := p.Feed(string(b[3:]))
+	if got := out1 + out2; got != "ии" {
+		t.Errorf("out=%q want %q", got, "ии")
+	}
+	if len(cites) != 1 || cites[0].SpanStart != 2 {
+		t.Fatalf("cites=%v want one span at 2", cites)
+	}
+}
+
 func TestCitationParser_PassesPlainText(t *testing.T) {
 	p := NewCitationParser(docs3())
 	out, cites := p.Feed("hello world")

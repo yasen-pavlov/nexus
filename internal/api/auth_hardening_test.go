@@ -335,6 +335,31 @@ func TestSharedConnector_OwnerCannotMutate(t *testing.T) {
 	}
 }
 
+func TestSharedConnector_NonAdminCannotCreate(t *testing.T) {
+	router, _ := newHardeningRouter(t, nil)
+	admin, user := setupAdminAndUser(t, router)
+
+	sharedBody := `{
+		"type":"filesystem","name":"sneaky-share",
+		"config":{"root_path":"/tmp"},
+		"enabled":true,"schedule":"","shared":true
+	}`
+
+	// A regular user must not be able to create a shared connector — that
+	// would expose their indexed data to everyone and trap them (they can't
+	// un-share their own connector).
+	w := doJSON(t, router, http.MethodPost, "/api/connectors/", sharedBody, user.token)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("user create-shared: expected 403, got %d (%s)", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+
+	// An admin can.
+	w = doJSON(t, router, http.MethodPost, "/api/connectors/", sharedBody, admin.token)
+	if w.Code != http.StatusCreated {
+		t.Errorf("admin create-shared: expected 201, got %d (%s)", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+}
+
 // --- store-level: CreateFirstAdmin atomicity -------------------------------
 
 func TestCreateFirstAdmin_SecondCallReturnsErrFirstAdminExists(t *testing.T) {

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,7 +58,18 @@ type postMessageRequest struct {
 	Model   string `json:"model"`
 }
 
-// CreateChat creates a new empty chat owned by the requesting user.
+// CreateChat godoc
+//
+//	@Summary	Create a chat
+//	@Description	Creates a new empty chat owned by the requesting user. Both title and default_model are optional.
+//	@Tags		chats
+//	@Accept		json
+//	@Produce	json
+//	@Param		request	body	createChatRequest	false	"Initial chat fields"
+//	@Success	201	{object}	model.Chat
+//	@Failure	400	{object}	APIResponse
+//	@Security	BearerAuth
+//	@Router		/chats [post]
 func (h *handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == uuid.Nil {
@@ -88,7 +98,17 @@ func (h *handler) CreateChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, chat)
 }
 
-// ListChats returns the calling user's chats, ordered by updated_at desc.
+// ListChats godoc
+//
+//	@Summary	List chats
+//	@Description	Returns the calling user's chats, ordered by updated_at desc.
+//	@Tags		chats
+//	@Produce	json
+//	@Param		limit	query	int	false	"Max chats to return (default 50, max 200)"
+//	@Param		offset	query	int	false	"Number of chats to skip"
+//	@Success	200	{object}	listChatsResponse
+//	@Security	BearerAuth
+//	@Router		/chats [get]
 func (h *handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == uuid.Nil {
@@ -117,8 +137,18 @@ func (h *handler) ListChats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listChatsResponse{Chats: chats, Total: total})
 }
 
-// GetChat returns the chat plus its full message history. Owner-only;
-// non-owners (including admins) get 404 to avoid existence leaks.
+// GetChat godoc
+//
+//	@Summary	Get a chat
+//	@Description	Returns the chat plus its full message history. Owner-only; non-owners (including admins) get 404 to avoid leaking chat existence.
+//	@Tags		chats
+//	@Produce	json
+//	@Param		id	path	string	true	"Chat ID"
+//	@Success	200	{object}	chatDetailResponse
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
+//	@Router		/chats/{id} [get]
 func (h *handler) GetChat(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.loadOwnedChat(w, r)
 	if !ok {
@@ -133,7 +163,20 @@ func (h *handler) GetChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, chatDetailResponse{Chat: *chat, Messages: msgs})
 }
 
-// UpdateChat applies a partial update (title and/or default_model). Owner-only.
+// UpdateChat godoc
+//
+//	@Summary	Update a chat
+//	@Description	Applies a partial update (title and/or default_model). Owner-only; non-owners get 404 to avoid leaking chat existence.
+//	@Tags		chats
+//	@Accept		json
+//	@Produce	json
+//	@Param		id		path	string	true	"Chat ID"
+//	@Param		request	body	updateChatRequest	true	"Fields to update"
+//	@Success	200	{object}	model.Chat
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
+//	@Router		/chats/{id} [patch]
 func (h *handler) UpdateChat(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.loadOwnedChat(w, r)
 	if !ok {
@@ -211,7 +254,18 @@ func (h *handler) SetMessageFeedback(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteChat removes the chat and (via ON DELETE CASCADE) all its messages.
+// DeleteChat godoc
+//
+//	@Summary	Delete a chat
+//	@Description	Removes the chat and (via ON DELETE CASCADE) all its messages. Owner-only; non-owners get 404 to avoid leaking chat existence.
+//	@Tags		chats
+//	@Produce	json
+//	@Param		id	path	string	true	"Chat ID"
+//	@Success	204
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Security	BearerAuth
+//	@Router		/chats/{id} [delete]
 func (h *handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.loadOwnedChat(w, r)
 	if !ok {
@@ -229,8 +283,21 @@ func (h *handler) DeleteChat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// PostChatMessage submits a user turn and streams the orchestrator's
-// events back as SSE frames. Owner-only.
+// PostChatMessage godoc
+//
+//	@Summary	Send a chat message (SSE stream)
+//	@Description	Submits a user turn and streams the RAG orchestrator's events back as Server-Sent Events (retrieving, evidence, text, citation, tool_start/result, usage, title, done, error). Owner-only; non-owners get 404 to avoid leaking chat existence. The response is a long-lived text/event-stream, not a single JSON body.
+//	@Tags		chats
+//	@Accept		json
+//	@Produce	text/event-stream
+//	@Param		id		path	string	true	"Chat ID"
+//	@Param		request	body	postMessageRequest	true	"User message"
+//	@Success	200	{string}	string	"SSE event stream"
+//	@Failure	400	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
+//	@Failure	503	{object}	APIResponse	"RAG orchestrator not configured"
+//	@Security	BearerAuth
+//	@Router		/chats/{id}/messages [post]
 func (h *handler) PostChatMessage(w http.ResponseWriter, r *http.Request) {
 	chat, ok := h.loadOwnedChat(w, r)
 	if !ok {
@@ -387,6 +454,3 @@ func writeNamedSSEFrame(w http.ResponseWriter, event string, data any) {
 // Compile-time assertion that *store.Store satisfies the rag.ChatStore
 // interface.
 var _ rag.ChatStore = (*store.Store)(nil)
-
-// guard against unused imports if a future refactor drops references
-var _ = context.Background

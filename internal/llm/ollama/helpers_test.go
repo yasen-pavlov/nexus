@@ -9,13 +9,16 @@ import (
 )
 
 func TestBuildDocumentsBlock_FormatsAsXML(t *testing.T) {
-	got := buildDocumentsBlock([]llm.Document{
-		{ID: "chunk-1", Source: "imap", Title: "subj", Date: "2026-01-02", Content: "body"},
+	// Ollama previously had its own un-escaped buildDocumentsBlock; it now
+	// shares llm.RenderDocumentsBlock. A title with a double quote must be
+	// escaped so it can't break out of the title="..." attribute.
+	got := llm.RenderDocumentsBlock([]llm.Document{
+		{ID: "chunk-1", Source: "imap", Title: `the "big" subj`, Date: "2026-01-02", Content: "body"},
 	})
 	if !strings.Contains(got, `<document index="1" id="chunk-1"`) {
 		t.Errorf("missing index attr: %s", got)
 	}
-	for _, want := range []string{`source="imap"`, `title="subj"`, `date="2026-01-02"`, "body", "</document>"} {
+	for _, want := range []string{`source="imap"`, `title="the &quot;big&quot; subj"`, `date="2026-01-02"`, "body", "</document>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %s", want, got)
 		}

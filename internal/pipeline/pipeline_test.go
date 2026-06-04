@@ -658,6 +658,12 @@ func TestCountAlphabeticTokens(t *testing.T) {
 		{"Привет как дела", 3},                   // Cyrillic counts
 		{"a1 b2 c3 dd ee", 2},                    // tokens with <2 alphas don't count
 		{"docker compose up -d", 3},              // "-d" doesn't count, others do
+		// Symbols/emoji sit above 0x0100 but are NOT letters — the old
+		// numeric range check wrongly counted them; unicode.IsLetter fixes it.
+		{"™™ →→ ©©", 0},   // symbols, not letters
+		{"😀😀 🎉🎉", 0},      // emoji, not letters
+		{"™a ™b ™c", 0},   // each token has only 1 real letter
+		{"中文 日本語 한국어", 3}, // CJK letters still count
 	}
 	for _, tt := range tests {
 		if got := countAlphabeticTokens(tt.text); got != tt.want {

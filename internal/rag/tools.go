@@ -3,7 +3,6 @@ package rag
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -452,9 +451,3 @@ func appendUniqueChunks(dst, src []ChunkPreview) []ChunkPreview {
 	}
 	return dst
 }
-
-// ErrUnknownTool is returned only for orchestrator-side bugs that
-// dispatch to nil — exposed so callers can errors.Is it. The
-// dispatcher itself never returns this; it folds unknown tools into a
-// ToolOutcome so the loop stays alive.
-var ErrUnknownTool = errors.New("rag: unknown tool")

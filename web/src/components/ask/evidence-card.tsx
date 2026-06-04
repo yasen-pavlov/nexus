@@ -5,6 +5,7 @@ import { mimeIsImage } from "@/components/conversation/mime-helpers";
 import { sourceMetaFor } from "@/components/source-meta";
 import { SourceChip } from "@/components/source-chip";
 import type { ChunkPreview } from "@/lib/api-types";
+import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -85,7 +86,7 @@ export function EvidenceCard({
               "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
               "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
             )}
-            dangerouslySetInnerHTML={{ __html: chunk.headline }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHighlight(chunk.headline) }}
           />
         )}
       </div>

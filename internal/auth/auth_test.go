@@ -6,8 +6,24 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+func TestParseToken_RejectsNonHS256Alg(t *testing.T) {
+	// Defense in depth: even with the same HMAC secret, a token signed with a
+	// different algorithm must be rejected by the pinned-method parse so a
+	// future change can't open an alg-confusion hole.
+	claims := &Claims{UserID: uuid.New(), Username: "alice", Role: "user"}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS384, claims)
+	signed, err := token.SignedString(testSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseToken(testSecret, signed); err == nil {
+		t.Error("expected HS384 token to be rejected by HS256 alg pinning")
+	}
+}
 
 func TestContextWithClaims_RoundTrip(t *testing.T) {
 	userID := uuid.New()
@@ -182,12 +198,32 @@ func TestRequireRole_Forbidden(t *testing.T) {
 	}
 }
 
-func TestMiddleware_QueryParamToken(t *testing.T) {
-	// EventSource cannot set headers, so the middleware accepts ?token= as fallback.
+func TestMiddleware_QueryParamTokenRejected(t *testing.T) {
+	// The default header-only Middleware must NOT accept a URL-borne token —
+	// that would leak the bearer credential into logs/history. Query tokens
+	// are confined to SSEMiddleware.
 	userID := uuid.New()
 	token, _ := GenerateToken(testSecret, userID, "alice", "user", 1)
 
-	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/?token="+token, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 (query token rejected by Middleware), got %d", w.Code)
+	}
+}
+
+func TestSSEMiddleware_QueryParamToken(t *testing.T) {
+	// EventSource cannot set headers, so SSEMiddleware accepts ?token=.
+	userID := uuid.New()
+	token, _ := GenerateToken(testSecret, userID, "alice", "user", 1)
+
+	handler := SSEMiddleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := UserFromContext(r.Context())
 		if claims == nil || claims.UserID != userID {
 			t.Errorf("expected user from query param token")
@@ -204,14 +240,14 @@ func TestMiddleware_QueryParamToken(t *testing.T) {
 	}
 }
 
-func TestMiddleware_HeaderTakesPrecedenceOverQuery(t *testing.T) {
+func TestSSEMiddleware_HeaderTakesPrecedenceOverQuery(t *testing.T) {
 	// If both Authorization header and ?token= are present, header wins.
 	headerID := uuid.New()
 	queryID := uuid.New()
 	headerToken, _ := GenerateToken(testSecret, headerID, "alice", "user", 1)
 	queryToken, _ := GenerateToken(testSecret, queryID, "bob", "user", 1)
 
-	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SSEMiddleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims := UserFromContext(r.Context())
 		if claims.UserID != headerID {
 			t.Errorf("expected header token to win, got %v", claims.UserID)
@@ -229,8 +265,8 @@ func TestMiddleware_HeaderTakesPrecedenceOverQuery(t *testing.T) {
 	}
 }
 
-func TestMiddleware_QueryParamInvalidToken(t *testing.T) {
-	handler := Middleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestSSEMiddleware_QueryParamInvalidToken(t *testing.T) {
+	handler := SSEMiddleware(testSecret)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

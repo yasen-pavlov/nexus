@@ -63,7 +63,7 @@ func (c *Cohere) Rerank(ctx context.Context, query string, documents []string) (
 	defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &RerankError{StatusCode: resp.StatusCode, Provider: "cohere"}
+		return nil, errorFromResponse(resp, "cohere")
 	}
 
 	var result cohereRerankResponse

@@ -181,7 +181,7 @@ func (c *Client) runStream(ctx context.Context, resp *http.Response, out chan<- 
 // frame (caller should stop reading).
 func emitChunkEvents(ctx context.Context, chunk chatResponseChunk, stopReason *llm.StopReason, usage **llm.Usage, out chan<- llm.Event) (ok, done bool) {
 	if chunk.Message.Content != "" {
-		if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: chunk.Message.Content}) {
+		if !llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: chunk.Message.Content}) {
 			return false, false
 		}
 	}
@@ -191,7 +191,7 @@ func emitChunkEvents(ctx context.Context, chunk chatResponseChunk, stopReason *l
 	// call, fanning Final=true so the orchestrator can run it.
 	for _, tc := range chunk.Message.ToolCalls {
 		argsBytes, _ := json.Marshal(tc.Function.Arguments)
-		if !sendOrCancel(ctx, out, llm.Event{
+		if !llm.SendOrCancel(ctx, out, llm.Event{
 			Kind: llm.EventToolCall,
 			ToolCall: &llm.ToolCallDelta{
 				Name:     tc.Function.Name,
@@ -272,7 +272,7 @@ func buildBody(req llm.GenerateRequest, stream bool) ([]byte, error) {
 	if req.System != "" || len(req.Documents) > 0 {
 		systemBody := req.System
 		if len(req.Documents) > 0 {
-			systemBody += "\n\n" + buildDocumentsBlock(req.Documents)
+			systemBody += "\n\n" + llm.RenderDocumentsBlock(req.Documents)
 		}
 		body.Messages = append(body.Messages, chatMsg{Role: "system", Content: systemBody})
 	}
@@ -367,30 +367,6 @@ func buildTools(in []llm.Tool) []chatToolDef {
 	return out
 }
 
-// buildDocumentsBlock renders retrieved docs the same way as the OpenAI
-// adapter — Ollama models read XML-tagged blocks fine and the orchestrator's
-// [N] parser depends on the document index.
-func buildDocumentsBlock(docs []llm.Document) string {
-	var b strings.Builder
-	b.WriteString("Retrieved documents (cite as [N] where N is the document number):\n")
-	for i, d := range docs {
-		fmt.Fprintf(&b, "\n<document index=\"%d\" id=\"%s\"", i+1, d.ID)
-		if d.Source != "" {
-			fmt.Fprintf(&b, " source=\"%s\"", d.Source)
-		}
-		if d.Title != "" {
-			fmt.Fprintf(&b, " title=\"%s\"", d.Title)
-		}
-		if d.Date != "" {
-			fmt.Fprintf(&b, " date=\"%s\"", d.Date)
-		}
-		b.WriteString(">\n")
-		b.WriteString(d.Content)
-		b.WriteString("\n</document>\n")
-	}
-	return b.String()
-}
-
 func mapDoneReason(r string) llm.StopReason {
 	switch r {
 	case "stop":
@@ -401,16 +377,6 @@ func mapDoneReason(r string) llm.StopReason {
 		return llm.StopToolUse
 	default:
 		return llm.StopEnd
-	}
-}
-
-func sendOrCancel(ctx context.Context, out chan<- llm.Event, ev llm.Event) bool {
-	select {
-	case out <- ev:
-		return true
-	case <-ctx.Done():
-		out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-		return false
 	}
 }
 

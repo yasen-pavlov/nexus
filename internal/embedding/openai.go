@@ -39,6 +39,7 @@ type openAIEmbedRequest struct {
 type openAIEmbedResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
 	} `json:"data"`
 }
 
@@ -72,9 +73,15 @@ func (o *OpenAI) Embed(ctx context.Context, texts []string, _ string) ([][]float
 		return nil, fmt.Errorf("openai: decode response: %w", err)
 	}
 
+	// Reorder by the response-reported index rather than positional order
+	// (see voyage.go) so a mis-ordered vector can't attach to the wrong chunk.
 	embeddings := make([][]float32, len(result.Data))
 	for i, d := range result.Data {
-		embeddings[i] = d.Embedding
+		pos := d.Index
+		if pos < 0 || pos >= len(embeddings) {
+			pos = i
+		}
+		embeddings[pos] = d.Embedding
 	}
 	return embeddings, nil
 }

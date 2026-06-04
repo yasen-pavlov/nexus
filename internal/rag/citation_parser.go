@@ -14,8 +14,13 @@ import (
 // otherwise both the literal `[N]` and a pill would appear.
 //
 // Span semantics: SpanStart=SpanEnd=cursor at marker close — citations
-// are zero-width pinpoint markers on the post-stripping text. The
-// frontend can attach pills at that offset.
+// are zero-width pinpoint markers on the post-stripping text. The cursor
+// counts UTF-16 code units (not bytes), matching both the Anthropic
+// native-citation path (which goes through byteToUTF16) and the frontend,
+// which slices the answer as a JS string. Counting bytes here would
+// misplace or drop pills on any answer with multibyte text (Cyrillic,
+// umlauts, emoji) before a citation. The frontend attaches pills at that
+// offset.
 //
 // Out-of-range or malformed markers (e.g. `[abc]`, `[99]` when only 5
 // docs exist) are flushed as plain text and counted toward the cursor,
@@ -61,7 +66,7 @@ func (p *CitationParser) Feed(s string) (string, []model.ChatCitation) {
 		c := combined[i]
 		if c != '[' {
 			out.WriteByte(c)
-			p.cursor++
+			p.cursor += utf16Width(c)
 			i++
 			continue
 		}
@@ -121,9 +126,40 @@ func (p *CitationParser) Flush() string {
 		return ""
 	}
 	out := string(p.pending)
-	p.cursor += len(out)
+	p.cursor += utf16Len(out)
 	p.pending = nil
 	return out
+}
+
+// utf16Width returns the number of UTF-16 code units contributed by a single
+// UTF-8 byte as it is written out. Continuation bytes (0x80–0xBF) add nothing
+// because their rune was already counted at its lead byte; 4-byte lead bytes
+// (0xF0+) map to a surrogate pair (2 units); everything else is a single unit.
+// Deriving the width from the lead byte keeps the cursor correct even when a
+// multibyte rune is split across stream deltas.
+func utf16Width(b byte) int {
+	switch {
+	case b&0xC0 == 0x80: // UTF-8 continuation byte
+		return 0
+	case b >= 0xF0: // 4-byte sequence → surrogate pair
+		return 2
+	default:
+		return 1
+	}
+}
+
+// utf16Len returns the UTF-16 code-unit length of a string, used when flushing
+// buffered text that never passed through the byte loop.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r >= 0x10000 {
+			n += 2
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // scanMarker walks from `start` until it finds a closing `]` or runs

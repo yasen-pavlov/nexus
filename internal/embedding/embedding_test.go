@@ -118,11 +118,7 @@ func TestOpenAI_Embed(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		json.NewEncoder(w).Encode(openAIEmbedResponse{ //nolint:errcheck // test
-			Data: []struct {
-				Embedding []float32 `json:"embedding"`
-			}{{Embedding: []float32{0.1, 0.2}}, {Embedding: []float32{0.3, 0.4}}},
-		})
+		w.Write([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0},{"embedding":[0.3,0.4],"index":1}]}`)) //nolint:errcheck // test
 	}))
 	defer srv.Close()
 
@@ -160,11 +156,7 @@ func TestVoyage_Embed(t *testing.T) {
 		var req voyageEmbedRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedInputType = req.InputType
-		json.NewEncoder(w).Encode(voyageEmbedResponse{ //nolint:errcheck // test
-			Data: []struct {
-				Embedding []float32 `json:"embedding"`
-			}{{Embedding: []float32{0.1, 0.2}}},
-		})
+		w.Write([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0}]}`)) //nolint:errcheck // test
 	}))
 	defer srv.Close()
 
@@ -183,17 +175,36 @@ func TestVoyage_Embed(t *testing.T) {
 	}
 }
 
+func TestVoyage_Embed_ReordersByResponseIndex(t *testing.T) {
+	// API returns the two embeddings out of order (index 1 first). They must
+	// be placed by index so each vector attaches to the right input chunk.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"data":[{"embedding":[9,9],"index":1},{"embedding":[1,1],"index":0}]}`)) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+
+	v := NewVoyage("key", "test", zap.NewNop())
+	v.baseURL = srv.URL
+
+	embeddings, err := v.Embed(context.Background(), []string{"a", "b"}, InputTypeDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddings) != 2 {
+		t.Fatalf("expected 2 embeddings, got %d", len(embeddings))
+	}
+	if embeddings[0][0] != 1 || embeddings[1][0] != 9 {
+		t.Errorf("embeddings not reordered by index: %v", embeddings)
+	}
+}
+
 func TestVoyage_Embed_QueryInputType(t *testing.T) {
 	var receivedInputType string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req voyageEmbedRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		receivedInputType = req.InputType
-		json.NewEncoder(w).Encode(voyageEmbedResponse{ //nolint:errcheck // test
-			Data: []struct {
-				Embedding []float32 `json:"embedding"`
-			}{{Embedding: []float32{0.1, 0.2}}},
-		})
+		w.Write([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0}]}`)) //nolint:errcheck // test
 	}))
 	defer srv.Close()
 
@@ -399,5 +410,46 @@ func TestCohere_Dimension(t *testing.T) {
 		if NewCohere("k", model, zap.NewNop()).Dimension() != dim {
 			t.Errorf("model %s: expected %d", model, dim)
 		}
+	}
+}
+
+func TestDimension_Tables(t *testing.T) {
+	log := zap.NewNop()
+	tests := []struct {
+		name string
+		dim  int
+	}{
+		{"voyage:voyage-4-large", 1024},
+		{"voyage:voyage-3-lite", 512},
+		{"voyage:unknown-model", 1024}, // default
+		{"openai:text-embedding-3-small", 1536},
+		{"openai:text-embedding-3-large", 3072},
+		{"openai:unknown-model", 1536}, // default
+		{"cohere:embed-v4.0", 1024},
+		{"cohere:embed-english-light-v3.0", 384},
+		{"cohere:unknown-model", 1024}, // default
+		{"ollama:nomic-embed-text", 768},
+		{"ollama:mxbai-embed-large", 1024},
+		{"ollama:all-minilm", 384},
+		{"ollama:unknown-model", 768}, // default
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, model, _ := strings.Cut(tt.name, ":")
+			var emb Embedder
+			switch provider {
+			case "voyage":
+				emb = NewVoyage("k", model, log)
+			case "openai":
+				emb = NewOpenAI("k", model, log)
+			case "cohere":
+				emb = NewCohere("k", model, log)
+			case "ollama":
+				emb = NewOllama("http://localhost:11434", model, log)
+			}
+			if got := emb.Dimension(); got != tt.dim {
+				t.Errorf("%s Dimension() = %d, want %d", tt.name, got, tt.dim)
+			}
+		})
 	}
 }

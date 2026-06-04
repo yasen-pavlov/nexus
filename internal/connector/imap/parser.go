@@ -129,7 +129,18 @@ func consumeMIMEPart(part *mail.Part, plainText, htmlText *string, attachments *
 		}
 		switch {
 		case strings.HasPrefix(contentType, "text/plain"):
-			*plainText = string(body)
+			// Concatenate inline text/plain parts instead of letting the
+			// last one win. A multipart/mixed message can carry several
+			// (e.g. the body plus an inline forwarded message); overwriting
+			// would silently drop content from the index. (HTML stays
+			// first-wins below — alternative HTML parts are redundant.)
+			if text := string(body); strings.TrimSpace(text) != "" {
+				if *plainText == "" {
+					*plainText = text
+				} else {
+					*plainText += "\n\n" + text
+				}
+			}
 		case strings.HasPrefix(contentType, "text/html") && *htmlText == "":
 			*htmlText = string(body)
 		}

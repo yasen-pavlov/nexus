@@ -40,6 +40,7 @@ type voyageEmbedRequest struct {
 type voyageEmbedResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
 	} `json:"data"`
 }
 
@@ -78,9 +79,18 @@ func (v *Voyage) Embed(ctx context.Context, texts []string, inputType string) ([
 		return nil, fmt.Errorf("voyage: decode response: %w", err)
 	}
 
+	// Place each embedding at its response-reported index rather than trusting
+	// positional order — the API contract returns an `index` field precisely
+	// because order isn't guaranteed, and a mis-ordered vector would silently
+	// attach to the wrong chunk. Fall back to positional when index is absent
+	// or out of range.
 	embeddings := make([][]float32, len(result.Data))
 	for i, d := range result.Data {
-		embeddings[i] = d.Embedding
+		pos := d.Index
+		if pos < 0 || pos >= len(embeddings) {
+			pos = i
+		}
+		embeddings[pos] = d.Embedding
 	}
 	return embeddings, nil
 }

@@ -1,9 +1,35 @@
 package imap
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestParseEmailBody_ConcatenatesMultipleTextPlainParts(t *testing.T) {
+	// A multipart/mixed message with two inline text/plain parts (e.g. the
+	// body plus an inline forwarded message). Both must survive — the old
+	// last-wins behavior silently dropped the first part from the index.
+	boundary := "B0UND"
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary)
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+	buf.WriteString("ORIGINAL BODY\r\n")
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+	buf.WriteString("FORWARDED PART\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	content, _ := parseEmailBody([]byte(buf.String()))
+	if !strings.Contains(content, "ORIGINAL BODY") {
+		t.Errorf("lost the original body part: %q", content)
+	}
+	if !strings.Contains(content, "FORWARDED PART") {
+		t.Errorf("lost the forwarded part: %q", content)
+	}
+}
 
 func TestDecodeHeader(t *testing.T) {
 	tests := []struct {

@@ -1,0 +1,48 @@
+package netguard
+
+import (
+	"net"
+	"testing"
+)
+
+func TestBlocked(t *testing.T) {
+	tests := []struct {
+		ip   string
+		want bool
+	}{
+		{"127.0.0.1", true},       // loopback — Nexus's own services
+		{"::1", true},             // loopback v6
+		{"169.254.169.254", true}, // cloud metadata (link-local)
+		{"169.254.1.1", true},     // link-local
+		{"0.0.0.0", true},         // unspecified
+		{"::", true},              // unspecified v6
+		{"192.168.1.10", false},   // private LAN — legitimate NAS/Paperless
+		{"10.0.0.5", false},       // private LAN
+		{"172.16.4.2", false},     // private LAN
+		{"8.8.8.8", false},        // public
+	}
+	for _, tt := range tests {
+		ip := net.ParseIP(tt.ip)
+		if ip == nil {
+			t.Fatalf("bad test ip %q", tt.ip)
+		}
+		if got := blocked(ip); got != tt.want {
+			t.Errorf("blocked(%s) = %v, want %v", tt.ip, got, tt.want)
+		}
+	}
+}
+
+func TestControl_RejectsLoopback(t *testing.T) {
+	if err := control("tcp", "127.0.0.1:9200", nil); err == nil {
+		t.Error("expected control to reject loopback dial")
+	}
+	if err := control("tcp", "192.168.1.5:8000", nil); err != nil {
+		t.Errorf("expected control to allow private LAN dial, got %v", err)
+	}
+}
+
+func TestNewClient_NotNil(t *testing.T) {
+	if NewClient(0) == nil {
+		t.Fatal("NewClient returned nil")
+	}
+}

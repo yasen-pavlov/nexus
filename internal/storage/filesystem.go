@@ -41,11 +41,16 @@ func New(basePath string, db StoreDB, log *zap.Logger) (*BinaryStore, error) {
 // keyPath returns the on-disk path for a cached blob. Directory
 // sharding by sourceType/sourceName keeps any single directory from
 // growing without bound and makes `du -sh` per-connector easy. The
-// SHA256 prefix of sourceID avoids filename issues (slashes, control
+// full SHA256 of sourceID avoids filename issues (slashes, control
 // chars in IMAP UIDs, Telegram message IDs with colons, etc.).
+//
+// The full 32-byte hash is used (not a truncated prefix): an 8-byte
+// prefix is only 64 bits, where birthday collisions become plausible
+// across a large corpus, and a collision would silently corrupt one
+// blob by aliasing it onto another's path.
 func (s *BinaryStore) keyPath(sourceType, sourceName, sourceID string) string {
 	sum := sha256.Sum256([]byte(sourceID))
-	return filepath.Join(s.basePath, sourceType, sourceName, hex.EncodeToString(sum[:8])+".bin")
+	return filepath.Join(s.basePath, sourceType, sourceName, hex.EncodeToString(sum[:])+".bin")
 }
 
 // Put writes a binary blob to disk and upserts its metadata row. The

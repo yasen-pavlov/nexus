@@ -13,12 +13,23 @@ type contextKey string
 const claimsKey contextKey = "auth_claims"
 
 // Middleware extracts and validates the JWT from the Authorization header.
-// On success, the Claims are stored in the request context.
-//
-// As a fallback for clients that cannot set custom headers (notably the SSE
-// EventSource API), the middleware also accepts the token via the `token`
-// query parameter. The Authorization header takes precedence when both are set.
+// On success, the Claims are stored in the request context. It does NOT accept
+// the token via query string — putting a bearer credential in a URL leaks it
+// into proxy access logs, browser history, and Referer headers. Endpoints that
+// must support the header-less EventSource API use SSEMiddleware instead.
 func Middleware(secret []byte) func(http.Handler) http.Handler {
+	return authMiddleware(secret, false)
+}
+
+// SSEMiddleware is like Middleware but additionally accepts the token via the
+// `token` query parameter, for the browser EventSource API which cannot set
+// request headers. Restricted to the SSE GET endpoints so the URL-borne-token
+// exposure stays scoped to exactly the routes that need it.
+func SSEMiddleware(secret []byte) func(http.Handler) http.Handler {
+	return authMiddleware(secret, true)
+}
+
+func authMiddleware(secret []byte, allowQueryToken bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString := ""
@@ -28,8 +39,10 @@ func Middleware(secret []byte) func(http.Handler) http.Handler {
 					http.Error(w, `{"error":"invalid authorization header"}`, http.StatusUnauthorized)
 					return
 				}
-			} else if qsToken := r.URL.Query().Get("token"); qsToken != "" {
-				tokenString = qsToken
+			} else if allowQueryToken {
+				if qsToken := r.URL.Query().Get("token"); qsToken != "" {
+					tokenString = qsToken
+				}
 			}
 
 			if tokenString == "" {

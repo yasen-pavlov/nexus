@@ -23,10 +23,29 @@ type incomingEdgeDistinctParents struct {
 	Value int `json:"value"`
 }
 
+// incomingEdgeVisible is the optional ownership-filtered sub-aggregation
+// wrapping distinct_parents. Present only when CountIncomingEdges is given
+// an ownerID; otherwise distinct_parents sits directly under parents.
+type incomingEdgeVisible struct {
+	DistinctParents incomingEdgeDistinctParents `json:"distinct_parents"`
+}
+
 // incomingEdgeParents is the `reverse_nested` sub-aggregation that climbs
 // from a relation document back to its parent and counts distinct parents.
+// DistinctParents is populated in the unfiltered case; Visible is populated
+// when an ownership filter is applied. parentCount() picks whichever holds.
 type incomingEdgeParents struct {
 	DistinctParents incomingEdgeDistinctParents `json:"distinct_parents"`
+	Visible         *incomingEdgeVisible        `json:"visible"`
+}
+
+// parentCount returns the distinct-parent count, preferring the
+// ownership-filtered `visible` sub-agg when present.
+func (p incomingEdgeParents) parentCount() int {
+	if p.Visible != nil {
+		return p.Visible.DistinctParents.Value
+	}
+	return p.DistinctParents.Value
 }
 
 // incomingEdgeBucket is one bucket in the terms aggregation keyed by
@@ -208,9 +227,59 @@ func (c *Client) FindChunksReferencing(ctx context.Context, targetIDs, targetSou
 //
 // Incoming is counted per unique parent_id to avoid double-counting when
 // multiple chunks of the same doc point at the same target.
-func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []string) (map[string]int, error) {
+//
+// ownerID is variadic so the existing call site can opt in without a
+// rippling signature change: when a non-empty owner UUID is supplied, the
+// parent (root) documents counted are constrained to those the requester
+// can see (owner_id == me OR shared = true), mirroring
+// buildFilterClauses. Without it, the count spans the whole index — which
+// can inflate related_count with documents the user can't actually view.
+// Pass the requesting user's UUID (e.g. req.OwnerID) to scope it.
+func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []string, ownerID ...string) (map[string]int, error) {
 	if len(targetSourceIDs) == 0 {
 		return map[string]int{}, nil
+	}
+
+	// Ownership filter applied to the ROOT (parent) document under
+	// reverse_nested, so only parents the requester may see are counted.
+	// owner_id/shared live on the root doc, not the nested relation, which
+	// is exactly why this filter belongs in the reverse_nested sub-agg
+	// rather than the outer nested query.
+	var ownerFilter map[string]any
+	if len(ownerID) > 0 && ownerID[0] != "" {
+		ownerFilter = map[string]any{
+			"bool": map[string]any{
+				"should": []map[string]any{
+					{"term": map[string]any{"owner_id": ownerID[0]}},
+					{"term": map[string]any{"shared": true}},
+				},
+				"minimum_should_match": 1,
+			},
+		}
+	}
+
+	// reverse_nested climbs from the relation sub-doc back to its root
+	// parent. When an ownership filter is present we wrap the
+	// distinct_parents cardinality in a `filtered` aggregation so only
+	// visible parents contribute to the count.
+	var parentsAggs map[string]any
+	if ownerFilter != nil {
+		parentsAggs = map[string]any{
+			"visible": map[string]any{
+				"filter": ownerFilter,
+				"aggs": map[string]any{
+					"distinct_parents": map[string]any{
+						"cardinality": map[string]any{"field": "parent_id"},
+					},
+				},
+			},
+		}
+	} else {
+		parentsAggs = map[string]any{
+			"distinct_parents": map[string]any{
+				"cardinality": map[string]any{"field": "parent_id"},
+			},
+		}
 	}
 
 	// Aggregation tree:
@@ -244,11 +313,7 @@ func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []strin
 						"aggs": map[string]any{
 							"parents": map[string]any{
 								"reverse_nested": map[string]any{},
-								"aggs": map[string]any{
-									"distinct_parents": map[string]any{
-										"cardinality": map[string]any{"field": "parent_id"},
-									},
-								},
+								"aggs":           parentsAggs,
 							},
 						},
 					},
@@ -281,7 +346,7 @@ func (c *Client) CountIncomingEdges(ctx context.Context, targetSourceIDs []strin
 		return counts, nil
 	}
 	for _, b := range parsed.Relations.ByTarget.Buckets {
-		counts[b.Key] = b.Parents.DistinctParents.Value
+		counts[b.Key] = b.Parents.parentCount()
 	}
 	return counts, nil
 }

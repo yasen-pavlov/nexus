@@ -95,7 +95,7 @@ func buildMessages(req llm.GenerateRequest) []sdk.ChatCompletionMessageParamUnio
 	if req.System != "" || len(req.Documents) > 0 {
 		systemBody := req.System
 		if len(req.Documents) > 0 {
-			systemBody += "\n\n" + buildDocumentsBlock(req.Documents)
+			systemBody += "\n\n" + llm.RenderDocumentsBlock(req.Documents)
 		}
 		messages = append(messages, sdk.SystemMessage(systemBody))
 	}
@@ -214,7 +214,7 @@ func emitTextDelta(ctx context.Context, chunk sdk.ChatCompletionChunk, stopReaso
 	}
 	ch := chunk.Choices[0]
 	if ch.Delta.Content != "" {
-		if !sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ch.Delta.Content}) {
+		if !llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ch.Delta.Content}) {
 			return false
 		}
 	}
@@ -232,7 +232,7 @@ func emitFinishedToolCall(ctx context.Context, acc *sdk.ChatCompletionAccumulato
 	if !ok {
 		return true
 	}
-	return sendOrCancel(ctx, out, llm.Event{
+	return llm.SendOrCancel(ctx, out, llm.Event{
 		Kind: llm.EventToolCall,
 		ToolCall: &llm.ToolCallDelta{
 			ID:       tc.ID,
@@ -247,49 +247,6 @@ func emitFinishedToolCall(ctx context.Context, acc *sdk.ChatCompletionAccumulato
 // reason over. Includes a numeric index so [N] citations map back; a metadata
 // line with source/title/date; and the chunk content. The orchestrator owns
 // turning [N] back into a Citation tied to Document.ID.
-func buildDocumentsBlock(docs []llm.Document) string {
-	var b []byte
-	b = append(b, "Retrieved documents (cite as [N] where N is the document number):\n"...)
-	for i, d := range docs {
-		b = append(b, fmt.Sprintf("\n<document index=\"%d\" id=\"%s\"", i+1, d.ID)...)
-		if d.Source != "" {
-			b = append(b, fmt.Sprintf(" source=\"%s\"", d.Source)...)
-		}
-		if d.Title != "" {
-			b = append(b, fmt.Sprintf(" title=\"%s\"", escapeAttr(d.Title))...)
-		}
-		if d.Date != "" {
-			b = append(b, fmt.Sprintf(" date=\"%s\"", d.Date)...)
-		}
-		b = append(b, ">\n"...)
-		b = append(b, d.Content...)
-		b = append(b, "\n</document>\n"...)
-	}
-	return string(b)
-}
-
-// escapeAttr escapes XML attribute contents minimally — titles can carry
-// quotes that would otherwise break parsing if a downstream renderer takes
-// the block as actual XML.
-func escapeAttr(s string) string {
-	out := make([]byte, 0, len(s))
-	for _, r := range s {
-		switch r {
-		case '"':
-			out = append(out, '&', 'q', 'u', 'o', 't', ';')
-		case '<':
-			out = append(out, '&', 'l', 't', ';')
-		case '>':
-			out = append(out, '&', 'g', 't', ';')
-		case '&':
-			out = append(out, '&', 'a', 'm', 'p', ';')
-		default:
-			out = append(out, string(r)...)
-		}
-	}
-	return string(out)
-}
-
 // mapFinishReason maps OpenAI's finish_reason strings to llm.StopReason.
 func mapFinishReason(r string) llm.StopReason {
 	switch r {
@@ -303,17 +260,6 @@ func mapFinishReason(r string) llm.StopReason {
 		return llm.StopFiltered
 	default:
 		return llm.StopEnd
-	}
-}
-
-// sendOrCancel writes ev to out unless ctx is cancelled.
-func sendOrCancel(ctx context.Context, out chan<- llm.Event, ev llm.Event) bool {
-	select {
-	case out <- ev:
-		return true
-	case <-ctx.Done():
-		out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-		return false
 	}
 }
 

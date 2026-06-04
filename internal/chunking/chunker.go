@@ -3,6 +3,7 @@ package chunking
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // DefaultMaxTokens is the target chunk size in approximate tokens (words).
@@ -55,9 +56,17 @@ func Split(text string, maxTokens, overlapTokens int) []Chunk {
 		// If a single word-bounded chunk is still too large (e.g. one long
 		// base64 blob with no whitespace), split it into byte-bounded pieces.
 		for len(s) > MaxChunkBytes {
-			chunks = append(chunks, Chunk{Index: index, Text: s[:MaxChunkBytes]})
+			// Back off the cut point to the previous rune boundary so we
+			// never split a multibyte UTF-8 rune (Cyrillic/CJK), which
+			// would emit invalid UTF-8. MaxChunkBytes is large relative to
+			// the 4-byte max rune width, so this trims at most 3 bytes.
+			cut := MaxChunkBytes
+			for cut > 0 && !utf8.RuneStart(s[cut]) {
+				cut--
+			}
+			chunks = append(chunks, Chunk{Index: index, Text: s[:cut]})
 			index++
-			s = s[MaxChunkBytes:]
+			s = s[cut:]
 		}
 		if s != "" {
 			chunks = append(chunks, Chunk{Index: index, Text: s})

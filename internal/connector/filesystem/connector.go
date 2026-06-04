@@ -7,6 +7,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -87,12 +88,13 @@ func (c *Connector) Validate() error {
 // pipeline's deletion reconciliation, followed by a Doc when the file
 // has been modified since the cursor's last_sync_time.
 //
-// WalkDir visits entries in lexical order per directory; the resulting
-// relative paths match OpenSearch's source_id.keyword sort closely
-// enough for the streaming merge-diff — Go's WalkDir promises lexical
-// order and the merge-diff treats any out-of-order emission as a
-// false-positive "delete", but filesystem paths have no numeric
-// collation hazards like IMAP UIDs, so the natural order works.
+// WalkDir visits entries depth-first (lexical per directory), which does
+// NOT match OpenSearch's source_id.keyword byte-sort: e.g. "sub/a.txt" is
+// visited before "sub.txt" because WalkDir descends into the "sub"
+// directory first, yet '/' (0x2F) sorts after '.' (0x2E). Since the
+// streaming merge-diff treats any out-of-order emission as a false-positive
+// "delete", the connector collects all relative paths and emits the
+// SourceID stream sorted at the end of the walk (see streamWalk).
 func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
 	items := make(chan model.FetchItem)
 	errs := make(chan error, 1)
@@ -116,6 +118,7 @@ func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, it
 	lastSync := resolveFilesystemCursor(cursor, c.syncSince)
 	now := time.Now()
 	seen := 0
+	var sourceIDs []string
 
 	walkErr := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -124,10 +127,21 @@ func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, it
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return c.emitWalkEntry(ctx, path, d, lastSync, now, &seen, items)
+		return c.emitWalkEntry(ctx, path, d, lastSync, now, &seen, &sourceIDs, items)
 	})
 	if walkErr != nil {
 		return fmt.Errorf("filesystem: walk: %w", walkErr)
+	}
+
+	// Emit the enumerated SourceIDs in ascending byte order so the pipeline's
+	// deletion merge-diff lines up with OpenSearch's source_id.keyword sort.
+	// WalkDir's depth-first order does not (see Fetch's doc comment).
+	sort.Strings(sourceIDs)
+	for i := range sourceIDs {
+		sid := sourceIDs[i]
+		if !fsEmit(ctx, items, model.FetchItem{SourceID: &sid}) {
+			return ctx.Err()
+		}
 	}
 
 	// Signal that the SourceID stream was authoritative. Empty
@@ -148,13 +162,11 @@ func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, it
 // content is fresh relative to lastSync), and a periodic Checkpoint
 // on every N-th emission. seen is incremented via pointer so the
 // checkpoint cadence survives across WalkDir callback invocations.
-func (c *Connector) emitWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync, startedAt time.Time, seen *int, items chan<- model.FetchItem) error {
+func (c *Connector) emitWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync, startedAt time.Time, seen *int, sourceIDs *[]string, items chan<- model.FetchItem) error {
 	doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
 	if relPath != "" {
-		sid := relPath
-		if !fsEmit(ctx, items, model.FetchItem{SourceID: &sid}) {
-			return ctx.Err()
-		}
+		// Collect now, emit sorted after the walk (see streamWalk).
+		*sourceIDs = append(*sourceIDs, relPath)
 		*seen++
 	}
 	if ok {

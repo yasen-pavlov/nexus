@@ -16,19 +16,38 @@ Nexus is a self-hosted personal search/RAG tool. It indexes data from multiple s
 
 ```
 cmd/nexus/          Entry point, wiring, graceful shutdown
+cmd/rag-eval/       Offline RAG quality eval harness (golden set → LLM judge → report)
 internal/
   api/              HTTP handlers, chi router, connector manager, static file serving
+  auth/             JWT sessions, bcrypt passwords, role middleware, rate limiting
+  chunking/         Splits text into overlapping chunks for embedding (pure logic)
   config/           Environment-based configuration (envconfig)
   connector/        Connector interface, registry, source implementations
     filesystem/     Filesystem crawler connector
+    imap/           IMAP mailbox connector (body cleaning, CONDSTORE)
     paperless/      Paperless-ngx API connector
+    telegram/       Telegram connector (conversation windows, media cache)
+  crypto/           AES-256-GCM encryption for sensitive connector config fields
+  embedding/        Pluggable embedding providers (Ollama, OpenAI, Voyage, Cohere)
+  lang/             Language detection for multi-analyzer indexing/highlighting
+  llm/              LLM provider abstraction for the RAG ask flow
+    anthropic/      Anthropic (Claude) adapter
+    openai/         OpenAI (GPT) adapter
+    ollama/         Ollama adapter
   model/            Shared types (Document, SearchResult, SyncCursor, ConnectorConfig)
-  pipeline/         Ingestion orchestration (fetch → index in OpenSearch)
+  netguard/         SSRF-guarded HTTP client for user-configured connector URLs
+  pipeline/         Ingestion orchestration (fetch → extract → chunk → embed → index)
     extractor/      Content extraction interface + implementations
+  rag/              RAG orchestrator (retrieval, tool loop, citations, streaming)
+    eval/           RAG eval scoring + LLM judging logic
+  rerank/           Pluggable reranking providers (Voyage, Cohere)
   scheduler/        Cron-based automatic sync scheduling
   search/           OpenSearch client (indexing, search, highlighting)
+  storage/          On-disk binary cache for attachments/media
   store/            PostgreSQL access layer (connector configs, sync cursors)
+  syncruns/         Sync-run history + retention sweeper
   testutil/         Shared test helpers (per-package isolated test databases + OpenSearch indices)
+docs/               Generated OpenAPI/Swagger spec (swag init output)
 migrations/         SQL migrations (goose, embedded via go:embed)
 web/                React frontend (Vite, served as static files by Go)
 ```
@@ -40,10 +59,16 @@ make test                # Run all tests (unit + integration)
 make test-unit           # Unit tests only (no database required)
 make test-integration    # Integration tests (requires Postgres + OpenSearch)
 make lint                # Run golangci-lint
+make lint-sql            # Run sqlfluff on every migration
 make coverage            # Full coverage report (excludes testutil)
-make build               # Build binary to bin/nexus
-make dev-db              # Start Postgres + OpenSearch via docker-compose
-make dev                 # Start DB + run app locally
+make swagger             # Regenerate OpenAPI/Swagger spec (swag init → docs/)
+make build               # Build binary to bin/nexus (runs swagger first)
+make dev-db              # Start Postgres + OpenSearch + Tika via docker-compose
+make dev                 # Start deps + run app locally against testdata/
+make up                  # Start the full stack (app + deps) in Docker (needs .env)
+make down                # Stop everything across all profiles
+make logs                # Tail the app stack logs
+make rag-eval            # Offline RAG quality eval → rag-eval-report.md
 ```
 
 ## Development Workflow
@@ -82,7 +107,7 @@ docker compose up --build    # full stack at localhost:8080
 - **Connector management:** CRUD API backed by `connector_configs` table, `ConnectorManager` handles lifecycle
 - **Scheduler:** `robfig/cron/v3` for automatic sync, keyed by connector ID, updated live via `ScheduleObserver`
 - **No ORM:** Raw SQL via pgx for Postgres operations
-- **Pipeline stages:** Fetch → Index in OpenSearch (future: Chunk → Embed)
+- **Pipeline stages:** Fetch → Extract → Chunk → Embed → Index in OpenSearch (embeddings optional; BM25 works without them)
 - **Search:** OpenSearch handles document storage and search (BM25 + optional k-NN vector search). PostgreSQL only stores application state.
 - **Embeddings:** Pluggable providers (Ollama, OpenAI, Voyage, Cohere) via `embedding.Embedder` interface. Documents are chunked (~500 tokens, ~100 overlap) before embedding. Voyage default model is `voyage-4-large` (1024-dim). Embedder calls take an `inputType` parameter (`document` or `query`) so providers that distinguish them (Voyage, Cohere) can prepend the right instructions internally — others ignore it. Hybrid search uses reciprocal rank fusion (RRF) to merge BM25 and vector results.
 - **Chunking:** `internal/chunking/` splits text into overlapping chunks for embedding. Pure logic, no external dependencies.
@@ -100,6 +125,7 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_DATABASE_URL` (required)
 - `NEXUS_OPENSEARCH_URL` (default: http://localhost:9200)
 - `NEXUS_LOG_LEVEL` (default: info)
+- `NEXUS_TIKA_URL` (default: http://localhost:9998) — Apache Tika endpoint for rich binary extraction / OCR
 - `NEXUS_EMBEDDING_PROVIDER` — `ollama`, `openai`, `voyage`, `cohere` (empty = disabled)
 - `NEXUS_EMBEDDING_MODEL` — model name (provider-specific defaults apply)
 - `NEXUS_EMBEDDING_API_KEY` — API key for openai/voyage/cohere
@@ -116,6 +142,7 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_CORS_ORIGINS` — comma-separated list of allowed CORS origins (default: `http://localhost:5173`)
 - `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run as a shared connector)
 - `NEXUS_FS_PATTERNS` — glob patterns (default: `*.txt,*.md`)
+- `NEXUS_BINARY_STORE_PATH` (default: `data/binaries`) — on-disk cache for connector attachments/media (IMAP, Telegram); mount as a volume to persist across restarts
 
 ## Authentication and authorization
 
@@ -124,6 +151,6 @@ All via environment variables with `NEXUS_` prefix:
 - The `/api/health` endpoint returns `setup_required: true` when no users exist — the frontend uses this to show the registration form.
 - Connectors are owned by a user (`user_id`) or marked `shared`. The schema enforces `(user_id IS NOT NULL OR shared = true)` so every connector either has an owner or is shared.
 - Search results are scoped per request: a user only sees chunks where `owner_id` matches them OR `shared = true`. The seeded filesystem connector (`NEXUS_FS_ROOT_PATH`) is always created as shared.
-- Connector handlers (`Get`/`Update`/`Delete`/`TriggerSync`/`DeleteCursor`/`StreamProgress`) all enforce ownership: a regular user can only modify their own connectors; admins can modify anything; users can read shared connectors but not mutate them.
+- Connector handlers (`Get`/`Update`/`Delete`/`TriggerSync`/`DeleteCursor`/`StreamProgress`) all enforce ownership: a regular user can only modify their own connectors; admins can modify anything; users can read shared connectors but not mutate them. The same ownership check covers the connector-scoped routes: avatar fetch (`/api/connectors/{id}/avatars/{external_id}`), sync-run history (`/api/connectors/{id}/runs`), and the Telegram auth flow (`/api/connectors/{id}/auth/start`, `/api/connectors/{id}/auth/code`).
 - Chats are owned by a user (`chats.user_id`); ownership is enforced for ALL chat operations including read. Admins are NOT exempt — admins cannot view or modify other users' chats. Non-owners receive 404 (not 403) on `/api/chats/:id*` to avoid leaking chat existence. The RAG orchestrator scopes retrieval by the chat owner's UUID, so even tool-issued searches stay inside the user's permitted corpus.
-- Admin-only routes: `/api/settings/*`, `/api/reindex`, `/api/sync/cursors`, `/api/users/*`.
+- Admin-only routes: `/api/settings/*`, `/api/reindex`, `/api/sync/cursors`, `/api/users/*`, `/api/admin/stats`, `/api/storage/stats`, `/api/storage/cache`, `/api/storage/cache/{id}`.

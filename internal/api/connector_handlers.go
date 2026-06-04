@@ -214,6 +214,16 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Only admins may create shared connectors. Sharing exposes the
+	// connector's indexed data to every user, and the ownership rules deny a
+	// regular owner from later un-sharing their own connector — so letting a
+	// non-admin set Shared on create would both leak data and trap them.
+	claims := auth.UserFromContext(r.Context())
+	if req.Shared && (claims == nil || claims.Role != "admin") {
+		writeError(w, http.StatusForbidden, "only admins can create shared connectors")
+		return
+	}
+
 	userID := auth.UserIDFromContext(r.Context())
 	cfg := &model.ConnectorConfig{
 		Type:     req.Type,

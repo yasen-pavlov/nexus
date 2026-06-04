@@ -189,7 +189,7 @@ func TestGenerate_HTTPError(t *testing.T) {
 }
 
 func TestBuildDocumentsBlock_FormatsAsXML(t *testing.T) {
-	got := buildDocumentsBlock([]llm.Document{
+	got := llm.RenderDocumentsBlock([]llm.Document{
 		{ID: "chunk-1", Source: "email", Title: "Subject", Date: "2026-01-02", Content: "body"},
 	})
 	if !strings.Contains(got, `<document index="1" id="chunk-1"`) {

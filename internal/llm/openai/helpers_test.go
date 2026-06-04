@@ -7,21 +7,6 @@ import (
 	"github.com/muty/nexus/internal/llm"
 )
 
-func TestEscapeAttr_EscapesSpecialChars(t *testing.T) {
-	cases := map[string]string{
-		`a"b`:   `a&quot;b`,
-		`a<b>c`: `a&lt;b&gt;c`,
-		`a&b`:   `a&amp;b`,
-		`plain`: `plain`,
-		`"<&>"`: `&quot;&lt;&amp;&gt;&quot;`,
-	}
-	for in, want := range cases {
-		if got := escapeAttr(in); got != want {
-			t.Errorf("%q → %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestMapFinishReason_CoversAllVariants(t *testing.T) {
 	cases := map[string]llm.StopReason{
 		"stop":           llm.StopEnd,

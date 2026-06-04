@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SenderAvatar } from "@/components/conversation/sender-avatar";
 import { useAvatarBlob } from "@/hooks/use-avatar-blob";
 import { useIdentities } from "@/hooks/use-identities";
+import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { cn } from "@/lib/utils";
 
 function str(v: unknown): string | undefined {
@@ -134,7 +135,7 @@ function MatchCard({ hit, onOpenChat }: Readonly<Props>) {
               "[&_mark]:rounded-sm [&_mark]:bg-primary/20 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
               "[&_em]:rounded-sm [&_em]:bg-primary/20 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
             )}
-            dangerouslySetInnerHTML={{ __html: hit.headline }}
+            dangerouslySetInnerHTML={{ __html: sanitizeHighlight(hit.headline) }}
           />
         ) : (
           <div

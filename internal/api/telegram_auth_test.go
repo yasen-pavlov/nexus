@@ -78,7 +78,10 @@ func TestMaskAPIKey(t *testing.T) {
 		input, want string
 	}{
 		{"", ""},
-		{"abc", "abc"},
+		// Short non-empty secrets must NOT be echoed verbatim — they get a
+		// fixed mask so a tiny key is never partially revealed.
+		{"abc", "********"},
+		{"key4", "********"},
 		{"sk-1234567890", "****7890"},
 	}
 	for _, tt := range tests {

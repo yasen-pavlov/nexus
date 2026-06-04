@@ -51,7 +51,7 @@ func GenerateToken(secret []byte, userID uuid.UUID, username, role string, token
 func ParseToken(secret []byte, tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(_ *jwt.Token) (any, error) {
 		return secret, nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
 		return nil, fmt.Errorf("auth: parse token: %w", err)
 	}
