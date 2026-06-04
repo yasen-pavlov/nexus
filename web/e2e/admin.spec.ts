@@ -69,6 +69,23 @@ async function mockAuthedBase(page: Page) {
       body: JSON.stringify({ data: [] }),
     }),
   );
+  // RAG runtime knobs — the Settings page loads these on mount (Phase 5).
+  // Without this mock the GET proxies to a dead backend and the query
+  // retries for ~7s, blowing the Settings assertions.
+  await page.route("**/api/settings/rag", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          max_tool_rounds: 4,
+          max_images_per_turn: 4,
+          enable_multimodal: true,
+          enable_open_attachment: false,
+        },
+      }),
+    }),
+  );
 }
 
 test("admin visits Stats: KPI numbers render, engine panel reads provider+model", async ({
