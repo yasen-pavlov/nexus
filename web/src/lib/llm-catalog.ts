@@ -45,6 +45,10 @@ export const DEFAULT_LLM_BARE_MODEL: Record<LLMProvider, string> = {
 // Helpers for splitting provider:bareID and rejoining without polluting the
 // admin form with string-manipulation noise.
 export function splitModelID(id: string): { provider: LLMProvider | ""; bare: string } {
+  // Defensive: a fresh install (or a backend returning null) can leave the
+  // default model unset. Without this guard, id.indexOf would throw and take
+  // the whole admin Settings page down via the error boundary.
+  if (typeof id !== "string" || id === "") return { provider: "", bare: "" };
   const colon = id.indexOf(":");
   if (colon <= 0 || colon === id.length - 1) return { provider: "", bare: "" };
   const provider = id.slice(0, colon);
