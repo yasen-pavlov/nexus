@@ -289,11 +289,23 @@ func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl media
 	// EstimatedTotal so the pipeline has a real denominator.
 	var totalEstimate int64
 
-	if err := c.streamGroupChats(ctx, api, dl, chats, userMap, selfID, sinceDate, &totalEstimate, cursorTemplate, items); err != nil {
+	// failed tracks whether any individual chat errored. A per-chat failure
+	// is best-effort (we keep indexing the others), but it must NOT let the
+	// global cursor advance to `now` — the failed chat's delta (messages
+	// between the old sinceDate and now) would then fall below next run's
+	// lower bound and be lost forever. So the cursor advances only when the
+	// whole run succeeded; otherwise next run retries from the same sinceDate
+	// (re-fetching is idempotent — same SourceIDs overwrite).
+	var failed bool
+
+	if err := c.streamGroupChats(ctx, api, dl, chats, userMap, selfID, sinceDate, &totalEstimate, &failed, items); err != nil {
 		return err
 	}
-	if err := c.streamPrivateChats(ctx, api, dl, users, userMap, selfID, sinceDate, &totalEstimate, cursorTemplate, items); err != nil {
+	if err := c.streamPrivateChats(ctx, api, dl, users, userMap, selfID, sinceDate, &totalEstimate, &failed, items); err != nil {
 		return err
+	}
+	if !failed {
+		_ = emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()})
 	}
 	// Clear the scope at end-of-run so later progress frames
 	// don't leave the last chat name lingering in the UI.
@@ -322,7 +334,7 @@ func (c *Connector) resolveSinceDate(cursor *model.SyncCursor) int {
 // streamGroupChats emits docs for every group chat / channel in
 // the dialog roster. dmPeerID=0 because the sender is always
 // explicit via m.FromID in multi-user rooms.
-func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, cursorTemplate func() *model.SyncCursor, items chan<- model.FetchItem) error {
+func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl mediaDownloader, chats []tg.ChatClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, failed *bool, items chan<- model.FetchItem) error {
 	for _, chat := range chats {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -341,12 +353,11 @@ func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl me
 			return ctx.Err()
 		}
 		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate, totalEstimate, items); err != nil {
-			// Best-effort: one chat's pagination failing
-			// shouldn't halt the whole sync.
+			// Best-effort: one chat's pagination failing shouldn't halt
+			// the whole sync, but it must block the cursor from advancing
+			// so this chat's delta is retried next run.
+			*failed = true
 			continue
-		}
-		if !emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()}) {
-			return ctx.Err()
 		}
 	}
 	return nil
@@ -357,7 +368,7 @@ func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl me
 // between two knowable users — that lets makeMessageDoc attribute
 // m.Out=false messages to the peer when FromID is nil (the common
 // case in Telegram DMs).
-func (c *Connector) streamPrivateChats(ctx context.Context, api telegramAPI, dl mediaDownloader, users []tg.UserClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, cursorTemplate func() *model.SyncCursor, items chan<- model.FetchItem) error {
+func (c *Connector) streamPrivateChats(ctx context.Context, api telegramAPI, dl mediaDownloader, users []tg.UserClass, userMap map[int64]*tg.User, selfID int64, sinceDate int, totalEstimate *int64, failed *bool, items chan<- model.FetchItem) error {
 	for _, user := range users {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -378,10 +389,10 @@ func (c *Connector) streamPrivateChats(ctx context.Context, api telegramAPI, dl 
 			return ctx.Err()
 		}
 		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate, totalEstimate, items); err != nil {
+			// Best-effort per chat; block the cursor so this DM's delta
+			// is retried next run (see streamWithAPI).
+			*failed = true
 			continue
-		}
-		if !emitItem(ctx, items, model.FetchItem{Checkpoint: cursorTemplate()}) {
-			return ctx.Err()
 		}
 	}
 	return nil

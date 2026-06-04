@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/muty/nexus/internal/config"
+	"github.com/muty/nexus/internal/retry"
 	"go.uber.org/zap"
 )
 
@@ -369,8 +370,9 @@ func TestIsRetryable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if isRetryable(tt.err) != tt.retryable {
-				t.Errorf("isRetryable() = %v, want %v", isRetryable(tt.err), tt.retryable)
+			got := retry.Retryable(tt.err, rerankErrorRetryable)
+			if got != tt.retryable {
+				t.Errorf("Retryable() = %v, want %v", got, tt.retryable)
 			}
 		})
 	}

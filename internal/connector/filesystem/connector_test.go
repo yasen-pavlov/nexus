@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -253,6 +255,37 @@ func TestFetch_PopulatesSourceIDs(t *testing.T) {
 			t.Errorf("expected 3 source ids regardless of cursor, got %v", result.SourceIDs)
 		}
 	})
+}
+
+func TestFetch_SourceIDsByteSorted(t *testing.T) {
+	// The pipeline's deletion merge-diff requires the SourceID stream in
+	// ascending byte order to match OpenSearch's source_id.keyword sort.
+	// WalkDir's depth-first order does NOT: it descends into "sub/" before
+	// visiting the sibling "sub.txt", yet '/' (0x2F) sorts after '.' (0x2E),
+	// so byte order is sub.txt < sub/a.txt. Emit must be sorted.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "sub.txt", "sibling file")
+	writeFile(t, dir, filepath.Join("sub", "a.txt"), "child file")
+	writeFile(t, dir, "a.txt", "top level")
+
+	c := &Connector{
+		name: "t", rootPath: dir, patterns: []string{"*.txt"},
+		extractor: extractor.NewRegistry("", nil),
+	}
+	result := testutil.RunFetch(t, c, nil)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if !sort.StringsAreSorted(result.SourceIDs) {
+		t.Errorf("SourceIDs not byte-sorted: %v", result.SourceIDs)
+	}
+	want := []string{"a.txt", "sub.txt", "sub/a.txt"}
+	if !reflect.DeepEqual(result.SourceIDs, want) {
+		t.Errorf("SourceIDs = %v, want %v", result.SourceIDs, want)
+	}
 }
 
 // TestFetch_WalkError_SurfacedOnErrsChannel covers the walk-error

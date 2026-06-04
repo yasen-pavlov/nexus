@@ -223,7 +223,7 @@ func handleBlockStart(ctx context.Context, v sdk.ContentBlockStartEvent, tools m
 		return true
 	}
 	tools[v.Index] = toolState{id: cb.ID, name: cb.Name}
-	return sendOrCancel(ctx, out, llm.Event{
+	return llm.SendOrCancel(ctx, out, llm.Event{
 		Kind: llm.EventToolCall,
 		ToolCall: &llm.ToolCallDelta{
 			ID:       cb.ID,
@@ -239,11 +239,11 @@ func handleBlockDelta(ctx context.Context, v sdk.ContentBlockDeltaEvent, tools m
 	switch d := v.Delta.AsAny().(type) {
 	case sdk.TextDelta:
 		if d.Text != "" {
-			return sendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: d.Text})
+			return llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: d.Text})
 		}
 	case sdk.InputJSONDelta:
 		if t, ok := tools[v.Index]; ok && d.PartialJSON != "" {
-			return sendOrCancel(ctx, out, llm.Event{
+			return llm.SendOrCancel(ctx, out, llm.Event{
 				Kind: llm.EventToolCall,
 				ToolCall: &llm.ToolCallDelta{
 					ID:       t.id,
@@ -254,7 +254,7 @@ func handleBlockDelta(ctx context.Context, v sdk.ContentBlockDeltaEvent, tools m
 		}
 	case sdk.CitationsDelta:
 		if cit := mapCitation(d, docs); cit != nil {
-			return sendOrCancel(ctx, out, llm.Event{Kind: llm.EventCitation, Citation: cit})
+			return llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventCitation, Citation: cit})
 		}
 	}
 	return true
@@ -267,7 +267,7 @@ func handleBlockStop(ctx context.Context, v sdk.ContentBlockStopEvent, tools map
 	if !ok {
 		return true
 	}
-	if !sendOrCancel(ctx, out, llm.Event{
+	if !llm.SendOrCancel(ctx, out, llm.Event{
 		Kind: llm.EventToolCall,
 		ToolCall: &llm.ToolCallDelta{
 			ID:    t.id,
@@ -475,18 +475,6 @@ func schemaRequired(s map[string]any) []string {
 		return out
 	}
 	return nil
-}
-
-// sendOrCancel writes ev to out unless ctx is cancelled. Returns false to
-// signal the goroutine should bail out and close the channel.
-func sendOrCancel(ctx context.Context, out chan<- llm.Event, ev llm.Event) bool {
-	select {
-	case out <- ev:
-		return true
-	case <-ctx.Done():
-		out <- llm.Event{Kind: llm.EventDone, StopReason: llm.StopCancelled}
-		return false
-	}
 }
 
 // ImageContentBlock builds an image content block from raw bytes. The

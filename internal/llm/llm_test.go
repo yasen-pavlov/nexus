@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/muty/nexus/internal/retry"
 )
 
 // --- catalog tests ---
@@ -283,7 +285,7 @@ func TestRetry_NeverRetriesContextCancel(t *testing.T) {
 func TestNewRetryGenerator_Defaults(t *testing.T) {
 	g := &flakyGen{}
 	r := NewRetryGenerator(g, zap.NewNop())
-	if r.maxRetries != defaultMaxRetries || r.baseDelay != defaultBaseDelay {
+	if r.maxRetries != retry.DefaultMaxRetries || r.baseDelay != retry.DefaultBaseDelay {
 		t.Errorf("defaults = (%d, %s)", r.maxRetries, r.baseDelay)
 	}
 }

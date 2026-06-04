@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -586,6 +587,41 @@ func TestRun_PackHistoryFailureFallsBackToEmptyHistory(t *testing.T) {
 	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
 	if len(msgs) != 2 {
 		t.Errorf("got %d msgs", len(msgs))
+	}
+}
+
+func TestRun_EmptyAnswer_GetsPlaceholderAndNoTitle(t *testing.T) {
+	// Model returns end_turn with no text. The turn must not render a blank
+	// bubble: finalizeAnswer substitutes a placeholder, persists it, and
+	// (since it's a failed answer) does NOT auto-title the chat.
+	mainGen := &fakeGenerator{events: []llm.Event{{Kind: llm.EventDone, StopReason: llm.StopEnd}}}
+	rewriterGen := scriptedRewriter("RETRIEVE: no", "should not run as titler")
+	mainInfo := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", SupportsCitations: true}
+	rewriterInfo := llm.ModelInfo{ID: "anthropic:claude-haiku-4-5", BareID: "claude-haiku-4-5"}
+	search := &fakeSearch{}
+	o, chats, _ := newOrchTestWithRewriter(t, mainGen, rewriterGen, mainInfo, rewriterInfo, search)
+	chat := makeChat(t, chats, mainInfo.ID)
+
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "first question"})
+
+	var sawText bool
+	for _, ev := range events {
+		if ev.Kind == EvText && strings.Contains(ev.TextDelta, "wasn't able to produce an answer") {
+			sawText = true
+		}
+	}
+	if !sawText {
+		t.Error("expected a placeholder text frame for the empty answer")
+	}
+
+	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
+	asst := msgs[len(msgs)-1]
+	if strings.TrimSpace(asst.Content) == "" {
+		t.Error("persisted assistant message is blank; expected placeholder")
+	}
+
+	if rewriterGen.callCount() != 0 {
+		t.Errorf("empty/placeholder answer should not auto-title (calls=%d)", rewriterGen.callCount())
 	}
 }
 

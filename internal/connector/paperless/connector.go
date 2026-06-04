@@ -14,6 +14,7 @@ import (
 
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/netguard"
 )
 
 // authTokenPrefix is the scheme used by the Paperless-ngx API for
@@ -27,7 +28,10 @@ const paperlessCheckpointEvery = 200
 
 func init() {
 	connector.Register("paperless", func() connector.Connector {
-		return &Connector{client: &http.Client{Timeout: 30 * time.Second}}
+		// SSRF guard: the base URL is user-supplied, so the client refuses
+		// loopback/link-local/metadata targets while still allowing the
+		// private-LAN address where a self-hosted Paperless lives.
+		return &Connector{client: netguard.NewClient(30 * time.Second)}
 	})
 }
 
@@ -70,6 +74,10 @@ func (c *Connector) Validate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// SSRF protection is enforced by the guarded client (netguard.NewClient,
+	// wired in init): it refuses to dial loopback/link-local/metadata
+	// addresses while still allowing the private-LAN host where a self-hosted
+	// Paperless lives. The block surfaces here as a connect error.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/documents/?page=1&page_size=1", nil)
 	if err != nil {
 		return fmt.Errorf("paperless: %w", err)
@@ -435,14 +443,13 @@ func (c *Connector) fetchLookup(ctx context.Context, path string) (map[int]strin
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close() //nolint:errcheck // HTTP response body
 
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, path)
-		}
-
-		var page lookupResponse
-		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		// Close each page's body before fetching the next page. Using
+		// `defer` here would stack every page's Close until the function
+		// returns, leaking file descriptors on connectors with many
+		// lookup pages. decodeLookupPage owns the close.
+		page, err := decodeLookupPage(resp, path)
+		if err != nil {
 			return nil, err
 		}
 
@@ -457,6 +464,23 @@ func (c *Connector) fetchLookup(ctx context.Context, path string) (map[int]strin
 	}
 
 	return lookup, nil
+}
+
+// decodeLookupPage decodes one lookup page and always closes resp.Body
+// before returning, so the pagination loop in fetchLookup doesn't
+// accumulate open response bodies across pages.
+func decodeLookupPage(resp *http.Response, path string) (lookupResponse, error) {
+	defer resp.Body.Close() //nolint:errcheck // HTTP response body
+
+	if resp.StatusCode != http.StatusOK {
+		return lookupResponse{}, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, path)
+	}
+
+	var page lookupResponse
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return lookupResponse{}, err
+	}
+	return page, nil
 }
 
 func (c *Connector) toDocument(pdoc paperlessDoc, tags, correspondents, docTypes map[int]string) model.Document {

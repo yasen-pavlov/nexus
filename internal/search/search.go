@@ -220,14 +220,54 @@ func (c *Client) IndexChunks(ctx context.Context, chunks []model.Chunk) error {
 		buf.WriteByte('\n')
 	}
 
-	_, err := c.os.Bulk(ctx, opensearchapi.BulkReq{
+	resp, err := c.os.Bulk(ctx, opensearchapi.BulkReq{
 		Body: &buf,
 	})
 	if err != nil {
 		return fmt.Errorf("search: bulk index: %w", err)
 	}
 
+	// OpenSearch returns HTTP 200 even when individual items fail (e.g. a
+	// knn_vector dimension mismatch or a mapping conflict). Inspect the
+	// per-item statuses; a swallowed failure here would let the pipeline
+	// advance its cursor past documents that never landed in the index and
+	// silently degrade hybrid search to BM25-only.
+	if resp != nil && resp.Errors {
+		failed, sample := bulkItemFailures(resp.Items)
+		if failed > 0 {
+			c.log.Error("bulk index had item-level failures",
+				zap.Int("failed", failed),
+				zap.Int("total", len(chunks)),
+				zap.String("sample", sample),
+			)
+			return fmt.Errorf("search: bulk index: %d/%d items failed (e.g. %s)", failed, len(chunks), sample)
+		}
+	}
+
 	return nil
+}
+
+// bulkItemFailures counts failed items in a bulk response and returns a
+// representative error string for the first failure (for diagnostics).
+func bulkItemFailures(items []map[string]opensearchapi.BulkRespItem) (failed int, sample string) {
+	for _, item := range items {
+		for _, ri := range item {
+			if ri.Error == nil && ri.Status < 300 {
+				continue
+			}
+			failed++
+			if sample == "" {
+				reason := "unknown"
+				etype := ""
+				if ri.Error != nil {
+					reason = ri.Error.Reason
+					etype = ri.Error.Type
+				}
+				sample = fmt.Sprintf("id=%s status=%d type=%s reason=%s", ri.ID, ri.Status, etype, reason)
+			}
+		}
+	}
+	return failed, sample
 }
 
 // highlightConfig returns the standard highlight configuration.
@@ -251,7 +291,12 @@ func (c *Client) highlightConfig() map[string]any {
 		}
 	}
 	return map[string]any{
-		"fields":    fields,
+		"fields": fields,
+		// encoder "html" makes OpenSearch HTML-escape the fragment text so that
+		// markup in indexed content (emails, chat messages, files) cannot inject
+		// active HTML when the headline is rendered. Only the <mark> tags below
+		// survive unescaped. The frontend additionally sanitizes (defense in depth).
+		"encoder":   "html",
 		"pre_tags":  []string{"<mark>"},
 		"post_tags": []string{"</mark>"},
 	}
@@ -522,7 +567,7 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 	// outgoing-only counts — the footer just shows a toggle that reveals
 	// "nothing" instead of being correctly hidden; better than failing the
 	// whole search.
-	incoming, err := c.CountIncomingEdges(ctx, sourceIDs)
+	incoming, err := c.CountIncomingEdges(ctx, sourceIDs, req.OwnerID)
 	if err == nil {
 		for i := range hits {
 			hits[i].RelatedCount += incoming[hits[i].SourceID]

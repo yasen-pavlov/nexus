@@ -180,6 +180,11 @@ func newLogger(level string) *zap.Logger {
 // any still-plaintext configs/settings in-place. No-op when encryption is off.
 func setupEncryption(ctx context.Context, st *store.Store, encryptionKey string, log *zap.Logger) error {
 	if encryptionKey == "" {
+		log.Warn("NEXUS_ENCRYPTION_KEY is not set — connector credentials " +
+			"(IMAP/Telegram/Paperless secrets, Telegram session blobs) and " +
+			"LLM/embedding/rerank API keys will be stored in the database in " +
+			"PLAINTEXT. Set NEXUS_ENCRYPTION_KEY to a 64-char hex string to " +
+			"enable AES-256-GCM encryption at rest.")
 		return nil
 	}
 	key, err := crypto.NewKey(encryptionKey)

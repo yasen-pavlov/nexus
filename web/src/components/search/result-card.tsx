@@ -4,6 +4,7 @@ import { ArrowUpRight, Link2 } from "lucide-react";
 import type { DocumentHit } from "@/lib/api-types";
 import { SourceChip } from "@/components/source-chip";
 import { sourceMetaFor } from "@/components/source-meta";
+import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { cn } from "@/lib/utils";
 import { EmailCardBody } from "./cards/email";
 import { AttachmentCardBody } from "./cards/attachment";
@@ -75,7 +76,7 @@ export function ResultCard({
           "[&_em]:rounded-sm [&_em]:bg-primary/15 [&_em]:px-0.5 [&_em]:font-medium [&_em]:not-italic [&_em]:text-foreground",
           "[&_mark]:rounded-sm [&_mark]:bg-primary/15 [&_mark]:px-0.5 [&_mark]:font-medium [&_mark]:text-foreground",
         )}
-        dangerouslySetInnerHTML={{ __html: hit.headline }}
+        dangerouslySetInnerHTML={{ __html: sanitizeHighlight(hit.headline) }}
       />
     );
   } else if (hit.content) {

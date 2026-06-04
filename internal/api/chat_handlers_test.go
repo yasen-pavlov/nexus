@@ -617,7 +617,12 @@ func TestPostMessage_RequiresContent(t *testing.T) {
 	}
 }
 
-func TestPostMessage_TokenViaQueryString(t *testing.T) {
+func TestPostMessage_RejectsTokenViaQueryString(t *testing.T) {
+	// The chat-message stream is a POST issued with fetch(), which sets the
+	// Authorization header — so it uses header-only auth. A URL-borne ?token=
+	// must NOT be accepted here (that would leak the bearer credential into
+	// logs/history); the query-param path is confined to the EventSource
+	// sync-progress GETs.
 	events := []llm.Event{
 		{Kind: llm.EventText, TextDelta: "ok"},
 		{Kind: llm.EventDone, StopReason: llm.StopEnd},
@@ -628,14 +633,26 @@ func TestPostMessage_TokenViaQueryString(t *testing.T) {
 	decodeChatData(t, w.Body, &chat)
 
 	body, _ := json.Marshal(map[string]string{"content": "hi"})
-	// EventSource cannot set headers so the SSE endpoint accepts ?token=
+
+	// Query-string token only → rejected.
 	req := httptest.NewRequest(http.MethodPost,
 		"/api/chats/"+chat.ID.String()+"/messages?token="+env.ownerToken, bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	rw := httptest.NewRecorder()
 	env.router.ServeHTTP(rw, req)
+	if rw.Code != http.StatusUnauthorized {
+		t.Fatalf("query-token POST: status=%d, want 401 (%s)", rw.Code, rw.Body.String())
+	}
+
+	// Same request with the Authorization header → accepted.
+	req = httptest.NewRequest(http.MethodPost,
+		"/api/chats/"+chat.ID.String()+"/messages", bytes.NewBuffer(body))
+	req.Header.Set("Authorization", "Bearer "+env.ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rw = httptest.NewRecorder()
+	env.router.ServeHTTP(rw, req)
 	if rw.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+		t.Fatalf("header POST: status=%d, want 200 (%s)", rw.Code, rw.Body.String())
 	}
 }
 

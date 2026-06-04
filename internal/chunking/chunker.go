@@ -3,6 +3,7 @@ package chunking
 
 import (
 	"strings"
+	"unicode/utf8"
 )
 
 // DefaultMaxTokens is the target chunk size in approximate tokens (words).
@@ -52,17 +53,7 @@ func Split(text string, maxTokens, overlapTokens int) []Chunk {
 	var chunks []Chunk
 	index := 0
 	emit := func(s string) {
-		// If a single word-bounded chunk is still too large (e.g. one long
-		// base64 blob with no whitespace), split it into byte-bounded pieces.
-		for len(s) > MaxChunkBytes {
-			chunks = append(chunks, Chunk{Index: index, Text: s[:MaxChunkBytes]})
-			index++
-			s = s[MaxChunkBytes:]
-		}
-		if s != "" {
-			chunks = append(chunks, Chunk{Index: index, Text: s})
-			index++
-		}
+		chunks = appendByteBounded(chunks, s, &index)
 	}
 
 	start := 0
@@ -81,5 +72,28 @@ func Split(text string, maxTokens, overlapTokens int) []Chunk {
 		start += step
 	}
 
+	return chunks
+}
+
+// appendByteBounded appends s to chunks as one or more pieces no larger than
+// MaxChunkBytes. A single word-bounded chunk can still be too large (e.g. one
+// long base64 blob with no whitespace); when it is, the cut point is backed off
+// to the previous UTF-8 rune boundary so a multibyte rune (Cyrillic/CJK) is
+// never split into invalid UTF-8 (trims at most 3 bytes). index is advanced for
+// each emitted piece.
+func appendByteBounded(chunks []Chunk, s string, index *int) []Chunk {
+	for len(s) > MaxChunkBytes {
+		cut := MaxChunkBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		chunks = append(chunks, Chunk{Index: *index, Text: s[:cut]})
+		*index++
+		s = s[cut:]
+	}
+	if s != "" {
+		chunks = append(chunks, Chunk{Index: *index, Text: s})
+		*index++
+	}
 	return chunks
 }

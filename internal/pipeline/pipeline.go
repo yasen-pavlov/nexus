@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/chunking"
@@ -524,6 +525,23 @@ func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Docum
 	if len(embeddings) != len(embedTexts) {
 		return
 	}
+	// Guard against a dimension mismatch between the configured embedder and
+	// the index mapping (e.g. a custom model whose Dimension() falls through
+	// to a wrong default). Sending wrong-length vectors would make every
+	// affected item fail the bulk API — and historically that failure was
+	// invisible, silently degrading hybrid search to BM25-only. Skip the
+	// vectors (still indexed for BM25) and log loudly instead.
+	want := embedder.Dimension()
+	for k := range embeddings {
+		if want > 0 && len(embeddings[k]) != want {
+			p.log.Error("embedding dimension mismatch, indexing without vectors",
+				zap.String("source_id", doc.SourceID),
+				zap.Int("want", want),
+				zap.Int("got", len(embeddings[k])),
+			)
+			return
+		}
+	}
 	for k, idx := range embedIndices {
 		chunks[idx].Embedding = embeddings[k]
 	}
@@ -709,9 +727,11 @@ func countAlphabeticTokens(text string) int {
 	for _, token := range strings.Fields(text) {
 		alpha := 0
 		for _, r := range token {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-				(r >= 'À' && r <= 'ÿ') || // basic Latin-1 supplement
-				r >= 0x0100 { // any non-ASCII letter — Cyrillic, CJK, etc.
+			// unicode.IsLetter correctly accepts ASCII, Cyrillic, CJK, and
+			// other scripts while rejecting symbols/emoji/punctuation that
+			// the old `r >= 0x0100` numeric range mistakenly counted as
+			// alphabetic (e.g. ™, →, 😀 all sit above 0x0100).
+			if unicode.IsLetter(r) {
 				alpha++
 				if alpha >= 2 {
 					count++

@@ -279,6 +279,10 @@ type turnState struct {
 	// reload, eval harness, debug).
 	rewrittenQuery   string
 	skippedRetrieval bool
+	// placeholderAnswer is set when the model produced no text and
+	// finalizeAnswer substituted a placeholder. Such a turn is not auto-titled
+	// (a failed answer shouldn't name the chat).
+	placeholderAnswer bool
 	// pendingCitations buffers Anthropic citations until the next
 	// sentence terminator so pills land at clean sentence boundaries
 	// instead of mid-word.
@@ -432,6 +436,7 @@ func (t *turnState) maybeAutoTitle(stop string, isFirstAssistantTurn bool, userQ
 	if t.rewriterModelID == "" ||
 		stop != string(llm.StopEnd) ||
 		!isFirstAssistantTurn ||
+		t.placeholderAnswer ||
 		strings.TrimSpace(t.chat.Title) != "" ||
 		strings.TrimSpace(t.accumulatedText.String()) == "" {
 		return
@@ -487,6 +492,27 @@ func (t *turnState) persistAndDone(stop, errMsg string, isFirstAssistantTurn boo
 		}
 		t.out <- Event{Kind: EvDone, StopReason: stop, MessageID: t.assistantID, DurationMs: t.persistedDurationMs}
 	})
+}
+
+// finalizeAnswer flushes pending citations, fills in a placeholder when the
+// model produced no text (so the UI never shows a blank answer bubble), emits
+// the merged usage frame, and persists + closes the turn. Shared by every
+// successful (non-error) finalize path in the round loop.
+func (t *turnState) finalizeAnswer(stop llm.StopReason, isFirstAssistantTurn bool) {
+	t.flushAllPendingAt(t.byteToUTF16(t.accumulatedText.Len()))
+	if strings.TrimSpace(t.accumulatedText.String()) == "" {
+		// end_turn with no text (a provider quirk on tool-heavy turns, or the
+		// forced-answer round producing nothing). Emit a short placeholder so
+		// the answer bubble isn't blank and the persisted message is non-empty.
+		const placeholder = "I wasn't able to produce an answer for that. Try rephrasing your question."
+		t.accumulatedText.WriteString(placeholder)
+		t.placeholderAnswer = true
+		t.out <- Event{Kind: EvText, TextDelta: placeholder}
+	}
+	if merged := t.mergeUsage(); merged != nil {
+		t.out <- Event{Kind: EvUsage, Usage: merged}
+	}
+	t.persistAndDone(string(stop), "", isFirstAssistantTurn, t.in.Content)
 }
 
 // runTurn owns the output channel and is responsible for closing it
@@ -717,13 +743,18 @@ func (l *roundLoop) run(ctx context.Context) {
 			return
 		}
 
-		if res.stop != llm.StopToolUse {
-			// end_turn / max_tokens / filtered → finalize the turn.
-			st.flushAllPendingAt(st.byteToUTF16(st.accumulatedText.Len()))
-			if merged := st.mergeUsage(); merged != nil {
-				st.out <- Event{Kind: EvUsage, Usage: merged}
+		// Finalize on any non-tool stop (end_turn / max_tokens / filtered).
+		// Also finalize if we've reached the round cap but the model STILL
+		// reported tool_use: the forced-answer round runs with tools=nil, so
+		// some providers (notably Ollama's loose done_reason mapping) can
+		// report tool_use with nothing to dispatch. Without this hard ceiling
+		// the loop would spin forever, so we answer with whatever text exists.
+		if res.stop != llm.StopToolUse || toolRound >= l.settings.MaxToolRounds {
+			stop := res.stop
+			if stop == llm.StopToolUse {
+				stop = llm.StopEnd
 			}
-			st.persistAndDone(string(res.stop), "", l.isFirst, st.in.Content)
+			st.finalizeAnswer(stop, l.isFirst)
 			return
 		}
 
@@ -734,6 +765,33 @@ func (l *roundLoop) run(ctx context.Context) {
 	}
 }
 
+// contextTokenMargin is reserved headroom (beyond the output MaxTokens) when
+// deciding whether the request is close to the model's context window. Covers
+// the rough-estimate error and per-message/tool-schema overhead the char count
+// doesn't capture.
+const contextTokenMargin = 8000
+
+// contextNearLimit estimates, with a coarse ~4-chars-per-token heuristic,
+// whether the cumulative system prompt + documents + conversation are close
+// enough to the model's context window that adding another tool round risks
+// overflowing it. Returns false when the window is unknown (treat as ample).
+func (l *roundLoop) contextNearLimit() bool {
+	window := l.info.ContextWindow
+	if window <= 0 {
+		return false
+	}
+	chars := len(l.st.o.cfg.SystemPrompt)
+	for i := range l.documents {
+		chars += len(l.documents[i].Title) + len(l.documents[i].Content)
+	}
+	for i := range l.rolledMessages {
+		chars += len(l.rolledMessages[i].Content)
+	}
+	estTokens := chars / 4
+	budget := window - l.st.o.cfg.MaxTokens - contextTokenMargin
+	return budget > 0 && estTokens >= budget
+}
+
 // startRound builds the per-round tools + parser-free request and starts
 // the Generate stream. Returns ok=false (after finalising) when Generate
 // errors synchronously.
@@ -741,9 +799,14 @@ func (l *roundLoop) startRound(ctx context.Context, toolRound int) (<-chan llm.E
 	st := l.st
 	// Tools for this round. nil after the cap so the model is forced to
 	// answer from current context — no separate "force-finish" branch
-	// needed.
+	// needed. Also drop tools when the accumulated context is approaching the
+	// model's window, so a long agentic turn degrades to "answer now" instead
+	// of growing past the limit and triggering a provider 400 (which
+	// RetryGenerator won't retry). We never trim existing documents —
+	// citation [N] indices depend on their stable cumulative order — so
+	// withholding further tools is the only safe backpressure.
 	var roundTools []llm.Tool
-	if toolRound < l.settings.MaxToolRounds {
+	if toolRound < l.settings.MaxToolRounds && !l.contextNearLimit() {
 		roundTools = BuildToolList(l.info, l.settings.MaxToolRounds, l.settings.EnableOpenAttachment)
 	}
 

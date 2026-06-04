@@ -3,6 +3,7 @@ package chunking
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSplit_EmptyString(t *testing.T) {
@@ -180,5 +181,48 @@ func TestSplit_ShortTextOverByteLimit(t *testing.T) {
 	chunks := Split(bigWord, 500, 100)
 	if len(chunks) < 2 {
 		t.Errorf("expected at least 2 chunks (byte-bounded), got %d", len(chunks))
+	}
+}
+
+// TestSplit_ByteBoundedMultibyteRuneSafe verifies the pathological-input
+// byte slicer never splits a multibyte UTF-8 rune. "д" is 2 bytes, so a
+// naive cut at an even byte cap (8000) lands mid-rune; the rune-boundary
+// backoff must trim to a valid boundary instead.
+func TestSplit_ByteBoundedMultibyteRuneSafe(t *testing.T) {
+	// Cyrillic blob with no whitespace, well over the byte cap.
+	blob := strings.Repeat("д", MaxChunkBytes*2) // each "д" is 2 bytes UTF-8
+	chunks := Split(blob, 500, 100)
+
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 byte-bounded chunks, got %d", len(chunks))
+	}
+	var reassembled strings.Builder
+	for i, c := range chunks {
+		if len(c.Text) > MaxChunkBytes {
+			t.Errorf("chunk %d exceeds MaxChunkBytes: %d > %d", i, len(c.Text), MaxChunkBytes)
+		}
+		if !utf8.ValidString(c.Text) {
+			t.Errorf("chunk %d is not valid UTF-8 — a multibyte rune was split", i)
+		}
+		reassembled.WriteString(c.Text)
+	}
+	// No bytes are lost or duplicated across the rune-boundary backoff.
+	if reassembled.String() != blob {
+		t.Errorf("reassembled chunks differ from input (len %d vs %d)", reassembled.Len(), len(blob))
+	}
+}
+
+// TestSplit_ByteBoundedMultibyteOddOffset uses a 3-byte rune to ensure the
+// backoff handles cut points that are off by 1 and 2 bytes from a boundary.
+func TestSplit_ByteBoundedMultibyteOddOffset(t *testing.T) {
+	blob := strings.Repeat("€", MaxChunkBytes) // each "€" is 3 bytes UTF-8
+	chunks := Split(blob, 500, 100)
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if !utf8.ValidString(c.Text) {
+			t.Errorf("chunk %d is not valid UTF-8", i)
+		}
 	}
 }

@@ -136,7 +136,7 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 | `NEXUS_JWT_SECRET`          | yes*     | random per boot                                                           | Signs session tokens. Set it, or every restart logs everyone out.     |
 | `NEXUS_DATABASE_URL`        | yes      | —                                                                         | Postgres connection string. Set in compose automatically.             |
 | `NEXUS_OPENSEARCH_URL`      | no       | `http://localhost:9200`                                                   | OpenSearch endpoint.                                                  |
-| `NEXUS_TIKA_URL`            | no       | (unset — Tika calls fall back to basic extraction)                        | Apache Tika endpoint for rich binary extraction / OCR.                |
+| `NEXUS_TIKA_URL`            | no       | `http://localhost:9998`                                                   | Apache Tika endpoint for rich binary extraction / OCR.                |
 | `NEXUS_OLLAMA_URL`          | no       | `http://localhost:11434`                                                  | Ollama endpoint for local embeddings.                                 |
 | `NEXUS_PORT`                | no       | `8080`                                                                    | HTTP port the app listens on.                                         |
 | `NEXUS_LOG_LEVEL`           | no       | `info`                                                                    | `info` or `debug`.                                                    |
