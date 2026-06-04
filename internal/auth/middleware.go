@@ -29,22 +29,32 @@ func SSEMiddleware(secret []byte) func(http.Handler) http.Handler {
 	return authMiddleware(secret, true)
 }
 
+// bearerOrQueryToken extracts the JWT from the Authorization header
+// ("Bearer <tok>"), falling back to the ?token= query parameter when
+// allowQueryToken is set. ok is false only when an Authorization header was
+// present but not a well-formed Bearer token.
+func bearerOrQueryToken(r *http.Request, allowQueryToken bool) (token string, ok bool) {
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		t := strings.TrimPrefix(authHeader, "Bearer ")
+		if t == authHeader {
+			return "", false
+		}
+		return t, true
+	}
+	if allowQueryToken {
+		return r.URL.Query().Get("token"), true
+	}
+	return "", true
+}
+
 func authMiddleware(secret []byte, allowQueryToken bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenString := ""
-			if authHeader := r.Header.Get("Authorization"); authHeader != "" {
-				tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-				if tokenString == authHeader {
-					http.Error(w, `{"error":"invalid authorization header"}`, http.StatusUnauthorized)
-					return
-				}
-			} else if allowQueryToken {
-				if qsToken := r.URL.Query().Get("token"); qsToken != "" {
-					tokenString = qsToken
-				}
+			tokenString, ok := bearerOrQueryToken(r, allowQueryToken)
+			if !ok {
+				http.Error(w, `{"error":"invalid authorization header"}`, http.StatusUnauthorized)
+				return
 			}
-
 			if tokenString == "" {
 				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 				return

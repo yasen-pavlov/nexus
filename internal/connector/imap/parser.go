@@ -116,6 +116,22 @@ func parseEmailBody(raw []byte) (string, []attachment) {
 	return strings.TrimSpace(content), attachments
 }
 
+// appendPlainText concatenates a non-empty text/plain part onto the body
+// rather than letting the last part win. A multipart/mixed message can carry
+// several inline text/plain parts (e.g. the body plus an inline forwarded
+// message); overwriting would silently drop content from the index.
+func appendPlainText(plainText *string, body []byte) {
+	text := string(body)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if *plainText == "" {
+		*plainText = text
+	} else {
+		*plainText += "\n\n" + text
+	}
+}
+
 // consumeMIMEPart routes a single MIME part into one of the three accumulators
 // (plain-text body, HTML body, attachment list) based on its header kind.
 // Kept separate so parseEmailBody's outer loop has only the pagination logic.
@@ -129,18 +145,7 @@ func consumeMIMEPart(part *mail.Part, plainText, htmlText *string, attachments *
 		}
 		switch {
 		case strings.HasPrefix(contentType, "text/plain"):
-			// Concatenate inline text/plain parts instead of letting the
-			// last one win. A multipart/mixed message can carry several
-			// (e.g. the body plus an inline forwarded message); overwriting
-			// would silently drop content from the index. (HTML stays
-			// first-wins below — alternative HTML parts are redundant.)
-			if text := string(body); strings.TrimSpace(text) != "" {
-				if *plainText == "" {
-					*plainText = text
-				} else {
-					*plainText += "\n\n" + text
-				}
-			}
+			appendPlainText(plainText, body)
 		case strings.HasPrefix(contentType, "text/html") && *htmlText == "":
 			*htmlText = string(body)
 		}
