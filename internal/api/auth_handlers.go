@@ -18,6 +18,7 @@ const (
 	errInvalidRequestBody = "invalid request body"
 	errRegistrationFailed = "registration failed"
 	errChangePasswordFail = "failed to change password"
+	errNotAuthenticated   = "not authenticated"
 )
 
 type registerRequest struct {
@@ -198,7 +199,7 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
 	if claims == nil {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
+		writeError(w, http.StatusUnauthorized, errNotAuthenticated)
 		return
 	}
 	user, err := h.store.GetUserByID(r.Context(), claims.UserID)
@@ -355,7 +356,7 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Only admin or the user themselves can change password
 	claims := auth.UserFromContext(r.Context())
 	if claims == nil {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
+		writeError(w, http.StatusUnauthorized, errNotAuthenticated)
 		return
 	}
 	if claims.Role != "admin" && claims.UserID != id {

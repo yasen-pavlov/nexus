@@ -218,6 +218,377 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List chats
+         * @description Returns the calling user's chats, ordered by updated_at desc.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Max chats to return (default 50, max 200) */
+                    limit?: number;
+                    /** @description Number of chats to skip */
+                    offset?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.listChatsResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Create a chat
+         * @description Creates a new empty chat owned by the requesting user. Both title and default_model are optional.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description Initial chat fields */
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.createChatRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_model.Chat"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chats/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a chat
+         * @description Returns the chat plus its full message history. Owner-only; non-owners (including admins) get 404 to avoid leaking chat existence.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Chat ID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.chatDetailResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete a chat
+         * @description Removes the chat and (via ON DELETE CASCADE) all its messages. Owner-only; non-owners get 404 to avoid leaking chat existence.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Chat ID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No Content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Update a chat
+         * @description Applies a partial update (title and/or default_model). Owner-only; non-owners get 404 to avoid leaking chat existence.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Chat ID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            /** @description Fields to update */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.updateChatRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_model.Chat"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/chats/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send a chat message (SSE stream)
+         * @description Submits a user turn and streams the RAG orchestrator's events back as Server-Sent Events (retrieving, evidence, text, citation, tool_start/result, usage, title, done, error). Owner-only; non-owners get 404 to avoid leaking chat existence. The response is a long-lived text/event-stream, not a single JSON body.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Chat ID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            /** @description User message */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.postMessageRequest"];
+                };
+            };
+            responses: {
+                /** @description SSE event stream */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": string;
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description RAG orchestrator not configured */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/event-stream": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chats/{id}/messages/{messageId}/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Rate an assistant message
+         * @description Records a thumbs rating ("up"/"down", or null to clear) on a message. Owner-only; non-owners get 404 to avoid leaking chat existence.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Chat ID */
+                    id: string;
+                    /** @description Message ID */
+                    messageId: string;
+                };
+                cookie?: never;
+            };
+            /** @description Feedback */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.messageFeedbackRequest"];
+                };
+            };
+            responses: {
+                /** @description No Content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connectors": {
         parameters: {
             query?: never;
@@ -1040,6 +1411,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/llm/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the system-wide default LLM model
+         * @description Returns the configured default model id (provider-prefixed). The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.llmDefaultResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/llm/models": {
         parameters: {
             query?: never;
@@ -1049,11 +1459,14 @@ export interface paths {
         };
         /**
          * List available LLM models
-         * @description Returns the visible LLM models filtered by configured providers and admin allowlist. Non-admin users see the same list. Used by the per-message model picker in the Ask UI.
+         * @description Returns LLM models filtered by configured providers and (by default) admin allowlist. The per-message picker uses the default response. Pass `?include_disallowed=true` (admin-only) to get the pre-allowlist set — used by the admin allowlist editor so deselected rows stay visible for re-ticking.
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    /** @description When true, ignore the allowlist filter (admin-only) */
+                    include_disallowed?: boolean;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -1381,6 +1794,82 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["internal_api.llmSettingsResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/settings/rag": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get RAG runtime settings
+         * @description Returns the runtime knobs the RAG orchestrator reads per turn (currently the agentic-tool round cap).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.ragSettingsResponse"];
+                    };
+                };
+            };
+        };
+        /**
+         * Update RAG runtime settings
+         * @description Updates the runtime knobs the RAG orchestrator reads per turn. Hot-reloads on success — no restart required. max_tool_rounds must be between 0 and 5; 0 disables agentic tool calls entirely.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description RAG settings */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.ragSettingsRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.ragSettingsResponse"];
                     };
                 };
                 /** @description Bad Request */
@@ -2228,6 +2717,140 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the current user's API tokens
+         * @description Returns token metadata only — never the secret.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_model.APIToken"][];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Create an API token for the current user
+         * @description Mints a long-lived personal access token. The plaintext token is returned ONCE and never again. expires_at is optional (omit for a non-expiring token).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description Token details */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.createTokenRequest"];
+                };
+            };
+            responses: {
+                /** @description Created */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.createTokenResponse"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an API token
+         * @description Deletes one of the caller's tokens. Non-owners get 404 so token existence doesn't leak across users.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    /** @description Token UUID */
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description No Content */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "*/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "*/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -2426,11 +3049,125 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        "github_com_muty_nexus_internal_model.APIToken": {
+            created_at?: string;
+            expires_at?: string;
+            id?: string;
+            last_used_at?: string;
+            name?: string;
+            user_id?: string;
+        };
         "github_com_muty_nexus_internal_model.BinaryStoreStats": {
             count?: number;
             source_name?: string;
             source_type?: string;
             total_size?: number;
+        };
+        "github_com_muty_nexus_internal_model.Chat": {
+            created_at?: string;
+            default_model?: string;
+            id?: string;
+            title?: string;
+            updated_at?: string;
+            user_id?: string;
+        };
+        "github_com_muty_nexus_internal_model.ChatCitation": {
+            cited_text?: string;
+            doc_id?: string;
+            span_end?: number;
+            span_start?: number;
+        };
+        "github_com_muty_nexus_internal_model.ChatListEntry": {
+            created_at?: string;
+            default_model?: string;
+            first_message_preview?: string;
+            id?: string;
+            title?: string;
+            updated_at?: string;
+            user_id?: string;
+        };
+        "github_com_muty_nexus_internal_model.ChatMessage": {
+            chat_id?: string;
+            citations?: components["schemas"]["github_com_muty_nexus_internal_model.ChatCitation"][];
+            content?: string;
+            created_at?: string;
+            /**
+             * @description DurationMs is the wall-clock time the orchestrator's runTurn
+             *     took, in milliseconds. Persisted at orchestrator-side so the FE
+             *     can render a consistent label across the live (in-flight) view
+             *     and the post-refresh persisted view. Nil for messages written
+             *     before migration 019 and for user messages.
+             */
+            duration_ms?: number;
+            /**
+             * @description Evidence is the chunks the orchestrator retrieved for THIS turn
+             *     (the same payload that streamed in EvEvidence). Persisting them
+             *     alongside citations preserves the citation→source link end-to-end:
+             *     ChunkPreview.DocID is the OpenSearch chunk handle, so historical
+             *     chats stay grounded — citations can render as numbered pills, the
+             *     FE evidence rail repopulates, and any future feature can hop
+             *     /api/documents/{id}, /related, /conversations, /blob from the
+             *     stored handles.
+             */
+            evidence?: components["schemas"]["github_com_muty_nexus_internal_model.ChunkPreview"][];
+            /**
+             * @description Feedback is the user's thumbs rating on an assistant message:
+             *     "up", "down", or nil (no rating). Set via the message-feedback
+             *     endpoint; used for Phase 7 telemetry. Always nil for user messages.
+             */
+            feedback?: string;
+            id?: string;
+            model?: string;
+            /**
+             * @description RewrittenQuery is the rewriter's normalised search query when the
+             *     rewriter ran on this turn. Empty when the rewriter was disabled
+             *     or this was the first user turn (rewriter only runs when prior
+             *     assistant turns exist). Persisted so the FE phase strip can
+             *     repopulate "Searching for: <rewritten>" on chat reload, and so
+             *     the Phase 7 eval harness knows which query actually hit OpenSearch.
+             */
+            rewritten_query?: string;
+            role?: components["schemas"]["github_com_muty_nexus_internal_model.ChatRole"];
+            seq?: number;
+            /**
+             * @description SkippedRetrieval is true when the rewriter judged the question
+             *     answerable from chat history alone (greetings, meta questions,
+             *     history-only follow-ups). On these turns no OpenSearch call ran
+             *     and Evidence is empty.
+             */
+            skipped_retrieval?: boolean;
+            stop_reason?: string;
+            tool_calls?: components["schemas"]["github_com_muty_nexus_internal_model.ChatToolCall"][];
+            usage?: components["schemas"]["github_com_muty_nexus_internal_model.ChatUsage"];
+        };
+        /** @enum {string} */
+        "github_com_muty_nexus_internal_model.ChatRole": "user" | "assistant" | "tool";
+        "github_com_muty_nexus_internal_model.ChatToolCall": {
+            args?: string;
+            chunks?: components["schemas"]["github_com_muty_nexus_internal_model.ChunkPreview"][];
+            name?: string;
+            result_id?: string;
+            result_summary?: string;
+        };
+        "github_com_muty_nexus_internal_model.ChatUsage": {
+            cache_read?: number;
+            cache_write?: number;
+            input?: number;
+            output?: number;
+        };
+        "github_com_muty_nexus_internal_model.ChunkPreview": {
+            date?: string;
+            headline?: string;
+            id?: string;
+            /**
+             * @description MimeType is the retrieved chunk's content type when known. The FE
+             *     uses an image/* prefix to render an inline thumbnail (fetched via
+             *     /api/documents/{id}/content) below the evidence card. Empty for
+             *     chunks with no binary (most text chunks).
+             */
+            mime_type?: string;
+            source?: string;
+            title?: string;
         };
         "github_com_muty_nexus_internal_model.ConnectorConfig": {
             config?: {
@@ -2618,6 +3355,10 @@ export interface components {
         "internal_api.changePasswordRequest": {
             password?: string;
         };
+        "internal_api.chatDetailResponse": {
+            chat?: components["schemas"]["github_com_muty_nexus_internal_model.Chat"];
+            messages?: components["schemas"]["github_com_muty_nexus_internal_model.ChatMessage"][];
+        };
         "internal_api.connectorResponse": {
             config?: {
                 [key: string]: unknown;
@@ -2648,6 +3389,10 @@ export interface components {
             next_after?: string;
             next_before?: string;
         };
+        "internal_api.createChatRequest": {
+            default_model?: string;
+            title?: string;
+        };
         "internal_api.createConnectorRequest": {
             config?: {
                 [key: string]: unknown;
@@ -2657,6 +3402,15 @@ export interface components {
             schedule?: string;
             shared?: boolean;
             type?: string;
+        };
+        "internal_api.createTokenRequest": {
+            /** @description ExpiresAt is optional; nil/omitted means the token never expires. */
+            expires_at?: string;
+            name?: string;
+        };
+        "internal_api.createTokenResponse": {
+            meta?: components["schemas"]["github_com_muty_nexus_internal_model.APIToken"];
+            token?: string;
         };
         "internal_api.createUserRequest": {
             password?: string;
@@ -2686,6 +3440,13 @@ export interface components {
             source_name?: string;
             source_type?: string;
         };
+        "internal_api.listChatsResponse": {
+            chats?: components["schemas"]["github_com_muty_nexus_internal_model.ChatListEntry"][];
+            total?: number;
+        };
+        "internal_api.llmDefaultResponse": {
+            default_model?: string;
+        };
         "internal_api.llmModelResponse": {
             bare_id?: string;
             context_window?: number;
@@ -2706,6 +3467,7 @@ export interface components {
             default_model?: string;
             ollama_url?: string;
             openai_api_key?: string;
+            rewriter_model?: string;
         };
         "internal_api.llmSettingsResponse": {
             allowlist?: string[];
@@ -2713,10 +3475,34 @@ export interface components {
             default_model?: string;
             ollama_url?: string;
             openai_api_key?: string;
+            /**
+             * @description RewriterModel is the cheap model used for query rewriting and
+             *     auto-titling. Empty disables both features.
+             */
+            rewriter_model?: string;
         };
         "internal_api.loginRequest": {
             password?: string;
             username?: string;
+        };
+        "internal_api.messageFeedbackRequest": {
+            feedback?: string;
+        };
+        "internal_api.postMessageRequest": {
+            content?: string;
+            model?: string;
+        };
+        "internal_api.ragSettingsRequest": {
+            enable_multimodal?: boolean;
+            enable_open_attachment?: boolean;
+            max_images_per_turn?: number;
+            max_tool_rounds?: number;
+        };
+        "internal_api.ragSettingsResponse": {
+            enable_multimodal?: boolean;
+            enable_open_attachment?: boolean;
+            max_images_per_turn?: number;
+            max_tool_rounds?: number;
         };
         "internal_api.rankingSettings": {
             known_source_types?: string[];
@@ -2771,6 +3557,10 @@ export interface components {
             retention_days?: number;
             retention_per_connector?: number;
             sweep_interval_minutes?: number;
+        };
+        "internal_api.updateChatRequest": {
+            default_model?: string;
+            title?: string;
         };
         "internal_api.updateConnectorRequest": {
             config?: {

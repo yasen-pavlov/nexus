@@ -3,6 +3,7 @@ import { KeyRound, LogOut, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ChangePasswordSheet } from "@/components/admin/change-password-sheet";
+import { ApiTokensSection } from "@/components/account/api-tokens-section";
 import type { User } from "@/lib/api-types";
 import { useLogout } from "@/hooks/use-auth";
 import { formatAbsolute, formatRelative } from "@/lib/format";
@@ -100,6 +101,8 @@ export function AccountPage({ user }: Readonly<AccountPageProps>) {
           />
         </div>
       </section>
+
+      <ApiTokensSection />
 
       {pwOpen && (
         <ChangePasswordSheet

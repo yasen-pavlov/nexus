@@ -96,6 +96,12 @@ func RevocationMiddleware(cache *TokenRevocationCache) func(http.Handler) http.H
 				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
 				return
 			}
+			// API tokens don't participate in token_version revocation — the
+			// validator already confirmed the row exists and is unexpired.
+			if IsAPIToken(r.Context()) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			current, err := cache.CurrentVersion(r.Context(), claims.UserID)
 			if err != nil {
 				// User vanished (deleted) or DB hiccup; treat as expired so

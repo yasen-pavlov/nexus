@@ -52,6 +52,7 @@ type handler struct {
 	ranking       *RankingManager
 	jwtSecret     []byte
 	revocation    *auth.TokenRevocationCache
+	apiTokenAuth  *apiTokenAuthenticator
 	log           *zap.Logger
 	// loginLimiter throttles failed /auth/login attempts per
 	// (username, ip) bucket to defend weak passwords against online
