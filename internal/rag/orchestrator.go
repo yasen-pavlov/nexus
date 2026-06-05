@@ -642,7 +642,7 @@ func (t *turnState) runRewriter(ctx context.Context, history []llm.Message, prio
 	// in total" → "how much did I pay in total for the wolt orders"); the
 	// cases that genuinely need an assistant-introduced referent ("the
 	// second invoice") fall through to the tool loop.
-	res := rewriteQuery(ctx, rewriterGen, rewriterInfo, userHistoryOnly(history), t.in.Content, t.o.log)
+	res := rewriteQuery(ctx, rewriterGen, rewriterInfo, userHistoryOnly(history), t.in.Content, t.turnStart, t.o.log)
 	t.addUsage(res.Usage)
 	if strings.TrimSpace(res.Rewritten) != "" {
 		searchQuery = res.Rewritten
@@ -818,8 +818,11 @@ func (l *roundLoop) startRound(ctx context.Context, toolRound int) (<-chan llm.E
 	}
 
 	llmReq := llm.GenerateRequest{
-		Model:       l.bareModel,
-		System:      st.o.cfg.SystemPrompt,
+		Model: l.bareModel,
+		// Append the current date so the model can resolve relative time
+		// windows. It's stable for the whole day, so the Anthropic system-block
+		// cache still holds across turns (it only rotates at midnight).
+		System:      st.o.cfg.SystemPrompt + "\n\n" + dateContextLine(st.turnStart),
 		Documents:   l.documents,
 		Messages:    l.rolledMessages,
 		Tools:       roundTools,
