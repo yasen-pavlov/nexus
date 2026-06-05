@@ -1,5 +1,20 @@
 basePath: /api
 definitions:
+  github_com_muty_nexus_internal_model.APIToken:
+    properties:
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      id:
+        type: string
+      last_used_at:
+        type: string
+      name:
+        type: string
+      user_id:
+        type: string
+    type: object
   github_com_muty_nexus_internal_model.BinaryStoreStats:
     properties:
       count:
@@ -581,6 +596,21 @@ definitions:
       shared:
         type: boolean
       type:
+        type: string
+    type: object
+  internal_api.createTokenRequest:
+    properties:
+      expires_at:
+        description: ExpiresAt is optional; nil/omitted means the token never expires.
+        type: string
+      name:
+        type: string
+    type: object
+  internal_api.createTokenResponse:
+    properties:
+      meta:
+        $ref: '#/definitions/github_com_muty_nexus_internal_model.APIToken'
+      token:
         type: string
     type: object
   internal_api.createUserRequest:
@@ -2405,6 +2435,78 @@ paths:
       summary: Stream live sync progress across all visible connectors via SSE
       tags:
       - sync
+  /tokens:
+    get:
+      description: Returns token metadata only — never the secret.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_muty_nexus_internal_model.APIToken'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List the current user's API tokens
+      tags:
+      - tokens
+    post:
+      consumes:
+      - application/json
+      description: Mints a long-lived personal access token. The plaintext token is
+        returned ONCE and never again. expires_at is optional (omit for a non-expiring
+        token).
+      parameters:
+      - description: Token details
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.createTokenRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.createTokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Create an API token for the current user
+      tags:
+      - tokens
+  /tokens/{id}:
+    delete:
+      description: Deletes one of the caller's tokens. Non-owners get 404 so token
+        existence doesn't leak across users.
+      parameters:
+      - description: Token UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Revoke an API token
+      tags:
+      - tokens
   /users:
     get:
       produces:
@@ -2509,7 +2611,9 @@ paths:
       - users
 securityDefinitions:
   BearerAuth:
-    description: Type "Bearer " followed by the JWT returned from /auth/login.
+    description: Type "Bearer " followed by either a JWT from /auth/login or a personal
+      access token (nexus_pat_...) from /tokens. The "Bearer " prefix is required;
+      it is sent as the Authorization header verbatim.
     in: header
     name: Authorization
     type: apiKey

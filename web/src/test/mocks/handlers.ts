@@ -310,6 +310,8 @@ export const handlers = [
 
   // Sync jobs list — empty by default; tests that care can override.
   http.get("*/api/sync", () => HttpResponse.json(wrapData([]))),
+  // Default: no API tokens. Tests that exercise the tokens UI override this.
+  http.get("*/api/tokens", () => HttpResponse.json(wrapData([]))),
 ];
 
 // sampleConversationMessages covers the Telegram-style chunks the

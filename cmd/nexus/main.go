@@ -7,7 +7,7 @@
 //	@securityDefinitions.apikey	BearerAuth
 //	@in							header
 //	@name						Authorization
-//	@description				Type "Bearer " followed by the JWT returned from /auth/login.
+//	@description				Type "Bearer " followed by either a JWT from /auth/login or a personal access token (nexus_pat_...) from /tokens. The "Bearer " prefix is required; it is sent as the Authorization header verbatim.
 
 package main
 

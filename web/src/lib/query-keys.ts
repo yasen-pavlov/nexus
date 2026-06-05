@@ -87,6 +87,11 @@ export const userKeys = {
   list: () => [...userKeys.all, "list"] as const,
 };
 
+export const apiTokenKeys = {
+  all: ["api-tokens"] as const,
+  list: () => [...apiTokenKeys.all, "list"] as const,
+};
+
 export const storageKeys = {
   all: ["storage"] as const,
   stats: () => [...storageKeys.all, "stats"] as const,

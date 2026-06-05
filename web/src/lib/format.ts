@@ -37,6 +37,22 @@ export function formatAbsolute(iso: string | undefined | null): string {
   }
 }
 
+// Whether an ISO timestamp is in the past. Empty/null (e.g. a non-expiring
+// token) is never expired. Lives here so components don't call the impure
+// Date.now() directly in render (React Compiler purity rule).
+export function isExpired(iso: string | undefined | null): boolean {
+  if (!iso) return false;
+  const t = parseISO(iso).getTime();
+  return Number.isFinite(t) && t < Date.now();
+}
+
+// ISO timestamp `days` in the future, or undefined when days <= 0 ("never").
+// Also kept out of components so the impure Date.now() stays outside render.
+export function futureISO(days: number): string | undefined {
+  if (days <= 0) return undefined;
+  return new Date(Date.now() + days * 86_400_000).toISOString();
+}
+
 // Compact number formatter (2,401 → "2,401" vs "2.4k"). Right now we use the
 // locale's thousands separator without abbreviation — the values live in
 // right-aligned columns where the full number reads clean at 13-13.5px.

@@ -80,9 +80,14 @@ func NewRouter(
 		ranking:       ranking,
 		jwtSecret:     jwtSecret,
 		revocation:    revocation,
+		apiTokenAuth:  newAPITokenAuthenticator(store, log),
 		loginLimiter:  loginLimiter,
 		log:           log,
 	}
+	// Validator for long-lived API (personal access) tokens. Threaded into the
+	// auth middleware so a bearer credential with the nexus_pat_ prefix is
+	// resolved against the api_tokens table and acts as its owning user.
+	apiTokens := h.apiTokenAuth.validate
 
 	// SSE endpoints — outside the timeout middleware (long-lived connections).
 	// The GET progress streams are consumed by the browser EventSource API,
@@ -90,7 +95,7 @@ func NewRouter(
 	// param via SSEMiddleware. The chat stream is a POST issued with fetch(),
 	// so it uses the standard header-only Middleware — no URL-borne token.
 	r.Group(func(r chi.Router) {
-		r.Use(auth.SSEMiddleware(jwtSecret))
+		r.Use(auth.SSEMiddlewareWithTokens(jwtSecret, apiTokens))
 		r.Use(auth.RevocationMiddleware(revocation))
 		// Multiplexed stream: one connection, all visible jobs.
 		r.Get("/api/sync/progress", h.StreamAllSyncProgress)
@@ -98,7 +103,7 @@ func NewRouter(
 		r.Get("/api/sync/{id}/progress", h.StreamSyncProgress)
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(auth.Middleware(jwtSecret))
+		r.Use(auth.MiddlewareWithTokens(jwtSecret, apiTokens))
 		r.Use(auth.RevocationMiddleware(revocation))
 		// RAG chat message stream — long-lived, per-turn SSE over fetch().
 		r.Post("/api/chats/{id}/messages", h.PostChatMessage)
@@ -112,11 +117,20 @@ func NewRouter(
 
 		// Protected routes (any authenticated user)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.Middleware(jwtSecret))
+			r.Use(auth.MiddlewareWithTokens(jwtSecret, apiTokens))
 			r.Use(auth.RevocationMiddleware(revocation))
 
 			r.Get("/auth/me", h.Me)
 			r.Get("/me/identities", h.GetMyIdentities)
+
+			// Personal access tokens — self-service. Restricted to interactive
+			// (JWT) sessions so a leaked API token can't mint or revoke tokens.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireInteractiveSession)
+				r.Get("/tokens", h.ListTokens)
+				r.Post("/tokens", h.CreateToken)
+				r.Delete("/tokens/{id}", h.DeleteToken)
+			})
 			r.Get("/search", h.Search)
 			r.Get("/llm/models", h.GetLLMModels)
 			r.Get("/llm/default", h.GetLLMDefault)

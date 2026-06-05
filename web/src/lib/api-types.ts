@@ -24,6 +24,31 @@ export type AuthResponse = Omit<Req<Schemas["internal_api.authResponse"]>, "user
   user: User;
 };
 
+// API (personal access) tokens. The list/create-meta payloads carry metadata
+// only — last_used_at / expires_at are genuinely optional (null = never used /
+// never expires), so they stay optional rather than going through Req<>.
+export type ApiToken = {
+  id: string;
+  name: string;
+  user_id: string;
+  created_at: string;
+  last_used_at?: string;
+  expires_at?: string;
+};
+
+export interface CreateTokenRequest {
+  name: string;
+  // RFC3339; omit for a non-expiring token.
+  expires_at?: string;
+}
+
+// Returned ONCE on creation. `token` is the plaintext secret — never
+// retrievable again.
+export interface CreateTokenResponse {
+  token: string;
+  meta: ApiToken;
+}
+
 export interface HealthResponse {
   status: string;
   setup_required?: boolean;

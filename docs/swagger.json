@@ -2293,6 +2293,117 @@
                 }
             }
         },
+        "/tokens": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns token metadata only — never the secret.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "List the current user's API tokens",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_muty_nexus_internal_model.APIToken"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Mints a long-lived personal access token. The plaintext token is returned ONCE and never again. expires_at is optional (omit for a non-expiring token).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Create an API token for the current user",
+                "parameters": [
+                    {
+                        "description": "Token details",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.createTokenRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.createTokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/tokens/{id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Deletes one of the caller's tokens. Non-owners get 404 so token existence doesn't leak across users.",
+                "tags": [
+                    "tokens"
+                ],
+                "summary": "Revoke an API token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Token UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/users": {
             "get": {
                 "security": [
@@ -2460,6 +2571,29 @@
         }
     },
     "definitions": {
+        "github_com_muty_nexus_internal_model.APIToken": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_muty_nexus_internal_model.BinaryStoreStats": {
             "type": "object",
             "properties": {
@@ -3252,6 +3386,29 @@
                 }
             }
         },
+        "internal_api.createTokenRequest": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "description": "ExpiresAt is optional; nil/omitted means the token never expires.",
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.createTokenResponse": {
+            "type": "object",
+            "properties": {
+                "meta": {
+                    "$ref": "#/definitions/github_com_muty_nexus_internal_model.APIToken"
+                },
+                "token": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_api.createUserRequest": {
             "type": "object",
             "properties": {
@@ -3709,7 +3866,7 @@
     },
     "securityDefinitions": {
         "BearerAuth": {
-            "description": "Type \"Bearer \" followed by the JWT returned from /auth/login.",
+            "description": "Type \"Bearer \" followed by either a JWT from /auth/login or a personal access token (nexus_pat_...) from /tokens. The \"Bearer \" prefix is required; it is sent as the Authorization header verbatim.",
             "type": "apiKey",
             "name": "Authorization",
             "in": "header"
