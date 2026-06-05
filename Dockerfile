@@ -21,7 +21,12 @@ RUN CGO_ENABLED=0 go build -o /nexus ./cmd/nexus
 
 # Stage 3: Runtime
 FROM alpine:3.23
-RUN apk add --no-cache ca-certificates
+# tini is a minimal init that runs as PID 1: it reaps zombie processes and
+# forwards signals to the app. Without it, /nexus runs as PID 1 and a Go
+# binary doesn't reap orphaned children — e.g. a Docker HEALTHCHECK using
+# BusyBox `wget https://…` forks an `ssl_client` TLS helper that orphans to
+# PID 1, accumulating <defunct> processes (~1 per healthcheck interval).
+RUN apk add --no-cache ca-certificates tini
 COPY --from=backend-builder /nexus /nexus
 EXPOSE 8080
-ENTRYPOINT ["/nexus"]
+ENTRYPOINT ["/sbin/tini", "--", "/nexus"]
