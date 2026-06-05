@@ -67,42 +67,51 @@ func bearerOrQueryToken(r *http.Request, allowQueryToken bool) (token string, ok
 func authMiddleware(secret []byte, allowQueryToken bool, apiTokens APITokenValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenString, ok := bearerOrQueryToken(r, allowQueryToken)
+			ctx, ok := resolveAuthContext(w, r, secret, allowQueryToken, apiTokens)
 			if !ok {
-				http.Error(w, `{"error":"invalid authorization header"}`, http.StatusUnauthorized)
 				return
 			}
-			if tokenString == "" {
-				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
-				return
-			}
-
-			// Long-lived API tokens carry a distinct prefix and are validated
-			// against the api_tokens table (their own revocation = row
-			// existence + expiry), so they bypass the token_version path that
-			// RevocationMiddleware applies to JWTs.
-			if apiTokens != nil && LooksLikeAPIToken(tokenString) {
-				claims, err := apiTokens(r.Context(), tokenString)
-				if err != nil {
-					http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
-					return
-				}
-				ctx := context.WithValue(r.Context(), claimsKey, claims)
-				ctx = context.WithValue(ctx, apiTokenKey, true)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
-			claims, err := ParseToken(secret, tokenString)
-			if err != nil {
-				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
-				return
-			}
-
-			ctx := context.WithValue(r.Context(), claimsKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// resolveAuthContext validates the request's bearer credential and returns a
+// context carrying the resolved Claims. On failure it writes the 401 response
+// and returns ok=false. Kept as a flat top-level function (rather than inline
+// in the middleware's nested closure) so the auth-vs-token branching stays
+// readable and within the cognitive-complexity budget.
+func resolveAuthContext(w http.ResponseWriter, r *http.Request, secret []byte, allowQueryToken bool, apiTokens APITokenValidator) (context.Context, bool) {
+	tokenString, ok := bearerOrQueryToken(r, allowQueryToken)
+	if !ok {
+		http.Error(w, `{"error":"invalid authorization header"}`, http.StatusUnauthorized)
+		return nil, false
+	}
+	if tokenString == "" {
+		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+		return nil, false
+	}
+
+	// Long-lived API tokens carry a distinct prefix and are validated against
+	// the api_tokens table (their own revocation = row existence + expiry), so
+	// they bypass the token_version path that RevocationMiddleware applies to
+	// JWTs.
+	if apiTokens != nil && LooksLikeAPIToken(tokenString) {
+		claims, err := apiTokens(r.Context(), tokenString)
+		if err != nil {
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+			return nil, false
+		}
+		ctx := context.WithValue(r.Context(), claimsKey, claims)
+		return context.WithValue(ctx, apiTokenKey, true), true
+	}
+
+	claims, err := ParseToken(secret, tokenString)
+	if err != nil {
+		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+		return nil, false
+	}
+	return context.WithValue(r.Context(), claimsKey, claims), true
 }
 
 // IsAPIToken reports whether the request was authenticated with a long-lived

@@ -47,7 +47,7 @@ type createTokenResponse struct {
 func (h *handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
 	if claims == nil {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
+		writeError(w, http.StatusUnauthorized, errNotAuthenticated)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (h *handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 func (h *handler) ListTokens(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
 	if claims == nil {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
+		writeError(w, http.StatusUnauthorized, errNotAuthenticated)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *handler) ListTokens(w http.ResponseWriter, r *http.Request) {
 func (h *handler) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	claims := auth.UserFromContext(r.Context())
 	if claims == nil {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
+		writeError(w, http.StatusUnauthorized, errNotAuthenticated)
 		return
 	}
 

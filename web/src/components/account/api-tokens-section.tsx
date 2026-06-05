@@ -70,7 +70,7 @@ export function ApiTokensSection() {
             <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11.5px] text-foreground">
               Authorization: Bearer …
             </code>
-            . Treat each like a password.
+            {". Treat each like a password."}
           </p>
         </div>
         <Button
@@ -86,21 +86,11 @@ export function ApiTokensSection() {
       </header>
 
       <div className="border-t border-border/70">
-        {isPending ? (
-          <TokenListSkeleton />
-        ) : tokens.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <ul>
-            {tokens.map((tok) => (
-              <TokenRow
-                key={tok.id}
-                token={tok}
-                onRevoke={() => setRevokeTarget(tok)}
-              />
-            ))}
-          </ul>
-        )}
+        <TokenListBody
+          isPending={isPending}
+          tokens={tokens}
+          onRevoke={setRevokeTarget}
+        />
       </div>
 
       {createOpen && (
@@ -139,6 +129,26 @@ export function ApiTokensSection() {
         />
       )}
     </section>
+  );
+}
+
+function TokenListBody({
+  isPending,
+  tokens,
+  onRevoke,
+}: Readonly<{
+  isPending: boolean;
+  tokens: ApiToken[];
+  onRevoke: (token: ApiToken) => void;
+}>) {
+  if (isPending) return <TokenListSkeleton />;
+  if (tokens.length === 0) return <EmptyState />;
+  return (
+    <ul>
+      {tokens.map((tok) => (
+        <TokenRow key={tok.id} token={tok} onRevoke={() => onRevoke(tok)} />
+      ))}
+    </ul>
   );
 }
 
