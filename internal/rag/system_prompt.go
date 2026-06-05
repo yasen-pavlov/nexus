@@ -1,5 +1,7 @@
 package rag
 
+import "time"
+
 // systemPromptDefault is the default system prompt for Phase 2+. It
 // instructs the model to ground answers in supplied documents and
 // emit [N] citation markers — the orchestrator's parser turns those
@@ -30,4 +32,26 @@ Documents may be in English, German, or Bulgarian. Answer in the user's language
 When you need information that is not in the provided documents, you may call the nexus_search tool. ` +
 	`Use it sparingly — only when the current evidence is genuinely insufficient. After receiving ` +
 	`new search results, treat them as additional documents you may cite by index just like the ` +
-	`originals.`
+	`originals.
+
+The user's data spans multiple channels: email, Telegram, Paperless documents, and files. When the ` +
+	`user asks broadly about their "communications" or "messages" without naming a channel, search ACROSS ` +
+	`channels — never restrict to a single source. If the evidence you have is dominated by one channel ` +
+	`(e.g. all email), run an additional nexus_search for the others (e.g. sources: ["telegram"]) before ` +
+	`answering, so no channel is silently dropped.
+
+A line at the end of this prompt states the current date. When the user refers to a relative time window ` +
+	`("the last 2 days", "yesterday", "this week"), compute the concrete calendar dates from that current ` +
+	`date and pass them as date_from / date_to to nexus_search. Do not rely on keyword matching for dates, ` +
+	`and never infer today's date from the documents — the documents may be older than today.`
+
+// dateContextLine grounds the model in the current date so it can resolve
+// relative time windows ("last 2 days", "yesterday") into concrete calendar
+// dates and set nexus_search's date_from/date_to. Without it the model has no
+// notion of "today" and infers it (wrongly) from retrieved documents. Uses the
+// process-local timezone (set via TZ in the deployment), and includes the ISO
+// form because that's the format the date filters expect.
+func dateContextLine(now time.Time) string {
+	return "Current date: " + now.Format("Monday, 2 January 2006") +
+		" (" + now.Format("MST") + ", ISO " + now.Format("2006-01-02") + ")."
+}
