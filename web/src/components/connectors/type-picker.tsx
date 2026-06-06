@@ -4,15 +4,27 @@ import { cn } from "@/lib/utils";
 import { ConnectorLogo } from "./connector-logo";
 import { connectorTypeLabel } from "./connector-labels";
 
-export type ConnectorTypeKey = "filesystem" | "imap" | "paperless" | "telegram";
+export type ConnectorTypeKey =
+  | "filesystem"
+  | "imap"
+  | "paperless"
+  | "telegram"
+  | "ical";
 
-const TYPE_ORDER: ConnectorTypeKey[] = ["filesystem", "imap", "paperless", "telegram"];
+const TYPE_ORDER: ConnectorTypeKey[] = [
+  "filesystem",
+  "imap",
+  "paperless",
+  "telegram",
+  "ical",
+];
 
 const TYPE_TAGLINE: Record<ConnectorTypeKey, string> = {
   filesystem: "Notes, markdown, any local files",
   imap: "Mailboxes over IMAP",
   paperless: "Scanned documents & OCR",
   telegram: "Private chats, channels, media",
+  ical: "iCloud calendars over CalDAV",
 };
 
 /**
@@ -64,13 +76,13 @@ export function ConnectorTypePicker({
                   "radial-gradient(120% 120% at 0% 0%, color-mix(in oklch, var(--chip-hue) 15%, transparent), transparent 60%)",
               }}
             />
-            <div className="relative flex w-full items-center justify-between">
+            {active && (
+              <span className="absolute right-3 top-3 z-10 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-primary-foreground">
+                Selected
+              </span>
+            )}
+            <div className="relative">
               <ConnectorLogo type={t} size="lg" />
-              {active && (
-                <span className="rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-primary-foreground">
-                  Selected
-                </span>
-              )}
             </div>
             <div className="relative">
               <div className="text-[14px] font-medium text-foreground">

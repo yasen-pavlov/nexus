@@ -366,7 +366,7 @@ func (h *handler) RunRetentionSweep(w http.ResponseWriter, r *http.Request) {
 // so typos don't silently survive persistence and then go unread at search
 // time because no doc with that source_type exists.
 var rankingKnownSourceTypes = map[string]bool{
-	"imap": true, "telegram": true, "paperless": true, "filesystem": true,
+	"imap": true, "telegram": true, "paperless": true, "filesystem": true, "ical": true,
 }
 
 type rankingSettings struct {
@@ -385,7 +385,7 @@ func rankingSettingsFrom(cfg search.RankingConfig) rankingSettings {
 		SourceTrustWeight:  cfg.SourceTrustWeight,
 		MetadataBonus:      cfg.MetadataBonusEnabled,
 		SourceTrustEnabled: cfg.SourceTrustEnabled,
-		KnownSourceTypes:   []string{"imap", "telegram", "paperless", "filesystem"},
+		KnownSourceTypes:   []string{"imap", "telegram", "paperless", "filesystem", "ical"},
 	}
 }
 

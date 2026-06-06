@@ -7,6 +7,7 @@ var SensitiveFields = map[string][]string{
 	"imap":      {"password"},
 	"paperless": {"token"},
 	"telegram":  {"api_hash"},
+	"ical":      {"password"},
 }
 
 // sensitiveSettingsKeys lists exact keys in the settings table that hold

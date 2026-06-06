@@ -668,6 +668,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connectors/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discover a connector's selectable sub-resources
+         * @description Builds a connector from the posted type + config (credentials) and enumerates its selectable units (e.g. iCloud calendars) so the create/edit UI can render a picker — before the connector is saved. Returns 400 if the type doesn't support discovery, 502 if the upstream credentials fail.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            /** @description Connector type + config */
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["internal_api.discoverRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["github_com_muty_nexus_internal_connector.DiscoveredResource"][];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Upstream discovery failed */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connectors/{id}": {
         parameters: {
             query?: never;
@@ -3049,6 +3111,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        "github_com_muty_nexus_internal_connector.DiscoveredResource": {
+            id?: string;
+            meta?: {
+                [key: string]: unknown;
+            };
+            name?: string;
+        };
         "github_com_muty_nexus_internal_model.APIToken": {
             created_at?: string;
             expires_at?: string;
@@ -3416,6 +3485,12 @@ export interface components {
             password?: string;
             role?: string;
             username?: string;
+        };
+        "internal_api.discoverRequest": {
+            config?: {
+                [key: string]: unknown;
+            };
+            type?: string;
         };
         "internal_api.embeddingSettingsRequest": {
             api_key?: string;

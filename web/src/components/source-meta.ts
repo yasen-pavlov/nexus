@@ -1,4 +1,11 @@
-import { Cable, FileText, Folder, Inbox, MessageCircle } from "lucide-react";
+import {
+  Cable,
+  CalendarDays,
+  FileText,
+  Folder,
+  Inbox,
+  MessageCircle,
+} from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>;
@@ -26,6 +33,11 @@ const SOURCE_META: Record<string, SourceMeta> = {
     label: "Files",
     icon: Folder,
     colorVar: "--source-filesystem",
+  },
+  ical: {
+    label: "Calendar",
+    icon: CalendarDays,
+    colorVar: "--source-ical",
   },
 };
 

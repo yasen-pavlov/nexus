@@ -22,9 +22,9 @@ const DEFAULTS: {
   floor: Record<string, number>;
   trust: Record<string, number>;
 } = {
-  halfLife: { telegram: 14, imap: 30, filesystem: 90, paperless: 180 },
-  floor: { telegram: 0.65, imap: 0.75, filesystem: 0.85, paperless: 0.9 },
-  trust: { telegram: 0.92, imap: 0.92, filesystem: 1, paperless: 1.05 },
+  halfLife: { telegram: 14, imap: 30, filesystem: 90, paperless: 180, ical: 365 },
+  floor: { telegram: 0.65, imap: 0.75, filesystem: 0.85, paperless: 0.9, ical: 0.9 },
+  trust: { telegram: 0.92, imap: 0.92, filesystem: 1, paperless: 1.05, ical: 1 },
 };
 
 // Presets per source — "Fresh" tilts toward recent-docs-win, "Archive"
@@ -53,6 +53,11 @@ const PRESETS: Record<string, Record<string, SourceKnobs>> = {
     Fresh: { halfLife: 30, floor: 0.7, trust: 1 },
     Archive: { halfLife: 365, floor: 0.98, trust: 1.15 },
   },
+  ical: {
+    Balanced: { halfLife: 365, floor: 0.9, trust: 1 },
+    Fresh: { halfLife: 30, floor: 0.6, trust: 1 },
+    Archive: { halfLife: 730, floor: 0.97, trust: 1.05 },
+  },
 };
 
 interface SourceKnobs {
@@ -61,12 +66,13 @@ interface SourceKnobs {
   trust: number;
 }
 
-const SOURCE_ORDER = ["imap", "telegram", "paperless", "filesystem"] as const;
+const SOURCE_ORDER = ["imap", "telegram", "paperless", "filesystem", "ical"] as const;
 const SOURCE_LABEL: Record<(typeof SOURCE_ORDER)[number], string> = {
   imap: "Email (IMAP)",
   telegram: "Telegram",
   paperless: "Paperless",
   filesystem: "Filesystem",
+  ical: "Calendar (iCloud)",
 };
 
 export function RankingForm() {

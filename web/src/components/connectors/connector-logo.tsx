@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { siTelegram, siPaperlessngx } from "simple-icons";
-import { Folder, Inbox, Cable, type LucideIcon } from "lucide-react";
+import { Folder, Inbox, Cable, CalendarDays, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -11,6 +11,7 @@ const SOURCE_VAR: Record<string, string> = {
   telegram: "--source-telegram",
   paperless: "--source-paperless",
   filesystem: "--source-filesystem",
+  ical: "--source-ical",
 };
 
 function BrandSVG({ path, title, className }: Readonly<{ path: string; title: string; className?: string }>) {
@@ -49,6 +50,8 @@ export function ConnectorLogo({ type, size = "md", quiet = false, className }: R
         return <LucideMark Icon={Inbox} className={cls} />;
       case "filesystem":
         return <LucideMark Icon={Folder} className={cls} />;
+      case "ical":
+        return <LucideMark Icon={CalendarDays} className={cls} />;
       default:
         return <LucideMark Icon={Cable} className={cls} />;
     }

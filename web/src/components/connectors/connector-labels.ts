@@ -8,6 +8,8 @@ export function connectorTypeLabel(type: string): string {
       return "Paperless-ngx";
     case "telegram":
       return "Telegram";
+    case "ical":
+      return "Calendar · iCloud";
     default:
       return type;
   }

@@ -16,6 +16,7 @@ import { FilesystemFields } from "./fields/filesystem-fields";
 import { ImapFields } from "./fields/imap-fields";
 import { PaperlessFields } from "./fields/paperless-fields";
 import { TelegramFields } from "./fields/telegram-fields";
+import { ICalFields } from "./fields/ical-fields";
 
 /* ---------------- schemas ---------------- */
 
@@ -57,11 +58,20 @@ const telegramConfigSchema = z.object({
   sync_since: z.string().optional(),
 });
 
+const icalConfigSchema = z.object({
+  username: z.string().min(1, "Apple ID is required"),
+  password: z.string().min(1, "App-specific password is required"),
+  endpoint: z.string().optional(),
+  calendars: z.array(z.string()).optional(),
+  sync_since: z.string().optional(),
+});
+
 const formSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("filesystem"), config: filesystemConfigSchema, ...commonSchema.shape }),
   z.object({ type: z.literal("imap"), config: imapConfigSchema, ...commonSchema.shape }),
   z.object({ type: z.literal("paperless"), config: paperlessConfigSchema, ...commonSchema.shape }),
   z.object({ type: z.literal("telegram"), config: telegramConfigSchema, ...commonSchema.shape }),
+  z.object({ type: z.literal("ical"), config: icalConfigSchema, ...commonSchema.shape }),
 ]);
 
 export type ConnectorFormValues = z.infer<typeof formSchema>;
@@ -87,6 +97,8 @@ function defaultConfigFor(type: string) {
       return { url: "", token: "" };
     case "telegram":
       return { api_id: 0, api_hash: "", phone: "", chat_filter: "" };
+    case "ical":
+      return { username: "", password: "", calendars: [] };
     default:
       return {};
   }
@@ -102,6 +114,8 @@ function suggestedName(type: string) {
       return "paperless";
     case "telegram":
       return "telegram";
+    case "ical":
+      return "calendar";
     default:
       return "";
   }
@@ -211,6 +225,7 @@ export function ConnectorForm({
             {type === "imap" && <ImapFields mode={mode} />}
             {type === "paperless" && <PaperlessFields mode={mode} />}
             {type === "telegram" && <TelegramFields mode={mode} />}
+            {type === "ical" && <ICalFields mode={mode} />}
           </FormSection>
 
           <FormSection
