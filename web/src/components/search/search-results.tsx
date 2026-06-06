@@ -148,53 +148,58 @@ export function SearchResults({ params }: Readonly<Props>) {
     );
   }
 
-  if (hits.length === 0) {
-    return <NoResultsState query={query} />;
-  }
-
+  // Filters stay mounted even with zero results so the user can loosen the
+  // very filter that produced the empty page (otherwise the chips vanish and
+  // the only way back is resetting the whole search).
   return (
     <div className="flex flex-col gap-4">
       <SearchFilters params={params} facets={facets} />
 
-      <div className="text-[12px] text-muted-foreground">
-        <span className="tabular-nums text-foreground">{total}</span>
-        <span className="ml-1">result{total === 1 ? "" : "s"} for</span>{" "}
-        <span className="text-foreground">&ldquo;{query}&rdquo;</span>
-      </div>
+      {hits.length === 0 ? (
+        <NoResultsState query={query} />
+      ) : (
+        <>
+          <div className="text-[12px] text-muted-foreground">
+            <span className="tabular-nums text-foreground">{total}</span>
+            <span className="ml-1">result{total === 1 ? "" : "s"} for</span>{" "}
+            <span className="text-foreground">&ldquo;{query}&rdquo;</span>
+          </div>
 
-      <div className="flex flex-col gap-3">
-        {hits.map((hit) => (
-          <ResultCard
-            key={hit.id}
-            hit={hit}
-            onOpenChat={openChat}
-            onDownload={doDownload}
-            onAttachmentDownload={doAttachmentDownload}
-            onNavigateRelated={openRelated}
-          />
-        ))}
-      </div>
+          <div className="flex flex-col gap-3">
+            {hits.map((hit) => (
+              <ResultCard
+                key={hit.id}
+                hit={hit}
+                onOpenChat={openChat}
+                onDownload={doDownload}
+                onAttachmentDownload={doAttachmentDownload}
+                onNavigateRelated={openRelated}
+              />
+            ))}
+          </div>
 
-      {hasNextPage && (
-        <div className="flex justify-center py-4">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              fetchNextPage();
-            }}
-            disabled={isFetchingNextPage}
-          >
-            {isFetchingNextPage ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
-                Loading…
-              </>
-            ) : (
-              "Load more"
-            )}
-          </Button>
-        </div>
+          {hasNextPage && (
+            <div className="flex justify-center py-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  fetchNextPage();
+                }}
+                disabled={isFetchingNextPage}
+              >
+                {isFetchingNextPage ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />
+                    Loading…
+                  </>
+                ) : (
+                  "Load more"
+                )}
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

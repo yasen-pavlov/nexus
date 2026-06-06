@@ -47,13 +47,28 @@ export function SearchFilters({ params, facets }: Readonly<Props>) {
 
   const sourceTypeFacets = facets?.source_type ?? [];
   const sourceNameFacets = facets?.source_name ?? [];
-  // Only show connector facets when they add information beyond source_type.
-  const showConnectorFacets =
-    sourceNameFacets.length > sourceTypeFacets.length;
 
   const activeSources = params.sources ?? [];
   const activeNames = params.source_names ?? [];
   const hasDate = !!params.date_from || !!params.date_to;
+
+  // A zero-result page comes back with empty facet aggregations, which would
+  // drop the very chips the user needs to toggle off. Re-add any active
+  // filter that's missing from the facets (countless — there's nothing to
+  // count) so it stays selectable.
+  const mergeActive = (
+    facetList: Facet[],
+    active: string[],
+  ): { value: string; count?: number }[] => [
+    ...facetList,
+    ...active
+      .filter((v) => !facetList.some((f) => f.value === v))
+      .map((value) => ({ value, count: undefined })),
+  ];
+  const sourceTypeChips = mergeActive(sourceTypeFacets, activeSources);
+  const sourceNameChips = mergeActive(sourceNameFacets, activeNames);
+  // Only show connector chips when they add information beyond source_type.
+  const showConnectorFacets = sourceNameChips.length > sourceTypeChips.length;
 
   const update = (next: Partial<SearchParams>) =>
     navigate({ search: { ...params, ...next }, replace: true });
@@ -111,7 +126,7 @@ export function SearchFilters({ params, facets }: Readonly<Props>) {
     });
 
   if (
-    sourceTypeFacets.length === 0 &&
+    sourceTypeChips.length === 0 &&
     !showConnectorFacets &&
     !hasAnyFilter(params)
   ) {
@@ -122,7 +137,7 @@ export function SearchFilters({ params, facets }: Readonly<Props>) {
     <div className="flex flex-wrap items-center gap-2">
       {/* Source-type facets — colored pills. The one place in the app where
           source color chips shine as selectable filters. */}
-      {sourceTypeFacets.map((f) => {
+      {sourceTypeChips.map((f) => {
         const active = activeSources.includes(f.value);
         return (
           <button
@@ -146,7 +161,7 @@ export function SearchFilters({ params, facets }: Readonly<Props>) {
       {/* Connector (source_name) facets — neutral pills so they don't
           fight the colored source pills for attention. */}
       {showConnectorFacets &&
-        sourceNameFacets.map((f) => {
+        sourceNameChips.map((f) => {
           const active = activeNames.includes(f.value);
           return (
             <button
@@ -162,16 +177,18 @@ export function SearchFilters({ params, facets }: Readonly<Props>) {
               )}
             >
               <span>{f.value}</span>
-              <span
-                className={cn(
-                  "tabular-nums",
-                  active
-                    ? "text-primary/80"
-                    : "text-muted-foreground/70",
-                )}
-              >
-                {f.count}
-              </span>
+              {f.count !== undefined && (
+                <span
+                  className={cn(
+                    "tabular-nums",
+                    active
+                      ? "text-primary/80"
+                      : "text-muted-foreground/70",
+                  )}
+                >
+                  {f.count}
+                </span>
+              )}
             </button>
           );
         })}
