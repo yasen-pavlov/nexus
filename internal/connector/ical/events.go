@@ -107,6 +107,13 @@ func (c *Connector) overrideDocument(ev ical.Event, href, calPath, calName strin
 func eventStart(ev ical.Event) time.Time { return eventTime(ev, ical.PropDateTimeStart) }
 func eventEnd(ev ical.Event) time.Time   { return eventTime(ev, ical.PropDateTimeEnd) }
 
+// isAllDay reports whether DTSTART is a date-only value (VALUE=DATE), i.e. the
+// event spans whole days rather than a clock-time range.
+func isAllDay(ev ical.Event) bool {
+	p := ev.Props.Get(ical.PropDateTimeStart)
+	return p != nil && strings.EqualFold(p.Params.Get("VALUE"), "DATE")
+}
+
 func eventTime(ev ical.Event, prop string) time.Time {
 	if t, err := ev.Props.DateTime(prop, loc); err == nil && !t.IsZero() {
 		return t
@@ -154,6 +161,15 @@ func (c *Connector) eventMetadata(ev ical.Event, calName, calPath string, recurr
 	}
 	if uid, _ := ev.Props.Text(ical.PropUID); uid != "" {
 		meta["uid"] = uid
+	}
+	// The event's own description, kept separate from Content (which also
+	// carries machine-formatted When/Where lines for retrieval) so the UI can
+	// render a clean human description without the structured footer.
+	if desc, _ := ev.Props.Text(ical.PropDescription); desc != "" {
+		meta["description"] = desc
+	}
+	if isAllDay(ev) {
+		meta["all_day"] = true
 	}
 	if loc, _ := ev.Props.Text(ical.PropLocation); loc != "" {
 		meta["location"] = loc

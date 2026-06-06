@@ -245,6 +245,25 @@ func TestServer_TruncationGuard(t *testing.T) {
 	}
 }
 
+// TestServer_FetchUsesDisplayName verifies that synced event documents carry
+// the calendar's CalDAV display name ("Work") rather than the opaque last path
+// segment ("work") — the fix for iCloud calendars whose URLs end in a UUID.
+func TestServer_FetchUsesDisplayName(t *testing.T) {
+	b := &fakeBackend{objects: []caldav.CalendarObject{
+		makeObject(t, fakeCalPath+"e1.ics", "etag-1",
+			"BEGIN:VEVENT", "UID:e1", "DTSTAMP:20260101T000000Z", "SUMMARY:Lunch", "DTSTART:20260610T120000Z", "END:VEVENT"),
+	}}
+	c := newFakeServer(t, b)
+
+	docs, _, _ := collectFetch(t, c, nil)
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(docs))
+	}
+	if docs[0].Metadata["calendar"] != "Work" {
+		t.Errorf("calendar meta = %v, want display name %q (not the path segment)", docs[0].Metadata["calendar"], "Work")
+	}
+}
+
 func TestServer_EmptySelectionClears(t *testing.T) {
 	c := newFakeServer(t, &fakeBackend{})
 	c.calendars = nil // nothing selected

@@ -11,6 +11,7 @@ import { AttachmentCardBody } from "./cards/attachment";
 import { TelegramCardBody } from "./cards/telegram";
 import { PaperlessCardBody } from "./cards/paperless";
 import { FilesystemCardBody } from "./cards/filesystem";
+import { CalendarCardBody } from "./cards/calendar";
 import { DefaultCardBody } from "./cards/default";
 import { RelatedFooter } from "./related-footer";
 
@@ -46,6 +47,13 @@ export function ResultCard({
   const hasExternal = hit.url && !hit.url.startsWith("file://");
   const relatedCount = hit.related_count ?? 0;
   const sourceLabel = sourceMetaFor(hit.source_type).label;
+  // Avoid "Calendar · Calendar" when a connector is named after its own type;
+  // the connector name only earns the suffix when it adds information.
+  const chipLabel =
+    hit.source_name &&
+    hit.source_name.toLowerCase() !== sourceLabel.toLowerCase()
+      ? `${sourceLabel} · ${hit.source_name}`
+      : sourceLabel;
 
   // Telegram result cards own their own body layout: match mode
   // renders a pinpoint message row, semantic-fallback renders a
@@ -65,7 +73,8 @@ export function ResultCard({
   const cardOwnsSnippet =
     hit.source_type === "imap" ||
     hit.source_type === "paperless" ||
-    hit.source_type === "filesystem";
+    hit.source_type === "filesystem" ||
+    hit.source_type === "ical";
 
   let snippet: ReactNode = null;
   if (hit.headline) {
@@ -96,10 +105,7 @@ export function ResultCard({
     >
       <div className="flex flex-col gap-2 p-4">
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-          <SourceChip
-            type={hit.source_type}
-            label={`${sourceLabel} · ${hit.source_name}`}
-          />
+          <SourceChip type={hit.source_type} label={chipLabel} />
           <time
             className="tabular-nums"
             dateTime={hit.created_at}
@@ -206,6 +212,8 @@ function CardBody({
       return <PaperlessCardBody hit={hit} onDownload={onDownload} />;
     case "filesystem":
       return <FilesystemCardBody hit={hit} onDownload={onDownload} />;
+    case "ical":
+      return <CalendarCardBody hit={hit} />;
     default:
       return <DefaultCardBody hit={hit} />;
   }

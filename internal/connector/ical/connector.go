@@ -226,6 +226,38 @@ func calendarName(cal caldav.Calendar) string {
 	return strings.Trim(cal.Path, "/")
 }
 
+// calendarDisplayNames resolves selected calendar paths to their CalDAV
+// display names. iCloud calendar URLs end in an opaque UUID, so a path's last
+// segment is not human-readable; the display name (what the user sees in the
+// Calendar app) lives in the calendar's DAV:displayname. Best-effort: on any
+// failure callers fall back to the path's last segment, so a transient
+// discovery error never aborts a sync.
+func (c *Connector) calendarDisplayNames(ctx context.Context) map[string]string {
+	client, err := c.caldavClient()
+	if err != nil {
+		return nil
+	}
+	principal, err := client.FindCurrentUserPrincipal(ctx)
+	if err != nil {
+		return nil
+	}
+	homeSet, err := client.FindCalendarHomeSet(ctx, principal)
+	if err != nil {
+		return nil
+	}
+	cals, err := client.FindCalendars(ctx, homeSet)
+	if err != nil {
+		return nil
+	}
+	names := make(map[string]string, len(cals))
+	for i := range cals {
+		if n := cals[i].Name; n != "" {
+			names[cals[i].Path] = n
+		}
+	}
+	return names
+}
+
 // Fetch streams calendar events with ETag-diff incremental sync. See the
 // package doc for the strategy.
 func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan model.FetchItem, <-chan error) {
@@ -260,6 +292,10 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 		prev = manifest{}
 	}
 
+	// Resolve human display names for the selected calendars once per sync
+	// (best-effort — falls back to the path's last segment per calendar).
+	names := c.calendarDisplayNames(ctx)
+
 	next := manifest{}
 	var allSourceIDs []string
 	emitted := 0
@@ -268,12 +304,16 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if !emitItem(ctx, items, model.FetchItem{Scope: strPtr(calShort(calPath))}) {
+		calName := names[calPath]
+		if calName == "" {
+			calName = calShort(calPath)
+		}
+		if !emitItem(ctx, items, model.FetchItem{Scope: strPtr(calName)}) {
 			return ctx.Err()
 		}
-		calState, sids, err := c.syncCalendar(ctx, calPath, prev[calPath], items, &emitted)
+		calState, sids, err := c.syncCalendar(ctx, calPath, calName, prev[calPath], items, &emitted)
 		if err != nil {
-			return fmt.Errorf("ical: sync calendar %s: %w", calShort(calPath), err)
+			return fmt.Errorf("ical: sync calendar %s: %w", calName, err)
 		}
 		next[calPath] = calState
 		allSourceIDs = append(allSourceIDs, sids...)
@@ -338,7 +378,7 @@ func suspiciousShrink(prev manifest, current []string) bool {
 // objects, and the library treats that 404 as fatal. An etag-only
 // calendar-query is universally iCloud-compatible; a plain GET fetches the
 // raw .ics with no XML negotiation.
-func (c *Connector) syncCalendar(ctx context.Context, calPath string, prev map[string]string, items chan<- model.FetchItem, emitted *int) (map[string]string, []string, error) {
+func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, prev map[string]string, items chan<- model.FetchItem, emitted *int) (map[string]string, []string, error) {
 	etags, err := c.listCalendarETags(ctx, calPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list calendar: %w", err)
@@ -346,7 +386,6 @@ func (c *Connector) syncCalendar(ctx context.Context, calPath string, prev map[s
 
 	state := make(map[string]string, len(etags))
 	hrefs := make([]string, 0, len(etags))
-	calName := calShort(calPath)
 	for href, etag := range etags {
 		hrefs = append(hrefs, href) // authoritative existence — enumerate regardless of GET
 

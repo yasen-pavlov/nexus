@@ -73,6 +73,12 @@ func TestEventsToDocuments_OneOff(t *testing.T) {
 	if !strings.Contains(d.Content, "Regular checkup") || !strings.Contains(d.Content, "123 Main St") {
 		t.Errorf("content missing description/location: %q", d.Content)
 	}
+	if d.Metadata["description"] != "Regular checkup" {
+		t.Errorf("description meta = %v, want %q", d.Metadata["description"], "Regular checkup")
+	}
+	if _, ok := d.Metadata["all_day"]; ok {
+		t.Errorf("timed event should not carry all_day, got %v", d.Metadata["all_day"])
+	}
 	if recurring, _ := d.Metadata["recurring"].(bool); recurring {
 		t.Error("one-off should not be recurring")
 	}
@@ -185,6 +191,25 @@ func TestEventsToDocuments_OrganizerAttendeesStatus(t *testing.T) {
 	if !strings.Contains(d.Content, "Organizer: Alice Boss") ||
 		!strings.Contains(d.Content, "Attendees: Bob Dev, carol@example.com") {
 		t.Errorf("content missing organizer/attendees lines: %q", d.Content)
+	}
+}
+
+func TestEventsToDocuments_AllDay(t *testing.T) {
+	c := testConnector(time.Time{})
+	cal := ics(
+		"BEGIN:VEVENT",
+		"UID:holiday-1",
+		"SUMMARY:Public holiday",
+		"DTSTART;VALUE=DATE:20260610",
+		"DTEND;VALUE=DATE:20260611",
+		"END:VEVENT",
+	)
+	docs := c.eventsToDocuments(cal, "/u/calendars/personal/holiday-1.ics", "/u/calendars/personal/", "personal")
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(docs))
+	}
+	if allDay, _ := docs[0].Metadata["all_day"].(bool); !allDay {
+		t.Errorf("VALUE=DATE event should be flagged all_day, got %v", docs[0].Metadata["all_day"])
 	}
 }
 

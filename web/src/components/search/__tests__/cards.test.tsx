@@ -8,6 +8,7 @@ import { AttachmentCardBody } from "../cards/attachment";
 import { TelegramCardBody } from "../cards/telegram";
 import { PaperlessCardBody } from "../cards/paperless";
 import { FilesystemCardBody } from "../cards/filesystem";
+import { CalendarCardBody } from "../cards/calendar";
 import { DefaultCardBody } from "../cards/default";
 
 function baseHit(overrides: Partial<DocumentHit>): DocumentHit {
@@ -526,6 +527,120 @@ describe("FilesystemCardBody", () => {
       />,
     );
     expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
+  });
+});
+
+describe("CalendarCardBody", () => {
+  function calHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
+    return baseHit({
+      source_type: "ical",
+      source_name: "Calendar",
+      title: "Standup",
+      // Noon UTC keeps the rendered weekday stable across runner timezones.
+      created_at: "2026-06-08T12:00:00Z",
+      ...overrides,
+    });
+  }
+
+  it("renders a recurring event: recurrence, location, guests, and calendar tag", () => {
+    render(
+      <CalendarCardBody
+        hit={calHit({
+          metadata: {
+            calendar: "Family",
+            recurring: true,
+            rrule: "FREQ=WEEKLY",
+            dtstart: "2026-04-20T15:00:00Z",
+            dtend: "2026-04-20T16:00:00Z",
+            next_occurrence: "2026-06-08T12:00:00Z",
+            location: "Rather Markt 2\nDüsseldorf, Germany",
+            attendees: ["Alice", "Bob", "Carol"],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(
+      screen.getByText("Rather Markt 2, Düsseldorf, Germany"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("3 guests")).toBeInTheDocument();
+    expect(screen.getByText("Family")).toBeInTheDocument();
+  });
+
+  it("renders 'Every 2 weeks' for an interval rule", () => {
+    render(
+      <CalendarCardBody
+        hit={calHit({
+          metadata: {
+            recurring: true,
+            rrule: "FREQ=WEEKLY;INTERVAL=2",
+            dtstart: "2026-06-08T12:00:00Z",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Every 2 weeks")).toBeInTheDocument();
+  });
+
+  it("renders 'All day' for a date-only event instead of a time range", () => {
+    render(
+      <CalendarCardBody
+        hit={calHit({
+          metadata: {
+            all_day: true,
+            dtstart: "2026-06-08T00:00:00Z",
+            dtend: "2026-06-09T00:00:00Z",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("All day")).toBeInTheDocument();
+  });
+
+  it("renders the event description (single guest, no attendees → organizer)", () => {
+    render(
+      <CalendarCardBody
+        hit={calHit({
+          metadata: {
+            dtstart: "2026-06-08T12:00:00Z",
+            description: "Bring the signed contract",
+            organizer: "Dana Lead",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Bring the signed contract")).toBeInTheDocument();
+    expect(screen.getByText("Dana Lead")).toBeInTheDocument();
+  });
+
+  it("shows a Cancelled badge for cancelled events", () => {
+    render(
+      <CalendarCardBody
+        hit={calHit({
+          metadata: {
+            calendar: "Work",
+            status: "CANCELLED",
+            dtstart: "2026-06-08T12:00:00Z",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
+  });
+
+  it("does not leak the machine content/headline as a snippet", () => {
+    const { container } = render(
+      <CalendarCardBody
+        hit={calHit({
+          content: "When: 2026-06-08...\nWhere: somewhere",
+          headline: "When: <em>2026</em>",
+          metadata: { dtstart: "2026-06-08T12:00:00Z" },
+        })}
+      />,
+    );
+    // No <em> highlight, and the machine "When:" footer never renders.
+    expect(container.querySelector("em")).toBeNull();
+    expect(screen.queryByText(/When:/)).toBeNull();
   });
 });
 
