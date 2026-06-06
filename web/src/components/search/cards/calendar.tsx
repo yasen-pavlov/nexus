@@ -126,10 +126,14 @@ export function CalendarCardBody({ hit }: Readonly<Props>) {
       : "";
   const recurrence = recurring ? humanizeRRULE(str(m.rrule)) : null;
 
-  // Collapse line breaks (plus any surrounding spaces/tabs) into ", ".
-  // The classes around the line break exclude \r\n so the quantifiers can't
-  // overlap the separator — keeps the match linear (no ReDoS backtracking).
-  const location = str(m.location)?.replace(/[^\S\r\n]*[\r\n]+[^\S\r\n]*/g, ", ");
+  // Collapse line breaks into ", " via string ops (no regex — keeps it linear
+  // and sidesteps any ReDoS concern). trim() drops \r and surrounding spaces;
+  // filter(Boolean) collapses blank-line runs.
+  const location = str(m.location)
+    ?.split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(", ");
   const attendees = strArr(m.attendees);
   const organizer = str(m.organizer);
 
