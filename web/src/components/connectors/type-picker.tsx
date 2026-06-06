@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { Check } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { ConnectorLogo } from "./connector-logo";
@@ -77,8 +78,11 @@ export function ConnectorTypePicker({
               }}
             />
             {active && (
-              <span className="absolute right-3 top-3 z-10 rounded-full bg-primary/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-primary-foreground">
-                Selected
+              <span
+                aria-hidden
+                className="absolute right-3 top-3 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm ring-2 ring-card"
+              >
+                <Check className="h-3 w-3" strokeWidth={3} />
               </span>
             )}
             <div className="relative">
