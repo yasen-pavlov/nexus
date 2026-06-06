@@ -593,6 +593,60 @@ const docTemplate = `{
                 }
             }
         },
+        "/connectors/discover": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Builds a connector from the posted type + config (credentials) and enumerates its selectable units (e.g. iCloud calendars) so the create/edit UI can render a picker — before the connector is saved. Returns 400 if the type doesn't support discovery, 502 if the upstream credentials fail.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "connectors"
+                ],
+                "summary": "Discover a connector's selectable sub-resources",
+                "parameters": [
+                    {
+                        "description": "Connector type + config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.discoverRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/github_com_muty_nexus_internal_connector.DiscoveredResource"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Upstream discovery failed",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/connectors/{id}": {
             "get": {
                 "security": [
@@ -2578,6 +2632,21 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "github_com_muty_nexus_internal_connector.DiscoveredResource": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
         "github_com_muty_nexus_internal_model.APIToken": {
             "type": "object",
             "properties": {
@@ -3426,6 +3495,18 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_api.discoverRequest": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "type": {
                     "type": "string"
                 }
             }

@@ -158,6 +158,7 @@ func NewRouter(
 			r.Route("/connectors", func(r chi.Router) {
 				r.Get("/", h.ListConnectors)
 				r.Post("/", h.CreateConnector)
+				r.Post("/discover", h.DiscoverConnectorResources)
 				r.Get("/{id}", h.GetConnector)
 				r.Put("/{id}", h.UpdateConnector)
 				r.Delete("/{id}", h.DeleteConnector)

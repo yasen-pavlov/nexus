@@ -1,5 +1,15 @@
 basePath: /api
 definitions:
+  github_com_muty_nexus_internal_connector.DiscoveredResource:
+    properties:
+      id:
+        type: string
+      meta:
+        additionalProperties: {}
+        type: object
+      name:
+        type: string
+    type: object
   github_com_muty_nexus_internal_model.APIToken:
     properties:
       created_at:
@@ -620,6 +630,14 @@ definitions:
       role:
         type: string
       username:
+        type: string
+    type: object
+  internal_api.discoverRequest:
+    properties:
+      config:
+        additionalProperties: {}
+        type: object
+      type:
         type: string
     type: object
   internal_api.embeddingSettingsRequest:
@@ -1524,6 +1542,43 @@ paths:
       summary: List sync run history for a connector
       tags:
       - sync
+  /connectors/discover:
+    post:
+      consumes:
+      - application/json
+      description: Builds a connector from the posted type + config (credentials)
+        and enumerates its selectable units (e.g. iCloud calendars) so the create/edit
+        UI can render a picker — before the connector is saved. Returns 400 if the
+        type doesn't support discovery, 502 if the upstream credentials fail.
+      parameters:
+      - description: Connector type + config
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.discoverRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/github_com_muty_nexus_internal_connector.DiscoveredResource'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+        "502":
+          description: Upstream discovery failed
+          schema:
+            $ref: '#/definitions/internal_api.APIResponse'
+      security:
+      - BearerAuth: []
+      summary: Discover a connector's selectable sub-resources
+      tags:
+      - connectors
   /conversations/{source_type}/{conversation_id}/messages:
     get:
       description: Returns Hidden=true per-message documents for a (source_type, conversation_id)

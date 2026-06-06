@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embed the IANA tz database so TZID-tagged calendar times resolve without OS tzdata (the Alpine image has none)
 
 	"github.com/google/uuid"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/muty/nexus/internal/auth"
 	"github.com/muty/nexus/internal/config"
 	_ "github.com/muty/nexus/internal/connector/filesystem" // register filesystem connector via init()
+	_ "github.com/muty/nexus/internal/connector/ical"       // register ical (CalDAV) connector via init()
 	_ "github.com/muty/nexus/internal/connector/imap"       // register imap connector via init()
 	_ "github.com/muty/nexus/internal/connector/paperless"  // register paperless connector via init()
 	_ "github.com/muty/nexus/internal/connector/telegram"   // register telegram connector via init()

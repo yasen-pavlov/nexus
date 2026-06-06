@@ -23,7 +23,11 @@ function setup(overrides: Partial<React.ComponentProps<typeof ConnectorForm>> = 
 describe("ConnectorForm — create", () => {
   it("defaults to the filesystem type with its field group", () => {
     setup();
-    expect(screen.getByRole("button", { name: /selected/i })).toBeInTheDocument();
+    // The selected tile is the pressed toggle button (selection is exposed
+    // via aria-pressed, not visible "Selected" text).
+    expect(
+      screen.getByRole("button", { pressed: true }),
+    ).toHaveAccessibleName(/filesystem/i);
     // Filesystem's root-path input rendered by default.
     expect(screen.getByLabelText(/root path/i)).toBeInTheDocument();
   });

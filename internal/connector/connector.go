@@ -81,6 +81,22 @@ type CacheConfig struct {
 	Mode string
 }
 
+// DiscoveredResource is a selectable sub-unit of a connector source (e.g. an
+// iCloud calendar, a photo album) surfaced to the configure UI so the user can
+// choose which ones to sync.
+type DiscoveredResource struct {
+	ID   string         `json:"id"`
+	Name string         `json:"name"`
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// ResourceDiscoverer is an optional capability for connectors that can
+// enumerate their selectable sub-units so the UI can render a picker. The
+// connector must be Configured (credentials set) before discovery is called.
+type ResourceDiscoverer interface {
+	DiscoverResources(ctx context.Context) ([]DiscoveredResource, error)
+}
+
 // BinaryStoreSetter is an optional capability for connectors that
 // participate in the binary cache. Connectors that accept caching (IMAP,
 // Telegram) implement this to receive the BinaryStore and their

@@ -53,18 +53,21 @@ func DefaultRankingConfig() RankingConfig {
 			"imap":       30,  // emails get stale
 			"filesystem": 90,  // files stay relevant longer
 			"paperless":  180, // documents are semi-permanent
+			"ical":       365, // calendar relevance is near-flat; future events are clamped to "now"
 		},
 		SourceRecencyFloor: map[string]float64{
 			"telegram":   0.65,
 			"imap":       0.75,
 			"filesystem": 0.85,
 			"paperless":  0.90,
+			"ical":       0.90, // an old (or upcoming) appointment is still worth finding
 		},
 		SourceTrustWeight: map[string]float64{
 			"paperless":  1.05,
 			"filesystem": 1.00,
 			"imap":       0.92,
 			"telegram":   0.92,
+			"ical":       1.00,
 		},
 		// 0.4 is the empirical cleanest cut between signal (~0.6+) and
 		// noise (~0.27-0.45) on this corpus, with a small allowance for

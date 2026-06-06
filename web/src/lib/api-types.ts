@@ -49,6 +49,14 @@ export interface CreateTokenResponse {
   meta: ApiToken;
 }
 
+// A selectable sub-resource of a connector (e.g. an iCloud calendar) returned
+// by POST /api/connectors/discover for the create/edit picker.
+export interface DiscoveredResource {
+  id: string;
+  name: string;
+  meta?: Record<string, unknown>;
+}
+
 export interface HealthResponse {
   status: string;
   setup_required?: boolean;
