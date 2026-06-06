@@ -193,6 +193,35 @@ func TestServer_FetchCancelled(t *testing.T) {
 	<-errs // a cancelled run closes errs (nil or context error both acceptable)
 }
 
+func TestRecurrenceAnchors(t *testing.T) {
+	// Open-ended weekly series: next + recent + anchor all resolve.
+	c := testConnector(time.Time{})
+	ev := event("SUMMARY:x", "DTSTART:20260601T090000Z", "RRULE:FREQ=WEEKLY")
+	anchor, next, recent, ok := c.recurrenceAnchors(ev, eventStart(ev))
+	if !ok || anchor.IsZero() || next.IsZero() || recent.IsZero() {
+		t.Fatalf("open series: ok=%v anchor=%v next=%v recent=%v", ok, anchor, next, recent)
+	}
+
+	// Bounded series entirely before a far-future sync window → no occurrence
+	// in range → ok=false.
+	cFuture := testConnector(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	bounded := event("SUMMARY:x", "DTSTART:20260601T090000Z", "RRULE:FREQ=DAILY;COUNT=3")
+	if _, _, _, ok := cFuture.recurrenceAnchors(bounded, eventStart(bounded)); ok {
+		t.Error("expected ok=false when the series ends before the sync window")
+	}
+
+	// Non-IANA TZID makes RecurrenceSet fail → occurrence math is skipped and the
+	// anchor falls back to dtstart.
+	tz := event("SUMMARY:x",
+		"DTSTART;TZID=W. Europe Standard Time:20260601T090000", "RRULE:FREQ=WEEKLY")
+	dtstart := eventStart(tz)
+	anchor, next, recent, ok = c.recurrenceAnchors(tz, dtstart)
+	if !ok || !anchor.Equal(dtstart) || !next.IsZero() || !recent.IsZero() {
+		t.Errorf("TZID fallback: ok=%v anchor=%v (want %v) next=%v recent=%v",
+			ok, anchor, dtstart, next, recent)
+	}
+}
+
 func TestValidateRequiresCredentials(t *testing.T) {
 	c := &Connector{endpoint: "https://caldav.icloud.com"}
 	if err := c.Validate(); err == nil {

@@ -252,7 +252,7 @@ func TestManifestRoundTrip(t *testing.T) {
 	}
 	// Round-trip via a SyncCursor (CursorData survives JSON as map[string]any).
 	loaded := loadManifest(&model.SyncCursor{CursorData: cur.CursorData})
-	if got := loaded["/cal/a/"]["/cal/a/e1.ics"]; got != "v1" {
+	if loaded["/cal/a/"]["/cal/a/e1.ics"] != "v1" {
 		t.Errorf("manifest round-trip lost data: %+v", loaded)
 	}
 	// A nil/empty cursor yields an empty manifest, not nil deref.

@@ -292,33 +292,9 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 		prev = manifest{}
 	}
 
-	// Resolve human display names for the selected calendars once per sync
-	// (best-effort — falls back to the path's last segment per calendar).
-	names := c.calendarDisplayNames(ctx)
-
-	next := manifest{}
-	var allSourceIDs []string
-	emitted := 0
-
-	for _, calPath := range c.calendars {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		calName := names[calPath]
-		if calName == "" {
-			calName = calShort(calPath)
-		}
-		if !emitItem(ctx, items, model.FetchItem{Scope: strPtr(calName)}) {
-			return ctx.Err()
-		}
-		calState, sids, err := c.syncCalendar(ctx, calPath, calName, prev[calPath], items, &emitted)
-		if err != nil {
-			return fmt.Errorf("ical: sync calendar %s: %w", calName, err)
-		}
-		next[calPath] = calState
-		allSourceIDs = append(allSourceIDs, sids...)
-		total := int64(len(allSourceIDs))
-		_ = emitItem(ctx, items, model.FetchItem{EstimatedTotal: &total})
+	next, allSourceIDs, err := c.syncSelectedCalendars(ctx, prev, items)
+	if err != nil {
+		return err
 	}
 
 	// Truncation guard: if a previous sync knew of many resources and this run's
@@ -331,8 +307,52 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 		return nil
 	}
 
-	// Authoritative enumeration: every SourceID still present upstream, lex
-	// sorted to match OpenSearch's source_id keyword sort.
+	if err := c.emitEnumeration(ctx, items, allSourceIDs); err != nil {
+		return err
+	}
+	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: c.newCursor(next)})
+	return nil
+}
+
+// syncSelectedCalendars syncs each selected calendar in turn, streaming docs +
+// progress through items. It returns the fresh per-calendar ETag manifest and
+// the full (unsorted) SourceID enumeration across all calendars.
+func (c *Connector) syncSelectedCalendars(ctx context.Context, prev manifest, items chan<- model.FetchItem) (manifest, []string, error) {
+	// Resolve human display names for the selected calendars once per sync
+	// (best-effort — falls back to the path's last segment per calendar).
+	names := c.calendarDisplayNames(ctx)
+
+	next := manifest{}
+	var allSourceIDs []string
+	emitted := 0
+
+	for _, calPath := range c.calendars {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		calName := names[calPath]
+		if calName == "" {
+			calName = calShort(calPath)
+		}
+		if !emitItem(ctx, items, model.FetchItem{Scope: strPtr(calName)}) {
+			return nil, nil, ctx.Err()
+		}
+		calState, sids, err := c.syncCalendar(ctx, calPath, calName, prev[calPath], items, &emitted)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ical: sync calendar %s: %w", calName, err)
+		}
+		next[calPath] = calState
+		allSourceIDs = append(allSourceIDs, sids...)
+		total := int64(len(allSourceIDs))
+		_ = emitItem(ctx, items, model.FetchItem{EstimatedTotal: &total})
+	}
+	return next, allSourceIDs, nil
+}
+
+// emitEnumeration streams the authoritative SourceID set (lex sorted to match
+// OpenSearch's source_id keyword sort) followed by the enumeration-complete
+// marker. A false from emitItem means the context was cancelled.
+func (c *Connector) emitEnumeration(ctx context.Context, items chan<- model.FetchItem, allSourceIDs []string) error {
 	sort.Strings(allSourceIDs)
 	for i := range allSourceIDs {
 		sid := allSourceIDs[i]
@@ -343,7 +363,6 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 	if !emitItem(ctx, items, model.FetchItem{EnumerationComplete: true}) {
 		return ctx.Err()
 	}
-	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: c.newCursor(next)})
 	return nil
 }
 
@@ -394,29 +413,42 @@ func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, p
 			state[href] = etag
 			continue
 		}
-		cal, err := c.getCalendarData(ctx, href)
+		fetched, err := c.fetchResource(ctx, href, calPath, calName, items, emitted)
 		if err != nil {
-			return nil, nil, fmt.Errorf("get %s: %w", href, err)
+			return nil, nil, err
 		}
-		if cal == nil {
-			// Listed but unfetchable this round (a 4xx skip — e.g. throttling).
-			// It's still enumerated above (not deleted); deliberately DON'T record
-			// its ETag, so the next sync retries the fetch instead of skipping it.
-			continue
+		if fetched {
+			state[href] = etag // fetched successfully — record so the next sync skips it
 		}
-		for _, doc := range c.eventsToDocuments(cal, href, calPath, calName) {
-			d := doc
-			if !emitItem(ctx, items, model.FetchItem{Doc: &d}) {
-				return nil, nil, ctx.Err()
-			}
-			*emitted++
-			if *emitted%checkpointEvery == 0 {
-				_ = emitItem(ctx, items, model.FetchItem{Checkpoint: c.newCursor(nil)})
-			}
-		}
-		state[href] = etag // fetched successfully — record so the next sync skips it
+		// !fetched: listed but unfetchable this round (a 4xx skip). It's still
+		// enumerated above (not deleted); deliberately DON'T record its ETag so
+		// the next sync retries the fetch instead of skipping it.
 	}
 	return state, hrefs, nil
+}
+
+// fetchResource GETs one calendar resource and streams its documents. It returns
+// fetched=false when the resource listed but couldn't be fetched this round (a
+// 4xx skip), so the caller leaves its ETag unrecorded and retries next sync.
+func (c *Connector) fetchResource(ctx context.Context, href, calPath, calName string, items chan<- model.FetchItem, emitted *int) (bool, error) {
+	cal, err := c.getCalendarData(ctx, href)
+	if err != nil {
+		return false, fmt.Errorf("get %s: %w", href, err)
+	}
+	if cal == nil {
+		return false, nil
+	}
+	for _, doc := range c.eventsToDocuments(cal, href, calPath, calName) {
+		d := doc
+		if !emitItem(ctx, items, model.FetchItem{Doc: &d}) {
+			return false, ctx.Err()
+		}
+		*emitted++
+		if *emitted%checkpointEvery == 0 {
+			_ = emitItem(ctx, items, model.FetchItem{Checkpoint: c.newCursor(nil)})
+		}
+	}
+	return true, nil
 }
 
 // getCalendarData fetches and parses one calendar object via a plain GET.

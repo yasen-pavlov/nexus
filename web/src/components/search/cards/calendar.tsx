@@ -86,7 +86,8 @@ function humanizeRRULE(rrule?: string): string | null {
   for (const part of rrule.split(";")) {
     const [k, v] = part.split("=");
     if (k?.toUpperCase() === "FREQ") freq = (v ?? "").toUpperCase();
-    else if (k?.toUpperCase() === "INTERVAL") interval = parseInt(v ?? "1", 10) || 1;
+    else if (k?.toUpperCase() === "INTERVAL")
+      interval = Number.parseInt(v ?? "1", 10) || 1;
   }
   const label = FREQ_LABELS[freq];
   if (!label) return "Repeats";
@@ -125,7 +126,10 @@ export function CalendarCardBody({ hit }: Readonly<Props>) {
       : "";
   const recurrence = recurring ? humanizeRRULE(str(m.rrule)) : null;
 
-  const location = str(m.location)?.replace(/\s*\n\s*/g, ", ");
+  // Collapse line breaks (plus any surrounding spaces/tabs) into ", ".
+  // The classes around the line break exclude \r\n so the quantifiers can't
+  // overlap the separator — keeps the match linear (no ReDoS backtracking).
+  const location = str(m.location)?.replace(/[^\S\r\n]*[\r\n]+[^\S\r\n]*/g, ", ");
   const attendees = strArr(m.attendees);
   const organizer = str(m.organizer);
 

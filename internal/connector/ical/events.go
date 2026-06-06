@@ -57,20 +57,9 @@ func (c *Connector) masterDocument(ev ical.Event, href, calPath, calName string)
 
 	var anchor, next, recent time.Time
 	if recurring {
-		// RecurrenceSet can fail on the same non-IANA TZIDs eventStart tolerates;
-		// when it does we just skip occurrence math and anchor to dtstart.
-		if set, err := ev.RecurrenceSet(loc); err == nil && set != nil {
-			next = set.After(c.now(), true)
-			recent = set.Before(c.now(), true)
-			if !c.syncSince.IsZero() {
-				if first := set.After(c.syncSince.Add(-time.Second), true); first.IsZero() {
-					return model.Document{}, false // no occurrence within window
-				}
-			}
-		}
-		anchor = nearest(c.now(), next, recent)
-		if anchor.IsZero() {
-			anchor = dtstart
+		var ok bool
+		if anchor, next, recent, ok = c.recurrenceAnchors(ev, dtstart); !ok {
+			return model.Document{}, false // no occurrence within window
 		}
 	} else {
 		if !c.syncSince.IsZero() && !dtstart.IsZero() && dtstart.Before(c.syncSince) {
@@ -81,6 +70,28 @@ func (c *Connector) masterDocument(ev ical.Event, href, calPath, calName string)
 
 	meta := c.eventMetadata(ev, calName, calPath, recurring, next, recent)
 	return c.buildDocument(sourceID(href, ""), ev, anchor, meta), true
+}
+
+// recurrenceAnchors computes a recurring master's recency anchor (the occurrence
+// nearest now, falling back to dtstart) plus its next/recent occurrences. ok is
+// false when a sync window is set and no occurrence falls within it.
+func (c *Connector) recurrenceAnchors(ev ical.Event, dtstart time.Time) (anchor, next, recent time.Time, ok bool) {
+	// RecurrenceSet can fail on the same non-IANA TZIDs eventStart tolerates;
+	// when it does we just skip occurrence math and anchor to dtstart.
+	if set, err := ev.RecurrenceSet(loc); err == nil && set != nil {
+		next = set.After(c.now(), true)
+		recent = set.Before(c.now(), true)
+		if !c.syncSince.IsZero() {
+			if first := set.After(c.syncSince.Add(-time.Second), true); first.IsZero() {
+				return time.Time{}, time.Time{}, time.Time{}, false
+			}
+		}
+	}
+	anchor = nearest(c.now(), next, recent)
+	if anchor.IsZero() {
+		anchor = dtstart
+	}
+	return anchor, next, recent, true
 }
 
 // overrideDocument builds a document for a modified single instance of a
@@ -159,6 +170,24 @@ func (c *Connector) eventMetadata(ev ical.Event, calName, calPath string, recurr
 		"calendar_path": calPath,
 		"recurring":     recurring,
 	}
+	addTextMeta(meta, ev)
+	if isAllDay(ev) {
+		meta["all_day"] = true
+	}
+	if start := eventStart(ev); !start.IsZero() {
+		meta["dtstart"] = start.Format(time.RFC3339)
+	}
+	if end := eventEnd(ev); !end.IsZero() {
+		meta["dtend"] = end.Format(time.RFC3339)
+	}
+	if recurring {
+		addRecurrenceMeta(meta, ev, next, recent)
+	}
+	return meta
+}
+
+// addTextMeta copies the event's optional textual fields into meta when present.
+func addTextMeta(meta map[string]any, ev ical.Event) {
 	if uid, _ := ev.Props.Text(ical.PropUID); uid != "" {
 		meta["uid"] = uid
 	}
@@ -168,11 +197,8 @@ func (c *Connector) eventMetadata(ev ical.Event, calName, calPath string, recurr
 	if desc, _ := ev.Props.Text(ical.PropDescription); desc != "" {
 		meta["description"] = desc
 	}
-	if isAllDay(ev) {
-		meta["all_day"] = true
-	}
-	if loc, _ := ev.Props.Text(ical.PropLocation); loc != "" {
-		meta["location"] = loc
+	if location, _ := ev.Props.Text(ical.PropLocation); location != "" {
+		meta["location"] = location
 	}
 	if org := organizer(ev); org != "" {
 		meta["organizer"] = org
@@ -183,24 +209,19 @@ func (c *Connector) eventMetadata(ev ical.Event, calName, calPath string, recurr
 	if status, err := ev.Status(); err == nil && status != "" {
 		meta["status"] = string(status)
 	}
-	if start := eventStart(ev); !start.IsZero() {
-		meta["dtstart"] = start.Format(time.RFC3339)
+}
+
+// addRecurrenceMeta adds the RRULE + next/recent occurrence fields for a series.
+func addRecurrenceMeta(meta map[string]any, ev ical.Event, next, recent time.Time) {
+	if p := ev.Props.Get(ical.PropRecurrenceRule); p != nil && p.Value != "" {
+		meta["rrule"] = p.Value
 	}
-	if end := eventEnd(ev); !end.IsZero() {
-		meta["dtend"] = end.Format(time.RFC3339)
+	if !next.IsZero() {
+		meta["next_occurrence"] = next.Format(time.RFC3339)
 	}
-	if recurring {
-		if p := ev.Props.Get(ical.PropRecurrenceRule); p != nil && p.Value != "" {
-			meta["rrule"] = p.Value
-		}
-		if !next.IsZero() {
-			meta["next_occurrence"] = next.Format(time.RFC3339)
-		}
-		if !recent.IsZero() {
-			meta["recent_occurrence"] = recent.Format(time.RFC3339)
-		}
+	if !recent.IsZero() {
+		meta["recent_occurrence"] = recent.Format(time.RFC3339)
 	}
-	return meta
 }
 
 // eventContent renders a readable block for full-text + embedding: the

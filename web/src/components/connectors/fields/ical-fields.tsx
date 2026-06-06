@@ -90,6 +90,24 @@ export function ICalFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
     setValue("config.calendars", next, { shouldDirty: true });
   };
 
+  // Hint shown before the user has discovered calendars — flattened out of the
+  // JSX to avoid a nested ternary.
+  const emptyHint =
+    mode === "edit"
+      ? "Re-enter your app-specific password, then discover to choose calendars."
+      : "Enter your Apple ID and password, then discover to choose which calendars to sync.";
+  const selectionHint =
+    selected.length > 0 ? (
+      <p className="text-[12px] text-muted-foreground">
+        {selected.length} calendar{selected.length === 1 ? "" : "s"} selected.
+        Re-discover to change.
+      </p>
+    ) : (
+      <p className="text-[12px] leading-[1.5] text-muted-foreground">
+        {emptyHint}
+      </p>
+    );
+
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
@@ -146,17 +164,8 @@ export function ICalFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
             selected={selected}
             onToggle={toggle}
           />
-        ) : selected.length > 0 ? (
-          <p className="text-[12px] text-muted-foreground">
-            {selected.length} calendar{selected.length === 1 ? "" : "s"} selected.
-            Re-discover to change.
-          </p>
         ) : (
-          <p className="text-[12px] leading-[1.5] text-muted-foreground">
-            {mode === "edit"
-              ? "Re-enter your app-specific password, then discover to choose calendars."
-              : "Enter your Apple ID and password, then discover to choose which calendars to sync."}
-          </p>
+          selectionHint
         )}
       </div>
     </div>
