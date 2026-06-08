@@ -3,17 +3,19 @@ module github.com/muty/nexus
 go 1.26.1
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.38.0
+	github.com/anthropics/anthropic-sdk-go v1.48.0
+	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/emersion/go-message v0.18.2
+	github.com/emersion/go-webdav v0.7.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-chi/cors v1.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/gotd/td v0.145.1
+	github.com/gotd/td v0.145.2
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/openai/openai-go/v3 v3.32.0
+	github.com/openai/openai-go/v3 v3.39.0
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/robfig/cron/v3 v3.0.1
@@ -23,7 +25,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.52.0
-	golang.org/x/net v0.54.0
+	golang.org/x/net v0.55.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -48,9 +50,7 @@ require (
 	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
-	github.com/emersion/go-ical v0.0.0-20250609112844-439c63cef608 // indirect
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
-	github.com/emersion/go-webdav v0.7.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
@@ -67,12 +67,12 @@ require (
 	github.com/go-openapi/swag v0.22.3 // indirect
 	github.com/gotd/ige v0.2.2 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
-	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
@@ -91,6 +91,7 @@ require (
 	github.com/ogen-go/ogen v1.20.3 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
@@ -98,6 +99,7 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
+	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/swaggo/files/v2 v2.0.2 // indirect
 	github.com/teambition/rrule-go v1.8.2 // indirect
@@ -108,21 +110,21 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
-	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
-	go.opentelemetry.io/otel/metric v1.43.0 // indirect
-	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	go.opentelemetry.io/otel v1.44.0 // indirect
+	go.opentelemetry.io/otel/metric v1.44.0 // indirect
+	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/mod v0.35.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools v0.45.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
