@@ -20,7 +20,7 @@ COPY --from=frontend-builder /app/web/dist ./internal/api/static/
 RUN CGO_ENABLED=0 go build -o /nexus ./cmd/nexus
 
 # Stage 3: Runtime
-FROM alpine:3.23
+FROM alpine:3.24
 # tini is a minimal init that runs as PID 1: it reaps zombie processes and
 # forwards signals to the app. Without it, /nexus runs as PID 1 and a Go
 # binary doesn't reap orphaned children — e.g. a Docker HEALTHCHECK using
