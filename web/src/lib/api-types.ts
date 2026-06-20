@@ -483,8 +483,13 @@ export interface ChatDetailResponse {
   messages: ChatMessage[];
 }
 
-// ChunkPreview mirrors `internal/rag.ChunkPreview` — the minimal slice of
-// a retrieved chunk that the SSE evidence frame carries.
+// ChunkPreview mirrors `internal/model.ChunkPreview` — a retrieved chunk as
+// the SSE evidence frame (and persisted chat history) carries it. `source`
+// is the source TYPE (maps to DocumentHit.source_type). The source_name /
+// source_id / size / url / metadata fields mirror Document so the Ask
+// evidence card can synthesize a DocumentHit (see chunkPreviewToHit) and
+// render the SAME rich per-source cards as search. All optional: previews
+// persisted before enrichment decode with them absent.
 export interface ChunkPreview {
   id: string;
   title: string;
@@ -495,4 +500,9 @@ export interface ChunkPreview {
   // means the evidence card renders an inline thumbnail (fetched from
   // /api/documents/{id}/content). Omitted for plain text chunks.
   mime_type?: string;
+  source_name?: string;
+  source_id?: string;
+  size?: number;
+  url?: string;
+  metadata?: Record<string, unknown>;
 }
