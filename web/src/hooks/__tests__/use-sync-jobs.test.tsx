@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { server } from "@/test/mocks/server";
 import { useSyncJobs } from "../use-sync-jobs";
+import { SyncJobsProvider } from "../sync-jobs-provider";
 import type { SyncJob } from "@/lib/api-types";
 import { setToken } from "@/lib/api-client";
 
@@ -31,8 +32,14 @@ function wrap() {
       mutations: { retry: false },
     },
   });
+  // The provider hosts the single sync-jobs controller; useSyncJobs() reads
+  // its context. Tests mount it here so they exercise the real public path.
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <SyncJobsProvider>{children}</SyncJobsProvider>
+      </QueryClientProvider>
+    );
   }
   return { Wrapper, client };
 }
@@ -293,6 +300,26 @@ describe("useSyncJobs — live SSE transitions", () => {
     act(() => sseOnMessage?.(job({ status: "running" })));
     act(() => sseOnMessage?.(job({ status: "completed" })));
     expect(toast.success).toHaveBeenCalledWith("Sync finished: notes");
+  });
+
+  it("a first-seen completed frame (snapshot replay) does NOT toast", async () => {
+    // Regression for the phantom "Sync finished" storm: when a fresh
+    // connection receives an already-completed job as its FIRST frame —
+    // the backend snapshot of a lingering terminal job — there was no
+    // observed running → completed transition, so nothing should toast.
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "completed" })));
+    expect(toast.success).not.toHaveBeenCalled();
+    // It still lands in the map so the "last sync" chip can render it.
+    expect(result.current.jobsByConnector.get("c-1")?.status).toBe("completed");
+  });
+
+  it("a first-seen failed frame does NOT toast", async () => {
+    const { result } = mountWithEmptyList();
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => sseOnMessage?.(job({ status: "failed", error: "boom" })));
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("running → failed fires an error toast with description", async () => {

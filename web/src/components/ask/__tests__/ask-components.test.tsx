@@ -77,13 +77,12 @@ describe("CitationPill", () => {
 });
 
 describe("EvidenceCard", () => {
-  it("carries the data-chunk-id anchor and triggers onActivate", async () => {
+  it("carries the data-chunk-id anchor and fires onActivate from the number badge", async () => {
     const user = userEvent.setup();
     const onActivate = vi.fn();
     render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={onActivate} />);
-    const card = document.querySelector('[data-chunk-id="doc-1"]') as HTMLElement;
-    expect(card).not.toBeNull();
-    await user.click(card);
+    expect(document.querySelector('[data-chunk-id="doc-1"]')).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: /Toggle source 1/ }));
     expect(onActivate).toHaveBeenCalled();
   });
 
@@ -102,6 +101,52 @@ describe("EvidenceCard", () => {
   it("renders no thumbnail for non-image chunks", () => {
     render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={() => {}} />);
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  // The rich-card parity: an enriched preview renders the same per-source body
+  // as search (Paperless letterhead, filesystem path) and is clickable to open.
+  it("renders the rich Paperless body and links the title to the document url", () => {
+    const chunk: ChunkPreview = {
+      id: "p-1",
+      title: "Personalausweis",
+      source: "paperless",
+      url: "https://paperless.local/documents/1/details",
+      metadata: { correspondent: "Bundesdruckerei", document_type: "ID card" },
+    };
+    render(<EvidenceCard number={1} chunk={chunk} onActivate={() => {}} />);
+    expect(screen.getByText("Bundesdruckerei")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Personalausweis" }),
+    ).toHaveAttribute("href", "https://paperless.local/documents/1/details");
+  });
+
+  it("renders the filesystem path body and fires onDownload from its button", async () => {
+    const user = userEvent.setup();
+    const onDownload = vi.fn();
+    const chunk: ChunkPreview = {
+      id: "f-1",
+      title: "Meeting notes",
+      source: "filesystem",
+      metadata: { path: "notes/work/meeting.md", extension: ".md" },
+    };
+    render(
+      <EvidenceCard
+        number={1}
+        chunk={chunk}
+        onActivate={() => {}}
+        onDownload={onDownload}
+      />,
+    );
+    expect(screen.getByText("meeting.md")).toBeInTheDocument(); // path filename, from the body
+    await user.click(screen.getByRole("button", { name: /download/i }));
+    expect(onDownload).toHaveBeenCalledWith(chunk);
+  });
+
+  it("renders a plain (non-link) title for sources without an external url", () => {
+    render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={() => {}} />);
+    expect(
+      screen.queryByRole("link", { name: /Anthropic invoice/ }),
+    ).toBeNull();
   });
 });
 
@@ -518,9 +563,11 @@ describe("ToolTrace", () => {
     // Card has data-chunk-id matching sampleChunk.id
     const card = document.querySelector('[data-chunk-id="doc-1"]') as HTMLElement;
     expect(card).not.toBeNull();
-    // Clicking the card collapses the strip back (no global rail to
-    // jump to anymore — the strip is self-contained).
-    await user.click(card);
+    // Clicking the card's citation badge collapses the strip back (no global
+    // rail to jump to anymore — the strip is self-contained).
+    await user.click(
+      card.querySelector('[data-chunk-activate="doc-1"]') as HTMLElement,
+    );
     expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
 
@@ -548,22 +595,27 @@ describe("ToolTrace", () => {
   });
 
   it("shows the chunk-count badge only when chunks are non-empty", () => {
-    const { rerender, container } = render(
+    const chunkB: ChunkPreview = { ...sampleChunk, id: "doc-2", title: "Second" };
+    // A fresh render per case (not rerender) so the QueryClientProvider the
+    // download mutation needs is preserved across the two scenarios.
+    const { unmount, container } = render(
       <ToolTrace
         name="nexus_search"
         args="{}"
         summary="Searched"
-        chunks={[sampleChunk, sampleChunk]}
+        chunks={[sampleChunk, chunkB]}
       />,
     );
     // The badge sits on the collapsed strip (the trigger button), not
     // inside the expanded region — narrow the query to the trigger.
     const trigger = screen.getByRole("button", { name: /Searched/ });
     expect(trigger).toHaveTextContent("2");
-    rerender(<ToolTrace name="nexus_search" args="{}" summary="Searched" chunks={[]} />);
-    const triggerAfter = screen.getByRole("button", { name: /Searched/ });
-    expect(triggerAfter.textContent).not.toMatch(/\b0\b/);
     // Belt and braces: no element rendered by ToolTrace itself shows "0".
     expect(container.querySelector('[aria-hidden="true"]')).toBeTruthy();
+    unmount();
+
+    render(<ToolTrace name="nexus_search" args="{}" summary="Searched" chunks={[]} />);
+    const triggerAfter = screen.getByRole("button", { name: /Searched/ });
+    expect(triggerAfter.textContent).not.toMatch(/\b0\b/);
   });
 });

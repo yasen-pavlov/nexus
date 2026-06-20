@@ -35,6 +35,14 @@ const (
 // silent skip.
 var ErrAlreadyRunning = errors.New("sync already running for connector")
 
+// completedJobRetention bounds how long a terminal (completed/failed/canceled)
+// job lingers in the in-memory map after Complete. The terminal frame is
+// broadcast synchronously in Complete, so live subscribers already have it;
+// the lingering copy only serves a late-joining client's poll/hydrate. Without
+// this, terminal jobs are never evicted and accumulate in m.jobs for the life
+// of the process — an unbounded leak that also makes Active() grow over uptime.
+const completedJobRetention = 10 * time.Minute
+
 // SyncJob represents the state of an in-progress or completed sync operation.
 // The same UUID is used for the sync_runs.id column so live progress and
 // persisted history correlate.
@@ -89,6 +97,9 @@ type SyncJobManager struct {
 	cancelFuncs       map[string]context.CancelFunc // job ID → cancel the run ctx
 	persister         runPersister
 	log               *zap.Logger
+	// completedTTL is how long terminal jobs survive in m.jobs before
+	// eviction. Defaults to completedJobRetention; tests may shorten it.
+	completedTTL time.Duration
 }
 
 // NewSyncJobManager creates a new SyncJobManager. Pass a *store.Store for
@@ -108,6 +119,7 @@ func NewSyncJobManager(st *store.Store, log *zap.Logger) *SyncJobManager {
 		cancelFuncs:       make(map[string]context.CancelFunc),
 		persister:         p,
 		log:               log,
+		completedTTL:      completedJobRetention,
 	}
 }
 
@@ -234,6 +246,8 @@ func (m *SyncJobManager) GetByConnector(connectorID uuid.UUID) *SyncJob {
 }
 
 // Active returns snapshots of all running and recently completed jobs.
+// Terminal jobs are evicted completedTTL after Complete (see evict), so
+// "recently completed" is bounded — the map never grows without limit.
 func (m *SyncJobManager) Active() []*SyncJob {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -311,6 +325,13 @@ func (m *SyncJobManager) Complete(id string, err error) {
 	m.notify(id)
 	m.closeSubscribers(id)
 
+	// Evict the terminal job after a grace period so it doesn't linger in
+	// m.jobs (and thus Active() / the SSE snapshot) forever. The terminal
+	// frame was just broadcast, so connected clients already have it.
+	if m.completedTTL > 0 {
+		time.AfterFunc(m.completedTTL, func() { m.evict(id) })
+	}
+
 	if m.persister != nil {
 		runID, parseErr := uuid.Parse(snapshot.ID)
 		if parseErr != nil {
@@ -333,6 +354,15 @@ func (m *SyncJobManager) Complete(id string, err error) {
 				zap.String("id", snapshot.ID), zap.Error(err))
 		}
 	}
+}
+
+// evict removes a terminal job from the in-memory map. Scheduled by Complete
+// on a completedTTL timer. A no-op if the job is already gone. Safe to call
+// for a job that never existed (delete on a missing key is a no-op).
+func (m *SyncJobManager) evict(id string) {
+	m.mu.Lock()
+	delete(m.jobs, id)
+	m.mu.Unlock()
 }
 
 // SubscribeAll returns a channel that receives snapshots for every job state
