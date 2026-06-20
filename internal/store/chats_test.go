@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -540,7 +541,13 @@ func TestAppendMessage_PersistsEvidence(t *testing.T) {
 	}
 
 	want := []model.ChunkPreview{
-		{DocID: "os-chunk-1", Title: "Anthropic invoice", Source: "imap", Date: "2026-04-06"},
+		// A rich preview proving the enrichment fields round-trip through JSONB.
+		{
+			DocID: "os-chunk-1", Title: "Anthropic invoice", Source: "paperless",
+			Date: "2026-04-06", SourceName: "paperless", SourceID: "42",
+			Size: 10240, URL: "https://paperless.local/documents/42/details",
+			Metadata: map[string]any{"correspondent": "Anthropic", "document_type": "Invoice"},
+		},
 		{DocID: "os-chunk-2", Title: "Wolt receipt", Source: "imap", Headline: "<em>order</em> #42"},
 	}
 	if err := st.AppendMessage(ctx, &model.ChatMessage{
@@ -565,7 +572,7 @@ func TestAppendMessage_PersistsEvidence(t *testing.T) {
 		t.Fatalf("evidence len=%d want=%d", len(got), len(want))
 	}
 	for i, c := range want {
-		if got[i] != c {
+		if !reflect.DeepEqual(got[i], c) {
 			t.Errorf("evidence[%d] = %+v want %+v", i, got[i], c)
 		}
 	}

@@ -3228,6 +3228,9 @@ export interface components {
             date?: string;
             headline?: string;
             id?: string;
+            metadata?: {
+                [key: string]: unknown;
+            };
             /**
              * @description MimeType is the retrieved chunk's content type when known. The FE
              *     uses an image/* prefix to render an inline thumbnail (fetched via
@@ -3235,8 +3238,12 @@ export interface components {
              *     chunks with no binary (most text chunks).
              */
             mime_type?: string;
+            size?: number;
             source?: string;
+            source_id?: string;
+            source_name?: string;
             title?: string;
+            url?: string;
         };
         "github_com_muty_nexus_internal_model.ConnectorConfig": {
             config?: {

@@ -1,6 +1,8 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { ChevronRight, Search } from "lucide-react";
+import { toast } from "sonner";
 
+import { useDocumentDownload } from "@/hooks/use-document-download";
 import type { ChunkPreview } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +39,17 @@ export function ToolTrace({
 }: Readonly<ToolTraceProps>) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const regionId = useId();
+
+  const download = useDocumentDownload();
+  const downloadDoc = (id: string, suggestedFilename: string) => {
+    download.mutate(
+      { id, suggestedFilename },
+      {
+        onError: (err) =>
+          toast.error(err instanceof Error ? err.message : "Download failed"),
+      },
+    );
+  };
 
   const derivedQuery = useMemo(() => extractQuery(args), [args]);
   // The orchestrator's automatic first search labels its strip with the
@@ -133,11 +146,12 @@ export function ToolTrace({
                   key={chunk.id}
                   number={idx + 1}
                   chunk={chunk}
-                  // No global rail to jump to — clicking the card is
-                  // a passive collapse/expand of the parent strip.
-                  // Keeps the affordance feeling alive without
-                  // introducing a navigation surprise.
+                  // No global rail to jump to — clicking the number badge is
+                  // a passive collapse of the parent strip. Keeps the
+                  // affordance alive without a navigation surprise.
                   onActivate={() => setExpanded(false)}
+                  onDownload={(c) => downloadDoc(c.id, c.title || c.id)}
+                  onAttachmentDownload={(att) => downloadDoc(att.id, att.filename)}
                 />
               ))}
             </div>

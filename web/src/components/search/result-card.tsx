@@ -6,18 +6,9 @@ import { SourceChip } from "@/components/source-chip";
 import { sourceMetaFor } from "@/components/source-meta";
 import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { cn } from "@/lib/utils";
-import { EmailCardBody } from "./cards/email";
-import { AttachmentCardBody } from "./cards/attachment";
-import { TelegramCardBody } from "./cards/telegram";
-import { PaperlessCardBody } from "./cards/paperless";
-import { FilesystemCardBody } from "./cards/filesystem";
-import { CalendarCardBody } from "./cards/calendar";
-import { DefaultCardBody } from "./cards/default";
+import { SourceCardBody } from "./source-card-body";
+import { cardOwnsSnippet } from "./card-snippet";
 import { RelatedFooter } from "./related-footer";
-
-function isAttachmentHit(hit: DocumentHit): boolean {
-  return !!hit.relations?.some((r) => r.type === "attachment_of");
-}
 
 interface Props {
   hit: DocumentHit;
@@ -65,16 +56,9 @@ export function ResultCard({
     (!!hit.match_source_id ||
       Array.isArray(hit.metadata?.message_lines));
 
-  // Some redesigned cards render the snippet inside their own tinted
-  // layout (e.g. email's left-ruled excerpt block, attachment's
-  // content-preview box, paperless's restrained letterhead body,
-  // filesystem's neutral wash). Skip the chassis snippet for those so
-  // the same text doesn't render twice.
-  const cardOwnsSnippet =
-    hit.source_type === "imap" ||
-    hit.source_type === "paperless" ||
-    hit.source_type === "filesystem" ||
-    hit.source_type === "ical";
+  // Some redesigned cards render the snippet inside their own tinted layout,
+  // so skip the chassis snippet for those (shared with the Ask evidence card).
+  const ownsSnippet = cardOwnsSnippet(hit.source_type);
 
   let snippet: ReactNode = null;
   if (hit.headline) {
@@ -164,11 +148,11 @@ export function ResultCard({
               )}
             </h3>
 
-            {!cardOwnsSnippet && snippet}
+            {!ownsSnippet && snippet}
           </>
         )}
 
-        <CardBody
+        <SourceCardBody
           hit={hit}
           onOpenChat={onOpenChat}
           onDownload={onDownload}
@@ -186,35 +170,4 @@ export function ResultCard({
       )}
     </article>
   );
-}
-
-function CardBody({
-  hit,
-  onOpenChat,
-  onDownload,
-  onAttachmentDownload,
-}: Readonly<{
-  hit: DocumentHit;
-  onOpenChat: (hit: DocumentHit) => void;
-  onDownload: (hit: DocumentHit) => void;
-  onAttachmentDownload: (att: { id: string; filename: string }) => void;
-}>) {
-  switch (hit.source_type) {
-    case "imap":
-      return isAttachmentHit(hit) ? (
-        <AttachmentCardBody hit={hit} onDownload={onDownload} />
-      ) : (
-        <EmailCardBody hit={hit} onAttachmentClick={onAttachmentDownload} />
-      );
-    case "telegram":
-      return <TelegramCardBody hit={hit} onOpenChat={onOpenChat} />;
-    case "paperless":
-      return <PaperlessCardBody hit={hit} onDownload={onDownload} />;
-    case "filesystem":
-      return <FilesystemCardBody hit={hit} onDownload={onDownload} />;
-    case "ical":
-      return <CalendarCardBody hit={hit} />;
-    default:
-      return <DefaultCardBody hit={hit} />;
-  }
 }
