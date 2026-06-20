@@ -3,6 +3,7 @@ import { getToken, fetchAPI } from "@/lib/api-client";
 import type { User } from "@/lib/api-types";
 import { authKeys } from "@/lib/query-keys";
 import { AppShell } from "@/components/app-shell";
+import { SyncJobsProvider } from "@/hooks/sync-jobs-provider";
 
 export const Route = createFileRoute("/_authenticated")({
   beforeLoad: async ({ context }) => {
@@ -28,8 +29,10 @@ export const Route = createFileRoute("/_authenticated")({
 function AuthenticatedLayout() {
   const { user } = Route.useRouteContext();
   return (
-    <AppShell user={user}>
-      <Outlet />
-    </AppShell>
+    <SyncJobsProvider>
+      <AppShell user={user}>
+        <Outlet />
+      </AppShell>
+    </SyncJobsProvider>
   );
 }
