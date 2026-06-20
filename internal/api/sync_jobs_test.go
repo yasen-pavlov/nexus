@@ -278,6 +278,44 @@ func TestSyncJobManager_Active(t *testing.T) {
 	}
 }
 
+// TestSyncJobManager_Complete_EvictsTerminalJobAfterTTL pins the unbounded-
+// growth fix: a completed job lingers briefly (so a late poll still sees the
+// "just finished" state) then is evicted from m.jobs once completedTTL elapses.
+func TestSyncJobManager_Complete_EvictsTerminalJobAfterTTL(t *testing.T) {
+	m := newTestSyncJobManager()
+	m.completedTTL = 20 * time.Millisecond
+	job, _ := mustStart(t, m, uuid.New(), "evictme", "filesystem")
+
+	m.Complete(job.ID, nil)
+	// Still present immediately after Complete.
+	if m.Get(job.ID) == nil {
+		t.Fatal("completed job should linger briefly after Complete")
+	}
+
+	// Evicted once the TTL fires.
+	deadline := time.Now().Add(2 * time.Second)
+	for m.Get(job.ID) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("completed job was not evicted within the TTL window")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := len(m.Active()); got != 0 {
+		t.Errorf("Active() should be empty after eviction, got %d", got)
+	}
+}
+
+// TestSyncJobManager_evict_NoOpForMissing verifies eviction of an unknown id
+// (e.g. a job already evicted) is a harmless no-op.
+func TestSyncJobManager_evict_NoOpForMissing(t *testing.T) {
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "keep", "filesystem")
+	m.evict("does-not-exist")
+	if m.Get(job.ID) == nil {
+		t.Error("evicting a missing id must not disturb other jobs")
+	}
+}
+
 func TestSyncJobManager_Subscribe_ReceivesUpdates(t *testing.T) {
 	m := newTestSyncJobManager()
 	job, _ := mustStart(t, m, uuid.New(), "test", "filesystem")

@@ -146,10 +146,17 @@ func (h *handler) StreamAllSyncProgress(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // disable nginx proxy buffering
 
-	// Send the current snapshot of all visible jobs immediately so a
-	// client that connects mid-sync sees the in-flight state without
-	// waiting for the next progress tick.
+	// Send the current snapshot of in-flight jobs immediately so a client
+	// that connects mid-sync sees running state without waiting for the next
+	// progress tick. ONLY running jobs are replayed: a terminal job here is
+	// byte-identical to a live completion frame, so the client would treat
+	// the replay as a fresh transition and fire a phantom "sync finished"
+	// toast on every (re)connect. Late joiners still learn terminal state via
+	// the periodic /api/sync poll.
 	for _, job := range h.syncJobs.Active() {
+		if job.Status != SyncStatusRunning {
+			continue
+		}
 		if !h.canReadJob(claims, job) {
 			continue
 		}

@@ -84,10 +84,19 @@ type ChatMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ChunkPreview is the minimum a UI needs to render an evidence card. The
-// DocID field is the OpenSearch chunk handle — same id used by /api/search
-// hits and /api/documents/{id} — so it doubles as a stable graph pointer
-// from any persisted chat message back to its grounding sources.
+// ChunkPreview is what a UI needs to render an evidence card. The DocID
+// field is the OpenSearch chunk handle — same id used by /api/search hits
+// and /api/documents/{id} — so it doubles as a stable graph pointer from
+// any persisted chat message back to its grounding sources.
+//
+// The Source* / Size / URL / Metadata fields mirror model.Document's JSON
+// tags so the frontend can synthesize a DocumentHit and render the SAME
+// rich per-source cards as search (Paperless letterhead, calendar tile,
+// filesystem path, …), each clickable to open the original. They're all
+// omitempty: previews persisted before enrichment decode with them empty,
+// and the cards degrade gracefully. Metadata is passed through an
+// allowlist (see trimEvidenceMetadata) so heavy keys never bloat the
+// evidence SSE frame or the persisted JSONB column.
 type ChunkPreview struct {
 	DocID    string `json:"id"`
 	Title    string `json:"title"`
@@ -98,7 +107,12 @@ type ChunkPreview struct {
 	// uses an image/* prefix to render an inline thumbnail (fetched via
 	// /api/documents/{id}/content) below the evidence card. Empty for
 	// chunks with no binary (most text chunks).
-	MimeType string `json:"mime_type,omitempty"`
+	MimeType   string         `json:"mime_type,omitempty"`
+	SourceName string         `json:"source_name,omitempty"`
+	SourceID   string         `json:"source_id,omitempty"`
+	Size       int64          `json:"size,omitempty"`
+	URL        string         `json:"url,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // ChatCitation pins an assistant claim to a retrieved document. SpanStart

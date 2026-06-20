@@ -12,6 +12,7 @@ import { setToken } from "@/lib/api-client";
 import { fakeToken } from "@/test/mocks/handlers";
 import type { User } from "@/lib/api-types";
 import { AppShell } from "../app-shell";
+import { SyncJobsProvider } from "@/hooks/sync-jobs-provider";
 
 // Unique usernames so getByText assertions aren't ambiguous with the role tag.
 const adminUser: User = {
@@ -36,7 +37,9 @@ function Wrapped({
 }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-      <AppShell user={user}>{children ?? <div>content</div>}</AppShell>
+      <SyncJobsProvider>
+        <AppShell user={user}>{children ?? <div>content</div>}</AppShell>
+      </SyncJobsProvider>
     </ThemeProvider>
   );
 }

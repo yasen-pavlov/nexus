@@ -482,12 +482,62 @@ func TestBuildLLMDocs_FallsBackToHeadlineWhenContentEmpty(t *testing.T) {
 
 func TestBuildPreviews_Caps(t *testing.T) {
 	hits := []model.DocumentHit{
-		{Document: model.Document{ID: uuid.New(), Title: "a", SourceType: "filesystem", CreatedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)}, Headline: "h"},
+		{Document: model.Document{
+			ID: uuid.New(), Title: "a", SourceType: "paperless",
+			SourceName: "paperless", SourceID: "42", Size: 2048,
+			URL: "https://paperless.local/documents/42/details",
+			Metadata: map[string]any{
+				"correspondent": "Anthropic",
+				"message_lines": []any{"heavy", "drop", "me"}, // heavy key — must be stripped
+			},
+			CreatedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+		}, Headline: "h"},
 		{Document: model.Document{ID: uuid.New(), Title: "b", SourceType: "filesystem"}, Headline: "h"},
 	}
 	out := buildPreviews(hits, 1)
-	if len(out) != 1 || out[0].Date != "2026-04-25" {
-		t.Errorf("previews=%+v", out)
+	if len(out) != 1 {
+		t.Fatalf("previews=%+v", out)
+	}
+	p := out[0]
+	if p.Date != "2026-04-25" {
+		t.Errorf("date=%q", p.Date)
+	}
+	// Rich fields copied through for the per-source card.
+	if p.SourceName != "paperless" || p.SourceID != "42" || p.Size != 2048 ||
+		p.URL != "https://paperless.local/documents/42/details" {
+		t.Errorf("rich fields not copied: %+v", p)
+	}
+	if p.Metadata["correspondent"] != "Anthropic" {
+		t.Errorf("allowlisted metadata missing: %+v", p.Metadata)
+	}
+	if _, ok := p.Metadata["message_lines"]; ok {
+		t.Errorf("heavy key message_lines should be stripped: %+v", p.Metadata)
+	}
+}
+
+func TestTrimEvidenceMetadata(t *testing.T) {
+	if trimEvidenceMetadata(nil) != nil {
+		t.Error("nil input should return nil")
+	}
+	if trimEvidenceMetadata(map[string]any{}) != nil {
+		t.Error("empty input should return nil")
+	}
+	// Only heavy/unknown keys → nil so omitempty drops the field entirely.
+	if got := trimEvidenceMetadata(map[string]any{
+		"message_lines": []any{1, 2}, "raw_body": "x",
+	}); got != nil {
+		t.Errorf("only-heavy input should return nil, got %+v", got)
+	}
+	got := trimEvidenceMetadata(map[string]any{
+		"correspondent": "Acme",        // paperless — kept
+		"location":      "Office",      // calendar — kept
+		"message_lines": []any{"drop"}, // heavy — dropped
+	})
+	if got["correspondent"] != "Acme" || got["location"] != "Office" {
+		t.Errorf("allowlisted keys missing: %+v", got)
+	}
+	if _, ok := got["message_lines"]; ok {
+		t.Errorf("message_lines must be dropped: %+v", got)
 	}
 }
 
