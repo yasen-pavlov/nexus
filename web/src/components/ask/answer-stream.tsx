@@ -13,7 +13,10 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { toast } from "sonner";
+
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useDocumentDownload } from "@/hooks/use-document-download";
 import type { ChatCitation, ChunkPreview } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
@@ -192,6 +195,24 @@ export function AnswerStream({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [flashedDocID, setFlashedDocID] = useState<string | undefined>();
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Open/download a source's document — same mechanism the search cards use:
+  // GET /api/documents/{id}/content. Mirrors search's onError toast (and is a
+  // no-op surfaced as a toast for non-downloadable sources like Paperless,
+  // which is opened via its url link instead).
+  const download = useDocumentDownload();
+  const downloadDoc = useCallback(
+    (id: string, suggestedFilename: string) => {
+      download.mutate(
+        { id, suggestedFilename },
+        {
+          onError: (err) =>
+            toast.error(err instanceof Error ? err.message : "Download failed"),
+        },
+      );
+    },
+    [download],
+  );
 
   const numberByDocID = useMemo(() => {
     const map = new Map<string, number>();
@@ -437,6 +458,12 @@ export function AnswerStream({
                     chunk={c}
                     flashed={flashedDocID === c.id}
                     onActivate={() => onActivate(c.id)}
+                    onDownload={(chunk) =>
+                      downloadDoc(chunk.id, chunk.title || chunk.id)
+                    }
+                    onAttachmentDownload={(att) =>
+                      downloadDoc(att.id, att.filename)
+                    }
                   />
                 ))}
             </div>

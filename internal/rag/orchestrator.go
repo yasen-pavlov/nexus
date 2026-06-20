@@ -1135,13 +1135,59 @@ func buildPreviews(hits []model.DocumentHit, max int) []ChunkPreview {
 			date = h.CreatedAt.Format("2006-01-02")
 		}
 		out = append(out, ChunkPreview{
-			DocID:    h.ID.String(),
-			Title:    h.Title,
-			Source:   h.SourceType,
-			Date:     date,
-			Headline: h.Headline,
-			MimeType: h.MimeType,
+			DocID:      h.ID.String(),
+			Title:      h.Title,
+			Source:     h.SourceType,
+			Date:       date,
+			Headline:   h.Headline,
+			MimeType:   h.MimeType,
+			SourceName: h.SourceName,
+			SourceID:   h.SourceID,
+			Size:       h.Size,
+			URL:        h.URL,
+			Metadata:   trimEvidenceMetadata(h.Metadata),
 		})
+	}
+	return out
+}
+
+// evidenceMetaKeys is the allowlist of light, display-only metadata keys the
+// Ask source cards render (one set per source type; a uniform allowlist is
+// simpler and future-proof against new heavy keys). Everything else — notably
+// telegram's large message_lines array and any raw-body/full-content keys — is
+// dropped so previews stay lean on the evidence SSE frame and the persisted
+// JSONB column.
+var evidenceMetaKeys = map[string]struct{}{
+	// paperless
+	"correspondent": {}, "document_type": {}, "tags": {}, "added": {},
+	// filesystem
+	"path": {}, "extension": {}, "content_type": {}, "size": {},
+	// calendar (ical)
+	"dtstart": {}, "dtend": {}, "rrule": {}, "recurring": {}, "all_day": {},
+	"location": {}, "attendees": {}, "organizer": {}, "calendar": {},
+	"status": {}, "description": {}, "next_occurrence": {}, "recent_occurrence": {},
+	// email (imap)
+	"from": {}, "to": {}, "cc": {}, "folder": {}, "attachments": {},
+	"attachment_filenames": {}, "has_attachments": {},
+	// telegram
+	"chat_name": {}, "message_count": {},
+}
+
+// trimEvidenceMetadata returns a copy of m keeping only the allowlisted keys
+// the Ask source cards read. Returns nil for nil/empty input (or when nothing
+// survives) so the ChunkPreview.Metadata omitempty tag drops the field.
+func trimEvidenceMetadata(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(evidenceMetaKeys))
+	for k := range evidenceMetaKeys {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

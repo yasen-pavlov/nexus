@@ -320,11 +320,16 @@ func (d *searchToolDispatcher) dispatchOpenAttachment(ctx context.Context, call 
 		Content: content,
 	}
 	preview := ChunkPreview{
-		DocID:    args.ChunkID,
-		Title:    chunk.Title,
-		Source:   chunk.SourceType,
-		Date:     date,
-		MimeType: chunk.MimeType,
+		DocID:      args.ChunkID,
+		Title:      chunk.Title,
+		Source:     chunk.SourceType,
+		Date:       date,
+		MimeType:   chunk.MimeType,
+		SourceName: chunk.SourceName,
+		SourceID:   chunk.SourceID,
+		Size:       chunk.Size,
+		URL:        chunk.URL,
+		Metadata:   trimEvidenceMetadata(chunk.Metadata),
 	}
 
 	title := chunk.Title

@@ -55,7 +55,12 @@ func TestBuildToolList_HonoursModelAndCap(t *testing.T) {
 func TestSearchToolDispatcher_HappyPath(t *testing.T) {
 	owner := uuid.New()
 	docs := []model.DocumentHit{
-		{Document: model.Document{ID: uuid.New(), Title: "Wolt Receipt", SourceType: "imap", Content: "€8.40 total"}},
+		{Document: model.Document{
+			ID: uuid.New(), Title: "Wolt Receipt", SourceType: "paperless", Content: "€8.40 total",
+			SourceName: "paperless", SourceID: "7", Size: 4096,
+			URL:      "https://paperless.local/documents/7/details",
+			Metadata: map[string]any{"correspondent": "Wolt", "message_lines": []any{"drop"}},
+		}},
 		{Document: model.Document{ID: uuid.New(), Title: "Wolt Order", SourceType: "imap", Content: "Pizza"}},
 	}
 	srch := &fakeSearch{docs: docs}
@@ -71,6 +76,17 @@ func TestSearchToolDispatcher_HappyPath(t *testing.T) {
 	}
 	if len(out.Chunks) != 2 {
 		t.Errorf("Chunks=%d, want 2", len(out.Chunks))
+	}
+	// The agentic search path must carry the rich fields the Ask cards render,
+	// with heavy metadata keys stripped.
+	if c := out.Chunks[0]; c.SourceName != "paperless" || c.SourceID != "7" ||
+		c.Size != 4096 || c.URL != "https://paperless.local/documents/7/details" {
+		t.Errorf("search-tool preview missing rich fields: %+v", c)
+	}
+	if c := out.Chunks[0]; c.Metadata["correspondent"] != "Wolt" {
+		t.Errorf("allowlisted metadata missing: %+v", c.Metadata)
+	} else if _, ok := c.Metadata["message_lines"]; ok {
+		t.Errorf("heavy key should be stripped: %+v", c.Metadata)
 	}
 	if len(out.Docs) != 2 {
 		t.Errorf("Docs=%d, want 2", len(out.Docs))

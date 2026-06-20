@@ -2885,14 +2885,30 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
                 "mime_type": {
                     "description": "MimeType is the retrieved chunk's content type when known. The FE\nuses an image/* prefix to render an inline thumbnail (fetched via\n/api/documents/{id}/content) below the evidence card. Empty for\nchunks with no binary (most text chunks).",
                     "type": "string"
                 },
+                "size": {
+                    "type": "integer"
+                },
                 "source": {
                     "type": "string"
                 },
+                "source_id": {
+                    "type": "string"
+                },
+                "source_name": {
+                    "type": "string"
+                },
                 "title": {
+                    "type": "string"
+                },
+                "url": {
                     "type": "string"
                 }
             }

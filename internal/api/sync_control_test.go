@@ -463,3 +463,61 @@ func TestStreamAllSyncProgress_FiltersJobsUserCannotRead(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamAllSyncProgress_SnapshotExcludesTerminalJobs pins the phantom-toast
+// fix: a job that finished BEFORE a client connects still lingers in m.jobs
+// (within completedTTL) but must NOT be replayed in the initial snapshot —
+// otherwise a fresh EventSource would receive a "completed" frame indistinguish-
+// able from a live transition and the UI would toast "sync finished" on every
+// (re)connect. Running jobs are still replayed (covered by the other tests).
+func TestStreamAllSyncProgress_SnapshotExcludesTerminalJobs(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	sjm := NewSyncJobManager(st, zap.NewNop())
+	router := NewRouter(st, sc, p, cm, em, NewRerankManager(st, zap.NewNop()), NewLLMManager(st, zap.NewNop()), nil, nil, sjm, nil, nil, nil, testJWTSecret, nil, nil, nil, zap.NewNop())
+
+	admin, adminToken := createTestAdmin(t, st)
+	cfg := seedEnabledConnector(t, cm, admin, "sse-terminal", false)
+
+	// Start then Complete a job before any client connects. It is still in
+	// m.jobs (completedTTL hasn't elapsed) but is terminal.
+	job, _, err := sjm.Start(cfg.ID, cfg.Name, "filesystem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sjm.Complete(job.ID, nil)
+
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/sync/progress", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		var sj SyncJob
+		if err := json.Unmarshal([]byte(payload), &sj); err != nil {
+			continue
+		}
+		if sj.ConnectorID == cfg.ID.String() {
+			t.Errorf("terminal job must not be replayed in the initial SSE snapshot")
+			return
+		}
+	}
+}
