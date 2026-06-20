@@ -85,7 +85,7 @@ export function EvidenceCard({
             type="button"
             data-chunk-activate={chunk.id}
             onClick={onActivate}
-            aria-label={`Citation ${number} — toggle source`}
+            aria-label={`Toggle source ${number}`}
             className={cn(
               "inline-flex h-5 min-w-5 items-center justify-center rounded-md px-1 text-[12px] font-semibold tabular-nums leading-none",
               "bg-[color-mix(in_oklch,var(--chip-hue)_14%,transparent)] text-[color:var(--chip-hue)]",

@@ -82,9 +82,7 @@ describe("EvidenceCard", () => {
     const onActivate = vi.fn();
     render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={onActivate} />);
     expect(document.querySelector('[data-chunk-id="doc-1"]')).not.toBeNull();
-    await user.click(
-      screen.getByRole("button", { name: /Citation 1 — toggle source/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /Toggle source 1/ }));
     expect(onActivate).toHaveBeenCalled();
   });
 
