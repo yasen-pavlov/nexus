@@ -232,7 +232,7 @@ function useSyncJobsController(): UseSyncJobsResult {
  * and the prev-status ref survive navigation — which is what stops a fresh
  * mount from replaying terminal frames into a phantom "Sync finished" toast.
  */
-export function SyncJobsProvider({ children }: { children: ReactNode }) {
+export function SyncJobsProvider({ children }: Readonly<{ children: ReactNode }>) {
   const value = useSyncJobsController();
   return (
     <SyncJobsContext.Provider value={value}>

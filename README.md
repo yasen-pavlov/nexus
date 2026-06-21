@@ -136,6 +136,10 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 | `NEXUS_JWT_SECRET`          | yes*     | random per boot                                                           | Signs session tokens. Set it, or every restart logs everyone out.     |
 | `NEXUS_DATABASE_URL`        | yes      | —                                                                         | Postgres connection string. Set in compose automatically.             |
 | `NEXUS_OPENSEARCH_URL`      | no       | `http://localhost:9200`                                                   | OpenSearch endpoint.                                                  |
+| `NEXUS_OPENSEARCH_USERNAME` | no       | —                                                                         | Basic-auth user. Empty = no auth (default). See [OpenSearch authentication](#opensearch-authentication). |
+| `NEXUS_OPENSEARCH_PASSWORD` | no       | —                                                                         | Basic-auth password.                                                  |
+| `NEXUS_OPENSEARCH_CA_FILE`  | no       | —                                                                         | PEM CA bundle to verify the OpenSearch server cert.                   |
+| `NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY` | no | `false`                                                              | Skip TLS verification (demo certs over a private bridge).             |
 | `NEXUS_TIKA_URL`            | no       | `http://localhost:9998`                                                   | Apache Tika endpoint for rich binary extraction / OCR.                |
 | `NEXUS_OLLAMA_URL`          | no       | `http://localhost:11434`                                                  | Ollama endpoint for local embeddings.                                 |
 | `NEXUS_PORT`                | no       | `8080`                                                                    | HTTP port the app listens on.                                         |
@@ -159,6 +163,36 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 
 Provider credentials and most of the scoring knobs are also editable live from
 the Settings UI without restarting the container.
+
+### OpenSearch authentication
+
+By default OpenSearch runs **without authentication**. The app's own JWT/role
+layer scopes what users see, but that protection lives in Nexus — anything that
+can reach OpenSearch directly bypasses it. Two layers guard against that:
+
+1. **Network isolation (default, always on).** The app reaches OpenSearch over
+   the private compose network (`opensearch:9200`). The published host port is
+   bound to `127.0.0.1`, so it is reachable for local `make dev` and debugging
+   but **never exposed to your LAN**. For a single-host homelab deployment this
+   is usually enough. To drop the host port entirely, remove the `ports:` block
+   from the `opensearch` service.
+
+2. **Security plugin + basic auth (opt-in).** Layer on the secure overlay to run
+   OpenSearch with the security plugin (HTTPS + a credential gate):
+
+   ```sh
+   # set NEXUS_OPENSEARCH_PASSWORD in .env to a strong password first
+   docker compose -f docker-compose.yml -f docker-compose.secure.yml --profile app up -d
+   ```
+
+   OpenSearch 2.12+ requires a strong admin password (≥ 8 chars, mixed case +
+   digit + special, "strong" zxcvbn entropy) or it refuses to boot. The overlay
+   uses the bundled **demo certificates**, so the app connects with TLS
+   verification disabled (`NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY=true`) — a real
+   credential gate over the private bridge, not a public CA chain. To verify the
+   certificate instead, point `NEXUS_OPENSEARCH_CA_FILE` at a CA bundle; note the
+   demo cert's SANs do not include the `opensearch` hostname, so CA verification
+   requires certificates regenerated with a matching SAN.
 
 ## Development
 

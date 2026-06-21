@@ -1,0 +1,45 @@
+# Opt-in OpenSearch authentication overlay.
+#
+# Layer this on top of the base compose file to run OpenSearch with the
+# security plugin enabled (HTTPS + basic auth) instead of the default
+# unauthenticated, network-isolated setup:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml --profile app up -d
+#
+# Requirements:
+#   - Set NEXUS_OPENSEARCH_PASSWORD in .env to a strong password. OpenSearch 2.12+
+#     enforces: >= 8 chars, at least one upper, one lower, one digit, one special,
+#     and "strong" zxcvbn entropy. A weak password makes the cluster fail to boot.
+#   - This uses the bundled demo certificates, so the app connects with TLS
+#     verification disabled (NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY=true). That
+#     gives you a real credential gate over the private docker bridge. To verify
+#     the cert instead, extract the demo CA and set NEXUS_OPENSEARCH_CA_FILE —
+#     see the README (note: the demo cert's SANs don't include "opensearch", so
+#     CA verification needs certs regenerated with a matching SAN).
+#
+# The app connects as the built-in "admin" user, whose password is seeded from
+# NEXUS_OPENSEARCH_PASSWORD via OPENSEARCH_INITIAL_ADMIN_PASSWORD on first boot.
+
+services:
+  opensearch:
+    environment:
+      # Must be set explicitly to false — `docker compose` merges environment by
+      # key, so simply omitting the base's DISABLE_SECURITY_PLUGIN=true would
+      # leave it true and silently boot the cluster unsecured.
+      - DISABLE_SECURITY_PLUGIN=false
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${NEXUS_OPENSEARCH_PASSWORD:?set NEXUS_OPENSEARCH_PASSWORD in .env — see .env.example}
+    healthcheck:
+      # HTTPS + basic auth now that the security plugin is on. The $$ escapes the
+      # variable so the container shell expands it (compose leaves it literal).
+      test: ["CMD-SHELL", "curl -sk -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  nexus:
+    environment:
+      NEXUS_OPENSEARCH_URL: https://opensearch:9200
+      NEXUS_OPENSEARCH_USERNAME: admin
+      NEXUS_OPENSEARCH_PASSWORD: ${NEXUS_OPENSEARCH_PASSWORD:?set NEXUS_OPENSEARCH_PASSWORD in .env — see .env.example}
+      NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY: "true"

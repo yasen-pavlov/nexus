@@ -124,6 +124,8 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_PORT` (default: 8080)
 - `NEXUS_DATABASE_URL` (required)
 - `NEXUS_OPENSEARCH_URL` (default: http://localhost:9200)
+- `NEXUS_OPENSEARCH_USERNAME` / `NEXUS_OPENSEARCH_PASSWORD` — basic auth for the OpenSearch client (empty = no auth; default deploy relies on docker-network isolation, host port bound to 127.0.0.1). Opt into the security plugin via `docker-compose.secure.yml`.
+- `NEXUS_OPENSEARCH_CA_FILE` — PEM CA bundle to verify the OpenSearch server cert; `NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY` (bool, default false) skips TLS verification for demo certs over a private bridge. Wired in `internal/search/search.go` `buildClientConfig` via a custom TLS transport.
 - `NEXUS_LOG_LEVEL` (default: info)
 - `NEXUS_TIKA_URL` (default: http://localhost:9998) — Apache Tika endpoint for rich binary extraction / OCR
 - `NEXUS_EMBEDDING_PROVIDER` — `ollama`, `openai`, `voyage`, `cohere` (empty = disabled)
