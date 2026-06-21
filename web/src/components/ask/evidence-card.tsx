@@ -8,7 +8,7 @@ import { SourceChip } from "@/components/source-chip";
 import { SourceCardBody } from "@/components/search/source-card-body";
 import { cardOwnsSnippet } from "@/components/search/card-snippet";
 import { chunkPreviewToHit } from "@/components/search/chunk-to-hit";
-import type { ChunkPreview } from "@/lib/api-types";
+import type { ChunkPreview, DocumentHit } from "@/lib/api-types";
 import { sanitizeHighlight } from "@/lib/sanitize-highlight";
 import { formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -24,6 +24,9 @@ export interface EvidenceCardProps {
   onDownload?: (chunk: ChunkPreview) => void;
   /** Download a named email attachment. */
   onAttachmentDownload?: (att: { id: string; filename: string }) => void;
+  /** Open the whole Telegram conversation in the chat browser. The hit
+   *  carries the derived conversation_id (see chunkPreviewToHit). */
+  onOpenChat?: (hit: DocumentHit) => void;
 }
 
 /**
@@ -49,6 +52,7 @@ export function EvidenceCard({
   onActivate,
   onDownload,
   onAttachmentDownload,
+  onOpenChat,
 }: Readonly<EvidenceCardProps>) {
   const meta = sourceMetaFor(chunk.source);
   const hueStyle = {
@@ -143,6 +147,7 @@ export function EvidenceCard({
           hit={hit}
           onDownload={onDownload ? () => onDownload(chunk) : undefined}
           onAttachmentDownload={onAttachmentDownload}
+          onOpenChat={onOpenChat}
         />
       </div>
 

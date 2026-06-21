@@ -11,11 +11,11 @@ function isAttachmentHit(hit: DocumentHit): boolean {
   return !!hit.relations?.some((r) => r.type === "attachment_of");
 }
 
-const noopOpenChat = () => {};
-
 interface SourceCardBodyProps {
   hit: DocumentHit;
-  /** Telegram "open in chat" (only fires when the hit carries a conversation_id). */
+  /** Telegram "open in chat". When omitted (e.g. passive ToolTrace
+   *  previews) no button renders; the Telegram card itself also requires
+   *  a conversation_id before showing it. */
   onOpenChat?: (hit: DocumentHit) => void;
   /** Download/open the document (paperless, filesystem, attachment). */
   onDownload?: (hit: DocumentHit) => void;
@@ -43,7 +43,7 @@ export function SourceCardBody({
         <EmailCardBody hit={hit} onAttachmentClick={onAttachmentDownload} />
       );
     case "telegram":
-      return <TelegramCardBody hit={hit} onOpenChat={onOpenChat ?? noopOpenChat} />;
+      return <TelegramCardBody hit={hit} onOpenChat={onOpenChat} />;
     case "paperless":
       return <PaperlessCardBody hit={hit} onDownload={onDownload} />;
     case "filesystem":

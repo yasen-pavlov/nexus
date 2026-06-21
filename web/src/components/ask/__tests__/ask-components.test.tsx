@@ -142,6 +142,50 @@ describe("EvidenceCard", () => {
     expect(onDownload).toHaveBeenCalledWith(chunk);
   });
 
+  // Telegram parity with search: the evidence card surfaces an "Open in
+  // chat" button that jumps to the conversation browser, using the
+  // conversation_id the adapter derives from the SourceID.
+  it("fires onOpenChat with the derived conversation_id from the Telegram 'Open in chat' button", async () => {
+    const user = userEvent.setup();
+    const onOpenChat = vi.fn();
+    const chunk: ChunkPreview = {
+      id: "tg-1",
+      title: "Iris x Yasen",
+      source: "telegram",
+      source_id: "3938898465:1073-1080",
+      metadata: { chat_name: "Iris x Yasen", message_count: 7 },
+    };
+    render(
+      <EvidenceCard
+        number={1}
+        chunk={chunk}
+        onActivate={() => {}}
+        onOpenChat={onOpenChat}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /open in chat/i }));
+    expect(onOpenChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversation_id: "3938898465",
+        source_type: "telegram",
+      }),
+    );
+  });
+
+  it("hides the Telegram 'Open in chat' button when no handler is given (passive preview)", () => {
+    const chunk: ChunkPreview = {
+      id: "tg-2",
+      title: "Iris x Yasen",
+      source: "telegram",
+      source_id: "3938898465:1073-1080",
+      metadata: { chat_name: "Iris x Yasen", message_count: 7 },
+    };
+    render(<EvidenceCard number={1} chunk={chunk} onActivate={() => {}} />);
+    expect(
+      screen.queryByRole("button", { name: /open in chat/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders a plain (non-link) title for sources without an external url", () => {
     render(<EvidenceCard number={1} chunk={sampleChunk} onActivate={() => {}} />);
     expect(

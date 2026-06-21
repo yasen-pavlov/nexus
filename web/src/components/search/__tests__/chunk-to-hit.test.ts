@@ -41,6 +41,30 @@ describe("chunkPreviewToHit", () => {
     expect(hit.url).toBeUndefined();
     expect(hit.metadata).toBeUndefined();
     expect(hit.created_at).toBe("");
+    // No source_id → no conversation_id to open the chat with.
+    expect(hit.conversation_id).toBeUndefined();
+  });
+
+  it("derives conversation_id from a Telegram SourceID (chatID:msgRange)", () => {
+    const chunk: ChunkPreview = {
+      id: "w",
+      title: "Iris x Yasen",
+      source: "telegram",
+      source_id: "3938898465:1073-1080",
+    };
+    // Powers the "Open in chat" button — equals the chat id the backend
+    // stores as Document.ConversationID.
+    expect(chunkPreviewToHit(chunk).conversation_id).toBe("3938898465");
+  });
+
+  it("leaves conversation_id undefined for non-telegram sources", () => {
+    const chunk: ChunkPreview = {
+      id: "p",
+      title: "Invoice",
+      source: "paperless",
+      source_id: "42",
+    };
+    expect(chunkPreviewToHit(chunk).conversation_id).toBeUndefined();
   });
 });
 

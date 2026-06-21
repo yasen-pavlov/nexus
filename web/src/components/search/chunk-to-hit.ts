@@ -11,6 +11,11 @@ import type { ChunkPreview, DocumentHit } from "@/lib/api-types";
  *  - `relations` is `[]`, so isAttachmentHit() is false: imap chunks render
  *    the email body (attachment-vs-email routing needs a relations array,
  *    which previews don't carry — a deliberate follow-up).
+ *  - `conversation_id` is derived for Telegram from the SourceID
+ *    (`chatID:msgRange`), since previews don't carry the field explicitly.
+ *    This is what powers the Telegram card's "Open in chat" affordance; it
+ *    equals `Document.ConversationID` (the chat id) the backend would emit.
+ *    Other sources leave it undefined — only Telegram opens the chat browser.
  */
 export function chunkPreviewToHit(c: ChunkPreview): DocumentHit {
   return {
@@ -31,5 +36,15 @@ export function chunkPreviewToHit(c: ChunkPreview): DocumentHit {
     rank: 0,
     related_count: 0,
     relations: [],
+    conversation_id: telegramConversationID(c),
   };
+}
+
+// telegramConversationID extracts the chat id from a Telegram window's
+// SourceID ("chatID:firstMsgID-lastMsgID"). Returns undefined for other
+// sources or a malformed/empty SourceID.
+function telegramConversationID(c: ChunkPreview): string | undefined {
+  if (c.source !== "telegram") return undefined;
+  const chatID = (c.source_id ?? "").split(":")[0];
+  return chatID || undefined;
 }
