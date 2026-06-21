@@ -403,6 +403,53 @@ describe("useChatStream", () => {
     expect(ev.chunks).toHaveLength(2);
   });
 
+  it("folds tool_result chunks into the live evidence union (deduped, after initial)", async () => {
+    // Regression: the one-shot `evidence` frame carries only the INITIAL
+    // retrieval. Tool-fetched docs must also land in turn.evidence so the
+    // streaming Sources footer can resolve citations to them — otherwise
+    // the footer stays empty until the next turn ("sources lag one turn").
+    const { Wrapper } = wrap();
+    const factory = scriptedFactory([
+      {
+        event: "evidence",
+        data: JSON.stringify({
+          chunks: [{ id: "init1", title: "Initial", source: "telegram" }],
+        }),
+      },
+      {
+        event: "tool_start",
+        data: JSON.stringify({ name: "nexus_search", args: "{}" }),
+      },
+      {
+        event: "tool_result",
+        data: JSON.stringify({
+          name: "nexus_search",
+          summary: "Searched — 2 results",
+          chunks: [
+            // init1 is a dup of the initial-retrieval chunk — must not double.
+            { id: "init1", title: "Initial", source: "telegram" },
+            { id: "tool1", title: "Tool-fetched", source: "paperless" },
+          ],
+        }),
+      },
+      { event: "text", data: JSON.stringify({ delta: "answer" }) },
+      { event: "done", data: JSON.stringify({ stop_reason: "end_turn", message_id: "m" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.start({ content: "x" });
+    });
+    // init1 (initial) then tool1 (tool-fetched, appended at tail), deduped.
+    expect(result.current.turn.evidence.map((c) => c.id)).toEqual([
+      "init1",
+      "tool1",
+    ]);
+    // toolEvents still capture the raw per-call chunks unchanged.
+    expect(result.current.turn.toolEvents[0].chunks).toHaveLength(2);
+  });
+
   it("matches multiple tool_start/tool_result pairs in order", async () => {
     const { Wrapper } = wrap();
     const factory = scriptedFactory([

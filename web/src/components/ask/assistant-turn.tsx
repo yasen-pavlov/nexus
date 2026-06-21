@@ -115,16 +115,29 @@ export function AssistantTurn({
   const toolEvents = useMemo<ChatToolEvent[]>(() => {
     const out: ChatToolEvent[] = [];
 
-    // Streaming branch.
+    // Streaming branch. `streaming.evidence` is the cumulative union
+    // (initial retrieval + every tool_result, folded in by use-chat-stream
+    // so the Sources footer can resolve cited tool-fetched docs). For the
+    // synthetic "initial retrieval" strip we want the INITIAL subset only,
+    // so — exactly like the persisted branch below — remove every chunk
+    // already attributed to a tool call. Without this the tool-fetched
+    // chunks would show twice: once here and once in their own tool strip.
     if (streaming) {
-      if (!streaming.skippedRetrieval && streaming.evidence.length > 0) {
+      const toolChunkIDs = new Set<string>();
+      for (const ev of streaming.toolEvents) {
+        for (const c of ev.chunks ?? []) toolChunkIDs.add(c.id);
+      }
+      const initialChunks = streaming.evidence.filter(
+        (c) => !toolChunkIDs.has(c.id),
+      );
+      if (!streaming.skippedRetrieval && initialChunks.length > 0) {
         out.push({
           name: "nexus_search",
           args: JSON.stringify({
             query: streaming.query ?? streaming.userContent,
           }),
           summary: undefined,
-          chunks: streaming.evidence,
+          chunks: initialChunks,
         });
       }
       out.push(...streaming.toolEvents);

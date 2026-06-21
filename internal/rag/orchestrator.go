@@ -106,15 +106,23 @@ type Config struct {
 	MaxTokens int
 	// SystemPrompt is the static instruction prefix; default systemPromptDefault.
 	SystemPrompt string
+	// MaxPerConversation caps how many initial-retrieval chunks may come
+	// from a single conversation/source group (e.g. one Telegram chat),
+	// so a high-volume "hub" channel — a bot-notification feed full of
+	// document filenames — can't saturate the evidence the model cites
+	// against. Applies only to the broad initial retrieval, not the
+	// model's targeted nexus_search tool calls. Default 3; <=0 disables.
+	MaxPerConversation int
 }
 
 // DefaultConfig returns the orchestrator's compiled-in defaults.
 func DefaultConfig() Config {
 	return Config{
-		MaxEvidenceChunks: 10,
-		HistoryTurns:      3,
-		MaxTokens:         4096,
-		SystemPrompt:      systemPromptDefault,
+		MaxEvidenceChunks:  10,
+		HistoryTurns:       3,
+		MaxTokens:          4096,
+		SystemPrompt:       systemPromptDefault,
+		MaxPerConversation: 3,
 	}
 }
 
@@ -681,6 +689,13 @@ func (t *turnState) runRetrieval(ctx context.Context, searchQuery string, needsR
 		t.persistAndDone("error", "retrieval failed: "+err.Error(), isFirstAssistantTurn, t.in.Content)
 		return nil, false
 	}
+	// Diversity cap: stop a single conversation/source group (e.g. a
+	// high-volume Telegram bot-notification channel whose every window
+	// mentions document filenames) from saturating the initial evidence
+	// and becoming citation bait. Only this broad initial pass is capped —
+	// the model's targeted nexus_search tool calls are not.
+	result.Documents = capPerConversation(result.Documents, t.o.cfg.MaxPerConversation)
+
 	docs := buildLLMDocs(result.Documents, t.o.cfg.MaxEvidenceChunks)
 	// Multi-modal: attach cached images (vision models) and PDFs
 	// (native-PDF models) to the docs when the admin hasn't disabled it.
@@ -1097,6 +1112,48 @@ func (o *Orchestrator) packHistory(ctx context.Context, chatID uuid.UUID, turns 
 }
 
 // buildLLMDocs maps DocumentHits → llm.Documents, capped by max.
+// capPerConversation limits how many chunks may come from a single
+// conversation/source group, preserving rank order and dropping the
+// overflow. It defends the initial evidence set against a high-volume
+// "hub" group — e.g. a Telegram bot-notification channel whose every
+// window mentions document filenames — saturating retrieval and becoming
+// citation bait. A genuine single-conversation query still gets `max`
+// windows here and can pull the rest via the model's nexus_search tool.
+// max <= 0 disables the cap.
+func capPerConversation(hits []model.DocumentHit, max int) []model.DocumentHit {
+	if max <= 0 || len(hits) <= max {
+		return hits
+	}
+	counts := make(map[string]int, len(hits))
+	out := make([]model.DocumentHit, 0, len(hits))
+	for _, h := range hits {
+		k := conversationKey(h.Document)
+		if counts[k] >= max {
+			continue
+		}
+		counts[k]++
+		out = append(out, h)
+	}
+	return out
+}
+
+// conversationKey groups chunks belonging to the same conversation or
+// source document so capPerConversation can cap per group. Telegram
+// conversation-window SourceIDs are "chatID:msgRange", so the chat id is
+// the saturation unit; other sources key on the source document id
+// (multiple chunks of one document share it).
+func conversationKey(d model.Document) string {
+	if d.ConversationID != "" {
+		return d.SourceType + "|conv|" + d.ConversationID
+	}
+	if d.SourceType == "telegram" {
+		if i := strings.IndexByte(d.SourceID, ':'); i > 0 {
+			return "telegram|chat|" + d.SourceID[:i]
+		}
+	}
+	return d.SourceType + "|doc|" + d.SourceID
+}
+
 func buildLLMDocs(hits []model.DocumentHit, max int) []llm.Document {
 	if len(hits) > max {
 		hits = hits[:max]

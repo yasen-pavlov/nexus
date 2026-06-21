@@ -13,11 +13,12 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useDocumentDownload } from "@/hooks/use-document-download";
-import type { ChatCitation, ChunkPreview } from "@/lib/api-types";
+import type { ChatCitation, ChunkPreview, DocumentHit } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 import { CitationPill } from "./citation-pill";
@@ -212,6 +213,28 @@ export function AnswerStream({
       );
     },
     [download],
+  );
+
+  // Open the whole Telegram conversation in the chat browser — same target
+  // as the search cards' "Open in chat". Evidence previews don't carry a
+  // precise message anchor (the message id + full timestamp are trimmed for
+  // size), and a partial anchor builds an invalid `around` cursor, so we
+  // open at the tail (latest messages) — the route's documented fallback
+  // when an anchor isn't fully specified. conversation_id is derived from
+  // the SourceID by the adapter.
+  const navigate = useNavigate();
+  const openChat = useCallback(
+    (hit: DocumentHit) => {
+      if (!hit.conversation_id) return;
+      navigate({
+        to: "/conversations/$sourceType/$conversationId",
+        params: {
+          sourceType: hit.source_type,
+          conversationId: hit.conversation_id,
+        },
+      });
+    },
+    [navigate],
   );
 
   const numberByDocID = useMemo(() => {
@@ -464,6 +487,7 @@ export function AnswerStream({
                     onAttachmentDownload={(att) =>
                       downloadDoc(att.id, att.filename)
                     }
+                    onOpenChat={openChat}
                   />
                 ))}
             </div>

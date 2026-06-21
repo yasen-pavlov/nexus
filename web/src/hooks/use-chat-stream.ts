@@ -167,7 +167,36 @@ function applyToolResult(state: StreamingTurn, payload: unknown): StreamingTurn 
     return ev;
   });
   if (!merged) return state;
-  return { ...state, toolEvents: next };
+  // Fold the tool-fetched chunks into the live evidence union so the
+  // Sources footer can resolve citations to tool-fetched docs while the
+  // turn is still streaming. The one-shot `evidence` frame carries only
+  // the INITIAL retrieval; without this, a citation to a doc fetched by a
+  // nexus_search round can't be matched and the footer stays empty until
+  // the persisted message is refetched on the next turn (sources "lag one
+  // turn"). Mirrors the backend's appendUniqueChunks: tail-append, dedup
+  // by id, so live and persisted evidence share the same order/numbering.
+  const evidence = appendUniqueChunks(state.evidence, p.chunks ?? []);
+  return { ...state, toolEvents: next, evidence };
+}
+
+// appendUniqueChunks tail-appends `incoming` chunks onto `existing`,
+// skipping any whose id is already present. Mirrors the backend
+// orchestrator's appendUniqueChunks so the streamed evidence union
+// matches the persisted one.
+function appendUniqueChunks(
+  existing: ChunkPreview[],
+  incoming: ChunkPreview[],
+): ChunkPreview[] {
+  if (incoming.length === 0) return existing;
+  const seen = new Set(existing.map((c) => c.id));
+  const out = existing.slice();
+  for (const c of incoming) {
+    if (!seen.has(c.id)) {
+      seen.add(c.id);
+      out.push(c);
+    }
+  }
+  return out;
 }
 
 function applyDone(state: StreamingTurn, payload: unknown): StreamingTurn {
