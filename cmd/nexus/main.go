@@ -213,6 +213,18 @@ func setupEncryption(ctx context.Context, st *store.Store, encryptionKey string,
 	return nil
 }
 
+// openSearchAuth maps the OpenSearch credential/TLS config into the search
+// package's AuthConfig. The zero value (all fields empty/false) reproduces the
+// default no-auth plain-HTTP connection.
+func openSearchAuth(cfg *config.Config) search.AuthConfig {
+	return search.AuthConfig{
+		Username:   cfg.OpenSearchUsername,
+		Password:   cfg.OpenSearchPassword,
+		CAFile:     cfg.OpenSearchCAFile,
+		SkipVerify: cfg.OpenSearchInsecureSkipVerify,
+	}
+}
+
 // setupSearchStack wires the embedding manager, OpenSearch client, extractor
 // registry, and binary cache store. OpenSearch mapping-drift is reported as a
 // warning so operators know to run POST /api/reindex but the server still
@@ -235,7 +247,7 @@ func setupSearchStack(ctx context.Context, cfg *config.Config, st *store.Store, 
 	// Settings UI lands this becomes a DB-backed setting.
 	languages := lang.Default()
 
-	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, languages)
+	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, languages, search.WithAuth(openSearchAuth(cfg)))
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("init search: %w", err)
 	}

@@ -9,6 +9,15 @@ type Config struct {
 	OpenSearchURL string `envconfig:"OPENSEARCH_URL" default:"http://localhost:9200"`
 	LogLevel      string `envconfig:"LOG_LEVEL" default:"info"`
 
+	// OpenSearch authentication (all optional; empty = no auth, plain HTTP —
+	// the default bundled deployment relies on docker-network isolation).
+	// Set these to connect to a security-plugin-enabled cluster. See the
+	// docker-compose.secure.yml override and README for the opt-in flow.
+	OpenSearchUsername           string `envconfig:"OPENSEARCH_USERNAME"`
+	OpenSearchPassword           string `envconfig:"OPENSEARCH_PASSWORD"`
+	OpenSearchCAFile             string `envconfig:"OPENSEARCH_CA_FILE"`              // path to a PEM CA bundle to verify the server cert
+	OpenSearchInsecureSkipVerify bool   `envconfig:"OPENSEARCH_INSECURE_SKIP_VERIFY"` // skip TLS verification (demo certs on a private bridge)
+
 	// Content extraction
 	TikaURL string `envconfig:"TIKA_URL" default:"http://localhost:9998"`
 

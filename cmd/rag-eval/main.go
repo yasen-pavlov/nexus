@@ -167,7 +167,12 @@ func buildStack(ctx context.Context, cfg *config.Config, st *store.Store, log *z
 		return evalStack{}, fmt.Errorf("load rag settings: %w", err)
 	}
 
-	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, lang.Default())
+	searchClient, err := search.New(ctx, cfg.OpenSearchURL, log, lang.Default(), search.WithAuth(search.AuthConfig{
+		Username:   cfg.OpenSearchUsername,
+		Password:   cfg.OpenSearchPassword,
+		CAFile:     cfg.OpenSearchCAFile,
+		SkipVerify: cfg.OpenSearchInsecureSkipVerify,
+	}))
 	if err != nil {
 		return evalStack{}, fmt.Errorf("connect opensearch: %w", err)
 	}

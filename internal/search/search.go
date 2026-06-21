@@ -4,10 +4,13 @@ package search
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -45,18 +48,88 @@ type Client struct {
 	minShouldMatch string
 }
 
+// AuthConfig holds optional credentials and TLS settings for connecting to a
+// security-plugin-enabled OpenSearch cluster. The zero value means "no auth,
+// plain HTTP" — exactly the default bundled deployment, which relies on
+// docker-network isolation rather than OpenSearch-level auth.
+type AuthConfig struct {
+	Username   string // HTTP basic-auth user; empty disables auth
+	Password   string // HTTP basic-auth password
+	CAFile     string // path to a PEM CA bundle to verify the server cert; empty uses the system pool
+	SkipVerify bool   // skip TLS verification entirely (demo certs on a private bridge)
+}
+
+// Option configures the OpenSearch client at construction time.
+type Option func(*options)
+
+type options struct {
+	auth AuthConfig
+}
+
+// WithAuth supplies basic-auth credentials and/or TLS settings for the client.
+func WithAuth(a AuthConfig) Option {
+	return func(o *options) { o.auth = a }
+}
+
+// buildClientConfig assembles the opensearch.Config, wiring basic auth and a
+// custom TLS transport when requested. It is pure (no network) so the
+// auth/TLS wiring can be unit-tested without a live cluster.
+//
+// opensearch-go v4 has no InsecureSkipVerify field on the public Config, and
+// its CACert field nil-panics when no transport is supplied, so both paths go
+// through an explicit cloned *http.Transport with our own *tls.Config.
+func buildClientConfig(url string, auth AuthConfig) (opensearch.Config, error) {
+	cfg := opensearch.Config{Addresses: []string{url}}
+
+	if auth.Username != "" {
+		cfg.Username = auth.Username
+		cfg.Password = auth.Password
+	}
+
+	if auth.SkipVerify || auth.CAFile != "" {
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if auth.SkipVerify {
+			// Explicit opt-in via NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY for the
+			// private-bridge demo-cert path; never on by default.
+			tlsCfg.InsecureSkipVerify = true //nolint:gosec // documented, default-false operator opt-in
+		} else {
+			caPEM, err := os.ReadFile(auth.CAFile)
+			if err != nil {
+				return opensearch.Config{}, fmt.Errorf("search: read CA file %q: %w", auth.CAFile, err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caPEM) {
+				return opensearch.Config{}, fmt.Errorf("search: no certificates found in CA file %q", auth.CAFile)
+			}
+			tlsCfg.RootCAs = pool
+		}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = tlsCfg
+		cfg.Transport = tr
+	}
+
+	return cfg, nil
+}
+
 // New creates a new OpenSearch client and verifies the connection.
 // languages configures the per-field language analyzers on text fields;
 // pass lang.Default() in production and nil in tests that don't care.
-func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Language) (*Client, error) {
+// Pass WithAuth to connect to a security-plugin-enabled cluster.
+func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Language, opts ...Option) (*Client, error) {
 	if log == nil {
 		log = zap.NewNop()
 	}
-	osClient, err := opensearchapi.NewClient(opensearchapi.Config{
-		Client: opensearch.Config{
-			Addresses: []string{url},
-		},
-	})
+
+	var o options
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	osCfg, err := buildClientConfig(url, o.auth)
+	if err != nil {
+		return nil, err
+	}
+	osClient, err := opensearchapi.NewClient(opensearchapi.Config{Client: osCfg})
 	if err != nil {
 		return nil, fmt.Errorf("search: create client: %w", err)
 	}
@@ -66,13 +139,13 @@ func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Lang
 		return nil, fmt.Errorf("search: connect to %s: %w", url, err)
 	}
 
-	log.Info("connected to OpenSearch", zap.String("url", url))
+	log.Info("connected to OpenSearch", zap.String("url", url), zap.Bool("auth", o.auth.Username != ""))
 	return &Client{os: osClient, log: log, index: defaultIndex, languages: languages, minShouldMatch: DefaultMinShouldMatch}, nil
 }
 
 // NewWithIndex creates a client with a custom index name (for testing).
-func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger, languages []lang.Language) (*Client, error) {
-	c, err := New(ctx, url, log, languages)
+func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger, languages []lang.Language, opts ...Option) (*Client, error) {
+	c, err := New(ctx, url, log, languages, opts...)
 	if err != nil {
 		return nil, err
 	}
