@@ -62,6 +62,44 @@ describe("AssistantTurn feedback", () => {
     );
   });
 
+  it("streaming initial-retrieval strip excludes tool-fetched chunks (no double-count)", () => {
+    // BUG-A fold makes streaming.evidence the cumulative union (initial +
+    // tool-fetched) so the Sources footer can resolve cited tool docs. The
+    // synthetic "initial retrieval" ToolTrace strip must still show ONLY the
+    // initial subset, or tool chunks would appear twice (here + their own
+    // tool strip). Regression guard for the assistant-turn streaming branch.
+    const initialChunk = { id: "init-1", title: "INITIAL DOC", source: "paperless" };
+    const toolChunk = { id: "tool-1", title: "TOOL DOC", source: "paperless" };
+    render(
+      <AssistantTurn
+        streaming={{
+          phase: "streaming",
+          answer: "partial",
+          citations: [],
+          evidence: [initialChunk, toolChunk], // union, post-fold
+          toolEvents: [
+            {
+              name: "nexus_search",
+              args: JSON.stringify({ query: "tool query" }),
+              summary: "Searched tool query",
+              chunks: [toolChunk],
+            },
+          ],
+          query: "initial query",
+          userContent: "q",
+        } as never}
+        evidence={[]}
+      />,
+    );
+    const initialStrip = screen.getByRole("button", {
+      name: /initial query/,
+    });
+    // Count badge must be 1 (initial only), not 2 (would mean the tool
+    // chunk leaked into the initial strip).
+    expect(initialStrip).toHaveTextContent("1");
+    expect(initialStrip).not.toHaveTextContent("2");
+  });
+
   it("shows no thumbs while streaming (no persisted message)", () => {
     render(
       <AssistantTurn
