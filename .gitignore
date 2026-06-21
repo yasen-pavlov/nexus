@@ -49,6 +49,9 @@ data/
 Thumbs.db
 .claude/
 
+# Local, machine-specific MCP server config
+.mcp.json
+
 # RAG eval harness — generated, corpus-specific.
 rag-eval-report.md
 internal/rag/testdata/golden/.baseline.json
