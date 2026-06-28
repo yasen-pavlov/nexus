@@ -34,7 +34,11 @@ func newMCPCmd(rf *rootFlags, version string) *cobra.Command {
 			"interactively — point an MCP client at it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, _, err := authedClient(rf)
+			// resolveClient (not authedClient) so the server starts even with no
+			// token: the host then completes the handshake and the nexus_search
+			// tool returns an actionable "not authenticated" message, instead of
+			// the command exiting and the host showing an opaque -32000.
+			client, _, err := resolveClient(rf)
 			if err != nil {
 				return err
 			}

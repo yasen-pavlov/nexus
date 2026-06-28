@@ -11,15 +11,31 @@ import (
 )
 
 // The stdio server itself is exercised end-to-end in internal/mcpserver via an
-// in-memory transport; here we only verify the CLI wiring: the command exists
-// and enforces the same auth gate every other command does before touching the
-// transport.
+// in-memory transport; here we only verify the CLI wiring: the command exists,
+// rejects args, and resolves a client that the server can start with regardless
+// of auth. (The unauthenticated behavior now lives at the mcpserver layer, which
+// returns it as a tool result — so there is no longer a hard-exit to assert
+// here; the real `mcp` command would block on os.Stdin in a unit test anyway.)
 
-func TestMCPNotLoggedIn(t *testing.T) {
+func TestResolveClientUnauthenticated(t *testing.T) {
 	isolateConfig(t)
-	_, err := run(t, "", "mcp")
-	if err == nil || !strings.Contains(err.Error(), "not authenticated") {
-		t.Fatalf("expected not-authenticated error, got %v", err)
+	// No token resolves: the client is built (so the MCP server can start) but
+	// reports itself unauthenticated rather than erroring.
+	c, _, err := resolveClient(&rootFlags{})
+	if err != nil {
+		t.Fatalf("resolveClient: %v", err)
+	}
+	if c.Authenticated() {
+		t.Fatal("no token should resolve to an unauthenticated client")
+	}
+	// NEXUS_TOKEN makes it authenticated.
+	t.Setenv("NEXUS_TOKEN", "nexus_pat_x")
+	c, _, err = resolveClient(&rootFlags{})
+	if err != nil {
+		t.Fatalf("resolveClient with NEXUS_TOKEN: %v", err)
+	}
+	if !c.Authenticated() {
+		t.Fatal("NEXUS_TOKEN should make the client authenticated")
 	}
 }
 

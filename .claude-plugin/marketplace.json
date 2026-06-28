@@ -1,0 +1,15 @@
+{
+  "name": "nexus-tools",
+  "owner": {
+    "name": "Yasen Pavlov"
+  },
+  "description": "Plugins for self-hosted Nexus personal search.",
+  "version": "0.1.0",
+  "plugins": [
+    {
+      "name": "nexus",
+      "source": "./plugins/nexus",
+      "description": "Search your self-hosted Nexus personal corpus (files, email, chat, documents) from Claude Code via the bundled nexus_search MCP tool."
+    }
+  ]
+}

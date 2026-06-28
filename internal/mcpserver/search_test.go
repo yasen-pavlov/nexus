@@ -255,6 +255,65 @@ func TestSnippetBoundsHugeMultibyteContent(t *testing.T) {
 	}
 }
 
+func TestSearchUnauthenticatedIsToolError(t *testing.T) {
+	// Empty-token client pointed at an unreachable URL: the Authenticated()
+	// short-circuit must return the login hint WITHOUT any network call (a real
+	// call would yield "search backend unreachable" instead).
+	cs := connect(t, cliclient.New("http://nexus.invalid", ""))
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "nexus_search",
+		Arguments: map[string]any{"query": "anything"},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("an unauthenticated search must be a tool error")
+	}
+	if !strings.Contains(textOf(t, res), "not authenticated") {
+		t.Fatalf("want the login hint, got: %s", textOf(t, res))
+	}
+}
+
+func TestSearch401MapsToLoginHint(t *testing.T) {
+	// A present-but-rejected token (backend 401) bypasses the short-circuit but
+	// must still map to the actionable login hint, not a raw "(status 401)".
+	cs := connect(t, backend(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "token expired"})
+	}))
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "nexus_search",
+		Arguments: map[string]any{"query": "anything"},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if !res.IsError {
+		t.Fatal("a 401 must be a tool error")
+	}
+	text := textOf(t, res)
+	if !strings.Contains(text, "not authenticated") {
+		t.Fatalf("401 should map to the login hint, got: %s", text)
+	}
+	if strings.Contains(text, "token expired") || strings.Contains(text, "401") {
+		t.Fatalf("401 mapping should replace the raw server message: %s", text)
+	}
+}
+
+func TestServerAdvertisesInstructions(t *testing.T) {
+	cs := connect(t, backend(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeSearch(w, model.SearchResult{})
+	}))
+	instr := cs.InitializeResult().Instructions
+	if instr == "" {
+		t.Fatal("server must advertise instructions for portable auto-search guidance")
+	}
+	if !strings.Contains(instr, "nexus_search") {
+		t.Fatalf("instructions should name the tool: %q", instr)
+	}
+}
+
 func TestSearchNoResults(t *testing.T) {
 	cs := connect(t, backend(t, func(w http.ResponseWriter, _ *http.Request) {
 		writeSearch(w, model.SearchResult{Query: "ghost", TotalCount: 0})

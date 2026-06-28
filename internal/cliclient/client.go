@@ -41,6 +41,20 @@ func New(baseURL, token string) *Client {
 	}
 }
 
+// Authenticated reports whether the client holds a bearer token. Callers that
+// can run without one (the MCP server, which starts even when unauthenticated so
+// it can return an actionable error) use this to decide whether a call is worth
+// attempting.
+func (c *Client) Authenticated() bool {
+	return c.token != ""
+}
+
+// NotAuthenticatedHint is the user-facing message shown when no Nexus credential
+// is available (or the server rejects the one given with 401). It is the single
+// source of truth shared by the CLI's not-logged-in error and the MCP server's
+// tool result, so the two cannot drift.
+const NotAuthenticatedHint = "not authenticated: run 'nexus-cli login' or set NEXUS_TOKEN"
+
 // APIError is returned for any non-2xx response. It carries the HTTP status and
 // the server's {"error": ...} message (or a fallback) so commands can render a
 // clean one-line failure.
