@@ -13,7 +13,7 @@ import { render } from "@/test/test-utils";
 
 type HarnessValues = { config: { sync_since: string } };
 
-function Harness({ initial = "" }: { initial?: string }) {
+function Harness({ initial = "" }: Readonly<{ initial?: string }>) {
   const methods = useForm<HarnessValues>({
     defaultValues: { config: { sync_since: initial } },
   });
@@ -27,7 +27,7 @@ function Harness({ initial = "" }: { initial?: string }) {
 
 // Subscribe via useWatch (memoizable) so assertions can observe the outward
 // view without reaching into RHF's non-memoizable watch() API.
-function Probe({ control }: { control: Control<HarnessValues> }) {
+function Probe({ control }: Readonly<{ control: Control<HarnessValues> }>) {
   const value = useWatch({ control, name: "config.sync_since" });
   return <div data-testid="probe">{value ?? ""}</div>;
 }
@@ -58,7 +58,7 @@ describe("SyncWindowField", () => {
     await user.click(screen.getByRole("tab", { name: "Since date" }));
     const input = screen.getByLabelText(/sync from/i) as HTMLInputElement;
     expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(input.value.length).toBe(10);
+    expect(input.value).toHaveLength(10);
   });
 
   it("preset buttons overwrite the date", async () => {

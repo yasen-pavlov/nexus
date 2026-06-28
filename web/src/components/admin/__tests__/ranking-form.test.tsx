@@ -59,7 +59,7 @@ describe("RankingForm", () => {
     // stable selector that doesn't depend on which element renders the
     // label text.
     const cards = document.querySelectorAll("article");
-    expect(cards.length).toBe(5);
+    expect(cards).toHaveLength(5);
     const hues = Array.from(cards).map((c) =>
       (c as HTMLElement).style.getPropertyValue("--chip-hue"),
     );

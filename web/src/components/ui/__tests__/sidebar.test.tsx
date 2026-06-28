@@ -191,12 +191,13 @@ describe("Sidebar sub-components render", () => {
   });
 });
 
+function Probe() {
+  useSidebar();
+  return null;
+}
+
 describe("useSidebar", () => {
   it("throws when used outside SidebarProvider", () => {
-    function Probe() {
-      useSidebar();
-      return null;
-    }
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => render(<Probe />)).toThrow(
       /useSidebar must be used within a SidebarProvider/,

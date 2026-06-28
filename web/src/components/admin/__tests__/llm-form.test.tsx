@@ -107,7 +107,7 @@ describe("LLMForm", () => {
     // After clicking Replace, BOTH provider key fields are now password
     // inputs (Anthropic just opened, OpenAI was already empty). Just count.
     const inputs = screen.getAllByPlaceholderText(/paste your key or leave blank/i);
-    expect(inputs.length).toBe(2);
+    expect(inputs).toHaveLength(2);
     expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
   });
 

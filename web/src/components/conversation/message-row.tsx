@@ -187,7 +187,7 @@ interface Props {
   model: MessageRowModel;
 }
 
-export const MessageRow = memo(function MessageRow({ model }: Props) {
+export const MessageRow = memo(function MessageRow({ model }: Readonly<Props>) {
   const showHeader = model.position === "first" || model.position === "solo";
   const tightTop = model.position === "mid" || model.position === "last";
   const tightBottom = model.position === "first" || model.position === "mid";

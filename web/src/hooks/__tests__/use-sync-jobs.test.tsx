@@ -34,7 +34,7 @@ function wrap() {
   });
   // The provider hosts the single sync-jobs controller; useSyncJobs() reads
   // its context. Tests mount it here so they exercise the real public path.
-  function Wrapper({ children }: { children: ReactNode }) {
+  function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
     return (
       <QueryClientProvider client={client}>
         <SyncJobsProvider>{children}</SyncJobsProvider>
@@ -42,6 +42,14 @@ function wrap() {
     );
   }
   return { Wrapper, client };
+}
+
+// Mount useSyncJobs against an empty /api/sync list so the SSE-transition tests
+// start from a known-empty controller state.
+function mountWithEmptyList() {
+  server.use(http.get("*/api/sync", () => HttpResponse.json({ data: [] })));
+  const { Wrapper } = wrap();
+  return renderHook(() => useSyncJobs(), { wrapper: Wrapper });
 }
 
 function job(overrides: Partial<SyncJob> = {}): SyncJob {
@@ -288,12 +296,6 @@ describe("useSyncJobs — mutations", () => {
 });
 
 describe("useSyncJobs — live SSE transitions", () => {
-  function mountWithEmptyList() {
-    server.use(http.get("*/api/sync", () => HttpResponse.json({ data: [] })));
-    const { Wrapper } = wrap();
-    return renderHook(() => useSyncJobs(), { wrapper: Wrapper });
-  }
-
   it("running → completed fires a success toast", async () => {
     const { result } = mountWithEmptyList();
     await waitFor(() => expect(result.current.isLoading).toBe(false));
@@ -346,7 +348,7 @@ describe("useSyncJobs — live SSE transitions", () => {
     act(() => sseOnMessage?.(job({ status: "running" })));
     act(() => sseOnMessage?.(job({ status: "completed" })));
     act(() => sseOnMessage?.(job({ status: "completed" })));
-    expect(vi.mocked(toast.success).mock.calls.length).toBe(1);
+    expect(vi.mocked(toast.success)).toHaveBeenCalledTimes(1);
   });
 
   it("jobsByConnector: running wins over completed for the same connector on reversed arrival", async () => {

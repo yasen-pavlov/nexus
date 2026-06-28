@@ -14,7 +14,7 @@ const fakeUser: User = {
   created_at: "2026-03-01T10:00:00Z",
 };
 
-function Wrapped({ user }: { user: User }) {
+function Wrapped({ user }: Readonly<{ user: User }>) {
   return (
     <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
       <AccountPage user={user} />

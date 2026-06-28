@@ -8,7 +8,7 @@ function wrap() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  return function Wrapper({ children }: { children: ReactNode }) {
+  return function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   };
 }
