@@ -43,6 +43,7 @@ func NewRootCmd(version, commit, date string) *cobra.Command {
 	root.AddCommand(newChatCmd(flags))
 	root.AddCommand(newChatsCmd(flags))
 	root.AddCommand(newConnectorsCmd(flags))
+	root.AddCommand(newMCPCmd(flags, version))
 
 	return root
 }
