@@ -56,3 +56,9 @@ jobs:
                 || 'release --clean --parallelism 1' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Third-party publish channels. Each is self-disabling in
+          # .goreleaser.yml when its secret is absent (an unset GitHub secret
+          # expands to an empty string), so a release stays green whether or not
+          # these are configured.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          AUR_KEY: ${{ secrets.AUR_KEY }}
