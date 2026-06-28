@@ -6,12 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { ScheduleField } from "../schedule-field";
 import { render as renderWithProviders } from "@/test/test-utils";
 
-describe("ScheduleField", () => {
-  function Harness({ initial = "" }: { initial?: string }) {
-    const [value, setValue] = useState(initial);
-    return <ScheduleField value={value} onChange={setValue} />;
-  }
+function Harness({ initial = "" }: Readonly<{ initial?: string }>) {
+  const [value, setValue] = useState(initial);
+  return <ScheduleField value={value} onChange={setValue} />;
+}
 
+describe("ScheduleField", () => {
   it("starts in Off when value is empty", () => {
     renderWithProviders(<Harness />);
     const offTab = screen.getByRole("tab", { name: "Off" });

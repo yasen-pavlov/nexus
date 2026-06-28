@@ -7,7 +7,7 @@ interface Props {
   rows: MessageRowModel[];
 }
 
-export const MessageList = memo(function MessageList({ rows }: Props) {
+export const MessageList = memo(function MessageList({ rows }: Readonly<Props>) {
   const items = useMemo(() => buildTimeline(rows), [rows]);
 
   return (

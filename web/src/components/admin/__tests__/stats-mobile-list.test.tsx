@@ -43,6 +43,6 @@ describe("StatsMobileList", () => {
     const links = screen.getAllByRole("link", {
       name: /view connectors filtered by/i,
     });
-    expect(links.length).toBe(rows.length);
+    expect(links).toHaveLength(rows.length);
   });
 });

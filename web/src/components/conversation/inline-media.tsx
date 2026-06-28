@@ -145,7 +145,7 @@ interface LightboxProps {
   children: React.ReactNode;
 }
 
-function Lightbox({ filename, onClose, children }: LightboxProps) {
+function Lightbox({ filename, onClose, children }: Readonly<LightboxProps>) {
   // Memoize onClose so the keydown effect doesn't re-bind per render.
   const handleClose = useCallback(() => onClose(), [onClose]);
 

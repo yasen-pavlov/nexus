@@ -20,7 +20,7 @@ function Card({
   )
 }
 
-function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
+function CardHeader({ className, ...props }: Readonly<React.ComponentProps<"div">>) {
   return (
     <div
       data-slot="card-header"

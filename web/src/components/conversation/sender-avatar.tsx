@@ -16,7 +16,7 @@ export const SenderAvatar = memo(function SenderAvatar({
   seed,
   size = 32,
   className,
-}: Props) {
+}: Readonly<Props>) {
   const displayName = senderName?.trim() || "Unknown";
 
   if (blobUrl) {

@@ -184,22 +184,22 @@ describe("EmailCardBody", () => {
   });
 });
 
-describe("AttachmentCardBody", () => {
-  function attachmentHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
-    return baseHit({
-      title: "invoice.pdf",
-      mime_type: "application/pdf",
-      size: 35041,
-      metadata: {
-        parent_subject: "Your bill for April",
-        filename: "invoice.pdf",
-        content_type: "application/pdf",
-      },
-      headline: "Total amount <em>due</em>: $42",
-      ...overrides,
-    });
-  }
+function attachmentHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
+  return baseHit({
+    title: "invoice.pdf",
+    mime_type: "application/pdf",
+    size: 35041,
+    metadata: {
+      parent_subject: "Your bill for April",
+      filename: "invoice.pdf",
+      content_type: "application/pdf",
+    },
+    headline: "Total amount <em>due</em>: $42",
+    ...overrides,
+  });
+}
 
+describe("AttachmentCardBody", () => {
   it("renders provenance line with parent subject", () => {
     render(<AttachmentCardBody hit={attachmentHit()} />);
     expect(screen.getByText("Your bill for April")).toBeInTheDocument();
@@ -530,18 +530,18 @@ describe("FilesystemCardBody", () => {
   });
 });
 
-describe("CalendarCardBody", () => {
-  function calHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
-    return baseHit({
-      source_type: "ical",
-      source_name: "Calendar",
-      title: "Standup",
-      // Noon UTC keeps the rendered weekday stable across runner timezones.
-      created_at: "2026-06-08T12:00:00Z",
-      ...overrides,
-    });
-  }
+function calHit(overrides: Partial<DocumentHit> = {}): DocumentHit {
+  return baseHit({
+    source_type: "ical",
+    source_name: "Calendar",
+    title: "Standup",
+    // Noon UTC keeps the rendered weekday stable across runner timezones.
+    created_at: "2026-06-08T12:00:00Z",
+    ...overrides,
+  });
+}
 
+describe("CalendarCardBody", () => {
   it("renders a recurring event: recurrence, location, guests, and calendar tag", () => {
     render(
       <CalendarCardBody

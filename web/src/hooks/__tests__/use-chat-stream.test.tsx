@@ -14,7 +14,7 @@ function wrap() {
       mutations: { retry: false },
     },
   });
-  function Wrapper({ children }: { children: ReactNode }) {
+  function Wrapper({ children }: Readonly<{ children: ReactNode }>) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
   }
   return { Wrapper, client };
@@ -235,7 +235,7 @@ describe("useChatStream", () => {
 
     // The cleanup effect should have written the state into the cache.
     // We render a fresh hook in the same QueryClient and expect the state.
-    function HydratedWrapper({ children }: { children: ReactNode }) {
+    function HydratedWrapper({ children }: Readonly<{ children: ReactNode }>) {
       return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
     }
     const second = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
