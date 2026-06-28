@@ -4,19 +4,18 @@ import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import path from "node:path";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     TanStackRouterVite({
       routesDirectory: "./src/routes",
       generatedRouteTree: "./src/routeTree.gen.ts",
       routeFileIgnorePattern: String.raw`(\.test\.|__tests__)`,
-      // Split each route's component/loader into its own chunk so the initial
-      // bundle only ships the current route (chat pulls react-markdown, admin
-      // pulls react-table, etc. — no reason to load them all upfront). Disabled
-      // under vitest (which merges this config): code-splitting makes route
-      // components load async, adding ticks that flake the unit tests' waitFor
-      // renders, and it buys tests nothing.
-      autoCodeSplitting: !process.env.VITEST,
+      // Per-route code-splitting is a production-bundle optimization: it keeps
+      // the entry chunk small (~466 kB vs 1.4 MB) instead of bundling every
+      // route upfront. Enable it ONLY for the build — in dev / e2e (vite serve)
+      // and under vitest, routes stay eager so components mount synchronously
+      // and don't race keyboard/async tests (the e2e dev server runs `vite dev`).
+      autoCodeSplitting: command === "build",
     }),
     react(),
     tailwindcss(),
@@ -32,4 +31,4 @@ export default defineConfig({
       "/api": "http://localhost:8080",
     },
   },
-});
+}));

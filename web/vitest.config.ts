@@ -1,8 +1,12 @@
 import { defineConfig, mergeConfig } from "vitest/config";
 import viteConfig from "./vite.config";
 
+// vite.config exports a command-aware function; resolve it for the "serve"
+// command so unit tests render routes eagerly (autoCodeSplitting stays off).
+const base = viteConfig({ command: "serve", mode: "test" });
+
 export default mergeConfig(
-  viteConfig,
+  base,
   defineConfig({
     test: {
       environment: "happy-dom",
