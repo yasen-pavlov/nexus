@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,26 @@ func TestMCPRejectsArgs(t *testing.T) {
 	_, err := run(t, "", "mcp", "extra-arg")
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("expected arg rejection, got %v", err)
+	}
+}
+
+// TestConfigLoadErrorPropagates writes a malformed credentials file so LoadConfig
+// fails, and checks that the error surfaces instead of being swallowed. `mcp`
+// resolves the client directly (and must error before opening the transport);
+// `search` goes through authedClient, which delegates to the same resolver.
+func TestConfigLoadErrorPropagates(t *testing.T) {
+	dir := isolateConfig(t)
+	cfgDir := filepath.Join(dir, "nexus")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "credentials.json"), []byte("{ not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"mcp"}, {"search", "x"}} {
+		if _, err := run(t, "", args...); err == nil || !strings.Contains(err.Error(), "parse config") {
+			t.Fatalf("%v: expected a config parse error, got %v", args, err)
+		}
 	}
 }
 
