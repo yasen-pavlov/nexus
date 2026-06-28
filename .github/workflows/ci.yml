@@ -53,7 +53,7 @@ jobs:
       NEXUS_TEST_OPENSEARCH_URL: http://localhost:9200
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -126,7 +126,7 @@ jobs:
         working-directory: web
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Node
         uses: actions/setup-node@v6
@@ -182,7 +182,7 @@ jobs:
     # SonarCloud scanner needs the full history + PR base ref so it can compute
     # "new code" vs. the base branch; shallow clones confuse the blame layer.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
