@@ -93,11 +93,5 @@ func snippet(hit *model.DocumentHit) string {
 	// Decode HTML entities (e.g. &#x2F;, &amp;) that some extracted content and
 	// highlights carry, so the terminal preview reads naturally. --json output
 	// stays raw/faithful.
-	text = html.UnescapeString(text)
-	text = strings.Join(strings.Fields(text), " ")
-	runes := []rune(text)
-	if len(runes) > snippetMaxRunes {
-		return string(runes[:snippetMaxRunes]) + "…"
-	}
-	return text
+	return truncate(oneLine(html.UnescapeString(text)), snippetMaxRunes)
 }

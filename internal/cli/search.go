@@ -29,14 +29,9 @@ func newSearchCmd(rf *rootFlags) *cobra.Command {
 			"Results are scoped to your user plus any shared connectors.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := LoadConfig()
+			client, _, err := authedClient(rf)
 			if err != nil {
 				return err
-			}
-			server := resolveServerURL(rf.server, cfg)
-			token := resolveToken(cfg, server)
-			if token == "" {
-				return errNotLoggedIn
 			}
 			params := cliclient.SearchParams{
 				Query:       strings.Join(args, " "),
@@ -48,7 +43,7 @@ func newSearchCmd(rf *rootFlags) *cobra.Command {
 				DateTo:      dateTo,
 				Explain:     explain,
 			}
-			result, err := cliclient.New(server, token).Search(cmd.Context(), params)
+			result, err := client.Search(cmd.Context(), params)
 			if err != nil {
 				return err
 			}
