@@ -39,6 +39,10 @@ func NewRootCmd(version, commit, date string) *cobra.Command {
 	root.AddCommand(newLoginCmd(flags))
 	root.AddCommand(newLogoutCmd(flags))
 	root.AddCommand(newSearchCmd(flags))
+	root.AddCommand(newAskCmd(flags))
+	root.AddCommand(newChatCmd(flags))
+	root.AddCommand(newChatsCmd(flags))
+	root.AddCommand(newConnectorsCmd(flags))
 
 	return root
 }
