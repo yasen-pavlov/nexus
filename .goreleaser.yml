@@ -7,6 +7,7 @@ before:
     # Frontend build + copy into the go:embed target so the binary ships the SPA.
     # The shell glob preserves internal/api/static/.gitkeep so the embed target
     # always exists, and everything under it is gitignored so the tree stays clean.
+    # (Only the `nexus` server build embeds the SPA; the `nexus-cli` client does not.)
     - sh -c "cd web && npm ci --legacy-peer-deps"
     - sh -c "cd web && npm run build"
     - sh -c "rm -rf internal/api/static/* && cp -r web/dist/* internal/api/static/"
@@ -35,8 +36,36 @@ builds:
       - -X main.commit={{.ShortCommit}}
       - -X main.date={{.Date}}
 
+  # The CLI / MCP client. Same matrix, no SPA embed, CGO-free static binary.
+  # Its main.{version,commit,date} vars exist (unlike cmd/nexus), so these
+  # ldflags actually take effect here.
+  - id: nexus-cli
+    main: ./cmd/nexus-cli
+    binary: nexus-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+
 archives:
   - id: nexus
+    ids:
+      - nexus
     formats: [tar.gz]
     format_overrides:
       - goos: windows
@@ -46,6 +75,20 @@ archives:
     files:
       - LICENSE
       - README.md
+
+  - id: nexus-cli
+    ids:
+      - nexus-cli
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      nexus-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+      - docs/mcp.md
 
 checksum:
   name_template: "checksums.txt"
@@ -72,6 +115,78 @@ changelog:
       order: 1
     - title: Other
       order: 999
+
+# Homebrew cask for the CLI (macOS + Linuxbrew). Self-disabling: it publishes to
+# the tap only when HOMEBREW_TAP_GITHUB_TOKEN is present, otherwise skip_upload
+# keeps a release green. (homebrew_casks has no `disable`; skip_upload is the
+# gate. `index .Env` is nil-safe on an unset/empty var, unlike `.Env.X`.)
+# Prerequisite: create the yasen-pavlov/homebrew-tap repo BEFORE adding the
+# token secret, or the first push fails.
+homebrew_casks:
+  - name: nexus-cli
+    ids:
+      - nexus-cli
+    binaries:
+      - nexus-cli
+    repository:
+      owner: yasen-pavlov
+      name: homebrew-tap
+      branch: main
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
+    homepage: "https://github.com/yasen-pavlov/nexus"
+    description: "Command-line client and MCP server for self-hosted Nexus personal search"
+    license: "MIT"
+    # The binary ships unsigned by default; strip the quarantine xattr on macOS
+    # so Gatekeeper doesn't block a direct-download install. No-op on Linuxbrew.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/nexus-cli"]
+          end
+
+# AUR (nexus-cli-bin). Self-disabling: publishes only when AUR_KEY (the SSH
+# private key) is present. GoReleaser generates both PKGBUILD and .SRCINFO.
+# Prerequisite: register the matching SSH public key on an AUR account BEFORE
+# adding the AUR_KEY secret, or the first push is rejected.
+aurs:
+  - name: nexus-cli-bin
+    ids:
+      - nexus-cli
+    homepage: "https://github.com/yasen-pavlov/nexus"
+    description: "Command-line client and MCP server for self-hosted Nexus personal search"
+    license: "MIT"
+    maintainers:
+      - "Yasen Pavlov <yasen.pavlov@bitnet.me>"
+    private_key: '{{ index .Env "AUR_KEY" }}'
+    git_url: "ssh://aur@aur.archlinux.org/nexus-cli-bin.git"
+    disable: '{{ if index .Env "AUR_KEY" }}false{{ else }}true{{ end }}'
+    provides:
+      - nexus-cli
+    conflicts:
+      - nexus-cli
+    package: |-
+      install -Dm755 "./nexus-cli" "${pkgdir}/usr/bin/nexus-cli"
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/nexus-cli-bin/LICENSE"
+      install -Dm644 "./README.md" "${pkgdir}/usr/share/doc/nexus-cli-bin/README.md"
+
+# Optional macOS signing + notarization. Entirely dormant unless the signing
+# secrets are present, so a lapsed/absent Apple cert can never break a release.
+# When MACOS_SIGN_P12 is set, darwin nexus-cli archives are signed + notarized.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - nexus-cli
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
 
 release:
   github:

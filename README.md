@@ -130,10 +130,24 @@ markdown report diffed against the previous baseline.
 
 `nexus-cli` is a companion command-line client for the same server: `login`,
 `search`, `ask`/`chat` (streaming RAG), and `connectors`/`chats` management, with
-the token stored in your OS keychain.
+the token stored in your OS keychain. Each release publishes prebuilt binaries:
 
 ```bash
-make build-cli            # -> bin/nexus-cli
+# Homebrew (macOS / Linuxbrew)
+brew install yasen-pavlov/tap/nexus-cli
+
+# Arch (AUR)
+paru -S nexus-cli-bin            # or: yay -S nexus-cli-bin
+
+# Script (Linux / macOS)
+curl -fsSL https://raw.githubusercontent.com/yasen-pavlov/nexus/main/install.sh | sh
+
+# From source (Go toolchain)
+git clone https://github.com/yasen-pavlov/nexus
+cd nexus && make build-cli       # -> bin/nexus-cli  (or: go install ./cmd/nexus-cli)
+```
+
+```bash
 nexus-cli login --server https://your-nexus
 nexus-cli search "standing desk invoice"
 ```
