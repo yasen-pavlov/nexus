@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-integration lint lint-sql coverage build swagger dev dev-db up down logs rag-eval help
+.PHONY: test test-unit test-integration lint lint-sql coverage build build-cli swagger dev dev-db up down logs rag-eval help
 
 help:
 	@echo "Nexus — common targets:"
@@ -11,7 +11,8 @@ help:
 	@echo "  make lint-sql     Run sqlfluff on every migration"
 	@echo "  make rag-eval     Offline RAG quality eval → rag-eval-report.md"
 	@echo "  make coverage     Run integration tests with coverage report"
-	@echo "  make build        Build binary to bin/nexus"
+	@echo "  make build        Build server binary to bin/nexus"
+	@echo "  make build-cli    Build CLI/MCP client binary to bin/nexus-cli"
 
 # Run all tests (unit + integration).
 test: test-unit test-integration
@@ -57,9 +58,14 @@ coverage:
 swagger:
 	swag init -g cmd/nexus/main.go -o docs --parseDependency --parseInternal
 
-# Build the binary.
+# Build the server binary.
 build: swagger
 	go build -o bin/nexus ./cmd/nexus
+
+# Build the CLI/MCP client binary. No swagger/frontend prerequisites — it only
+# depends on the shared internal packages.
+build-cli:
+	go build -o bin/nexus-cli ./cmd/nexus-cli
 
 # --- Containers ---------------------------------------------------------------
 
