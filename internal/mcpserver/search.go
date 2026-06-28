@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -88,6 +89,12 @@ func addSearchTool(srv *mcp.Server, client *cliclient.Client) {
 // message).
 func searchHandler(client *cliclient.Client) mcp.ToolHandlerFor[searchInput, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchInput) (*mcp.CallToolResult, any, error) {
+		// Short-circuit when unauthenticated: report it as the tool result
+		// (deterministic, no network round-trip) so the host shows an actionable
+		// message instead of every call 401-ing.
+		if !client.Authenticated() {
+			return errorResult(cliclient.NotAuthenticatedHint), nil, nil
+		}
 		query := strings.TrimSpace(in.Query)
 		if query == "" {
 			return errorResult("query is required and must be non-empty"), nil, nil
@@ -119,6 +126,14 @@ func searchHandler(client *cliclient.Client) mcp.ToolHandlerFor[searchInput, any
 func searchErrorMessage(err error) string {
 	var apiErr *cliclient.APIError
 	if errors.As(err, &apiErr) {
+		// A present-but-rejected token (expired, revoked, or a deleted user)
+		// makes the Nexus auth middleware return 401, bypassing the
+		// Authenticated() short-circuit; map it to the same login hint so it is
+		// as actionable as a missing token. Other statuses carry their own
+		// message — surface it rather than misadvising a re-login.
+		if apiErr.StatusCode == http.StatusUnauthorized {
+			return cliclient.NotAuthenticatedHint
+		}
 		return "search failed: " + apiErr.Error()
 	}
 	return "search backend unreachable"

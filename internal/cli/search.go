@@ -9,7 +9,8 @@ import (
 )
 
 // errNotLoggedIn is returned when a command needs auth but no token is resolvable.
-var errNotLoggedIn = errors.New("not authenticated: run 'nexus-cli login' or set NEXUS_TOKEN")
+// It shares its text with the MCP server's tool result via cliclient.
+var errNotLoggedIn = errors.New(cliclient.NotAuthenticatedHint)
 
 func newSearchCmd(rf *rootFlags) *cobra.Command {
 	var (

@@ -66,6 +66,7 @@ OpenAI, Voyage, or Cohere — the same UI, just a different provider.
 | IMAP           | Any IMAP mailbox (iCloud, Gmail app passwords, Fastmail…). Bodies are cleaned — tracking redirects and RFC 3676 signatures are dropped before embedding. | `UIDNEXT` + UID cursor          |
 | Telegram       | Private chats, groups, and channels you're a member of. Messages are grouped into 30-minute conversation windows for richer embeddings. Attachments download to the local binary cache. | Last seen message ID per chat   |
 | Paperless-ngx  | Scanned documents and OCR text from your Paperless instance.                   | `modified__gt` timestamp cursor |
+| iCal / CalDAV  | Calendar events from an iCloud (or other CalDAV) calendar, indexed for search. | Per-calendar sync token         |
 
 All credentials are encrypted with AES-256-GCM using `NEXUS_ENCRYPTION_KEY`
 before they touch the database.
@@ -124,6 +125,33 @@ For regression-testing the pipeline, `make rag-eval` runs a golden question set
 through the live orchestrator and grades each answer — citation correctness
 plus an LLM-as-judge for faithfulness, relevance, and abstention — then writes a
 markdown report diffed against the previous baseline.
+
+## Command-line client & MCP
+
+`nexus-cli` is a companion command-line client for the same server: `login`,
+`search`, `ask`/`chat` (streaming RAG), and `connectors`/`chats` management, with
+the token stored in your OS keychain.
+
+```bash
+make build-cli            # -> bin/nexus-cli
+nexus-cli login --server https://your-nexus
+nexus-cli search "standing desk invoice"
+```
+
+It also runs as a **Model Context Protocol** server, so any MCP-aware host
+(Claude Code, Cursor, Zed, VS Code, Goose) can search your corpus and ground its
+answers in your own data:
+
+```bash
+# Claude Code — one-off server, or the full plugin (adds a search skill):
+claude mcp add nexus -- nexus-cli mcp
+# /plugin marketplace add yasen-pavlov/nexus && /plugin install nexus@nexus-tools
+```
+
+The portable, host-agnostic setup (raw `.mcp.json` plus Cursor/Zed/VS Code/Goose
+snippets) lives in [`docs/mcp.md`](docs/mcp.md); the Claude Code plugin is in
+[`plugins/nexus/`](plugins/nexus/README.md). The MCP server exposes one read-only
+tool, `nexus_search`, scoped to the authenticated user.
 
 ## Configuration
 

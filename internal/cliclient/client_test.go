@@ -134,6 +134,15 @@ func TestNoTokenOmitsAuthHeader(t *testing.T) {
 	}
 }
 
+func TestAuthenticated(t *testing.T) {
+	if New("http://x", "").Authenticated() {
+		t.Fatal("empty token must report unauthenticated")
+	}
+	if !New("http://x", "nexus_pat_abc").Authenticated() {
+		t.Fatal("non-empty token must report authenticated")
+	}
+}
+
 func TestMeLoginCreateToken(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/me", func(w http.ResponseWriter, _ *http.Request) {
