@@ -132,7 +132,11 @@ homebrew_casks:
       owner: yasen-pavlov
       name: homebrew-tap
       branch: main
-      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+      # The token field must be a bare {{ .Env.VAR }} (GoReleaser validates the
+      # form at release time — `goreleaser check` does NOT catch this). The
+      # workflow always exports the var (empty when the secret is unset), so this
+      # renders to "" rather than erroring; skip_upload below is the real gate.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
     homepage: "https://github.com/yasen-pavlov/nexus"
     description: "Command-line client and MCP server for self-hosted Nexus personal search"
