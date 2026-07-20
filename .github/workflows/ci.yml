@@ -79,7 +79,7 @@ jobs:
       # use sqlfluff to enforce Postgres-aware syntax + style checks.
       # Locally runs via `make lint-sql` so verdicts stay identical.
       - name: Set up Python (for sqlfluff)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -148,7 +148,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
