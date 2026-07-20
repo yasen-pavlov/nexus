@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -147,7 +148,11 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	passCh := make(chan string, 1)
 	resultCh := make(chan authResult, 1)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Bound the flow so an abandoned /auth/start (user never submits a code)
+	// self-terminates instead of leaking the goroutine + MTProto client + TCP
+	// connection for the process lifetime. 5 minutes is ample to fetch and
+	// enter a login code.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 
 	client := telegram.NewClient(int(apiID), apiHash, telegram.Options{
 		SessionStorage: sessionStore,
@@ -173,6 +178,18 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 	// Run auth in background
 	go func() {
 		defer cancel()
+		// Self-clean the pending-flows entry when this goroutine exits, so
+		// abandoned/timed-out flows don't accumulate (the happy-path handler
+		// also deletes it — idempotent). The identity guard is essential: a
+		// later /auth/start overwrites pending.flows[flowKey], and this defer
+		// must not evict that replacement.
+		defer func() {
+			pending.mu.Lock()
+			if pending.flows[flowKey] == flow {
+				delete(pending.flows, flowKey)
+			}
+			pending.mu.Unlock()
+		}()
 		var result authResult
 		result.err = client.Run(ctx, func(ctx context.Context) error {
 			codeAuth := auth.NewFlow(
@@ -257,12 +274,25 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send the code
-	flow.codeCh <- req.Code
+	// Send the code. Select on the request context so a second rapid submit
+	// (codeCh buffer already full, first code unconsumed) doesn't block this
+	// handler goroutine forever — a client disconnect unblocks a plain channel
+	// send only via this select.
+	select {
+	case flow.codeCh <- req.Code:
+	case <-r.Context().Done():
+		writeError(w, http.StatusRequestTimeout, "auth timed out, try again")
+		return
+	}
 
-	// If 2FA password is provided, send it too
+	// If 2FA password is provided, send it too (same non-blocking guard).
 	if req.Password != "" {
-		flow.passCh <- req.Password
+		select {
+		case flow.passCh <- req.Password:
+		case <-r.Context().Done():
+			writeError(w, http.StatusRequestTimeout, "auth timed out, try again")
+			return
+		}
 	}
 
 	// Wait for result (with timeout from request context)
@@ -307,9 +337,17 @@ func (a *interactiveAuth) Phone(_ context.Context) (string, error) {
 	return a.phone, nil
 }
 
-func (a *interactiveAuth) Code(_ context.Context, _ *tg.AuthSentCode) (string, error) {
-	code := <-a.codeCh
-	return code, nil
+func (a *interactiveAuth) Code(ctx context.Context, _ *tg.AuthSentCode) (string, error) {
+	// Observe cancellation: gotd propagates the flow ctx here, so a flow whose
+	// deadline expires (or that is superseded by a new /auth/start) unblocks
+	// instead of wedging this goroutine + the MTProto client forever waiting on
+	// a code that never arrives.
+	select {
+	case code := <-a.codeCh:
+		return code, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (a *interactiveAuth) Password(_ context.Context) (string, error) {

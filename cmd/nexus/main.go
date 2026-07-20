@@ -227,7 +227,7 @@ func run() error {
 
 	router := api.NewRouter(st, searchClient, p, cm, em, rm, lm, ragMgr, orchestrator, syncJobs, binaryStore, sweeper, rankingMgr, jwtSecret, revocationCache, loginLimiter, cfg.CORSOrigins, log)
 
-	return serve(ctx, cfg.Port, router, sched, log)
+	return serve(ctx, cancel, cfg.Port, router, sched, syncJobs, log)
 }
 
 // newLogger builds the zap logger matching the configured log level.
@@ -410,7 +410,7 @@ func setupAuthCaches(st *store.Store) (*auth.TokenRevocationCache, *auth.LoginRa
 // serve runs the HTTP server with a graceful shutdown wired to ctx. The
 // scheduler is stopped alongside the server so in-flight jobs get a chance
 // to finish within the shutdown deadline.
-func serve(ctx context.Context, port int, router http.Handler, sched *scheduler.Scheduler, log *zap.Logger) error {
+func serve(ctx context.Context, stopSignals context.CancelFunc, port int, router http.Handler, sched *scheduler.Scheduler, syncJobs *api.SyncJobManager, log *zap.Logger) error {
 	addr := fmt.Sprintf(":%d", port)
 	srv := &http.Server{
 		Addr:    addr,
@@ -423,11 +423,7 @@ func serve(ctx context.Context, port int, router http.Handler, sched *scheduler.
 
 	go func() {
 		<-ctx.Done()
-		log.Info("shutting down")
-		sched.Stop()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		_ = srv.Shutdown(shutdownCtx)
+		gracefulShutdown(srv, sched, syncJobs, stopSignals, 10*time.Second, log)
 	}()
 
 	log.Info("server starting", zap.String("addr", addr))
@@ -435,4 +431,38 @@ func serve(ctx context.Context, port int, router http.Handler, sched *scheduler.
 		return fmt.Errorf("server: %w", err)
 	}
 	return nil
+}
+
+// gracefulShutdown cancels in-flight sync jobs, stops the scheduler, and drains
+// the HTTP server within the deadline. Ordering matters: sched.Stop() blocks on
+// robfig/cron until every running job func returns, and scheduled syncs run
+// inline on a detached (background) context, so we CancelAll() them first — they
+// unwind on ctx.Done() — before waiting on the scheduler. stopSignals re-arms
+// default signal handling so a second SIGINT/SIGTERM force-exits instead of
+// being swallowed. The scheduler wait is bounded by the shutdown deadline so a
+// job that ignores cancellation can't hang shutdown indefinitely.
+func gracefulShutdown(srv *http.Server, sched *scheduler.Scheduler, syncJobs *api.SyncJobManager, stopSignals context.CancelFunc, timeout time.Duration, log *zap.Logger) {
+	log.Info("shutting down")
+	stopSignals()
+
+	if n := syncJobs.CancelAll(); n > 0 {
+		log.Info("canceling in-flight sync jobs", zap.Int("count", n))
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
+	defer shutdownCancel()
+
+	schedDone := make(chan struct{})
+	go func() {
+		sched.Stop()
+		close(schedDone)
+	}()
+
+	_ = srv.Shutdown(shutdownCtx)
+
+	select {
+	case <-schedDone:
+	case <-shutdownCtx.Done():
+		log.Warn("scheduler did not stop within shutdown deadline")
+	}
 }

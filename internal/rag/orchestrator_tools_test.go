@@ -408,6 +408,52 @@ func TestRunTurn_CumulativeDocsDeduped(t *testing.T) {
 
 // Non-Anthropic provider — citation parser must rebuild per round so [N]
 // markers in round 2 can reference a doc index added by the tool result.
+// TestRunTurn_CitationSpanOffsetAcrossRounds pins the fix for a per-round
+// parser that started its cursor at 0: when round 1 emits a text preamble
+// alongside its tool call, a round-2 citation must anchor at its offset in the
+// WHOLE-turn answer (past the preamble), not at the round-local offset.
+func TestRunTurn_CitationSpanOffsetAcrossRounds(t *testing.T) {
+	initialID := uuid.New().String()
+	toolID := uuid.New().String()
+	srch := &rotatingSearch{turns: [][]model.DocumentHit{
+		{{Document: model.Document{ID: parseUUID(t, initialID), Title: "init", SourceType: "imap", Content: "x"}}},
+		{{Document: model.Document{ID: parseUUID(t, toolID), Title: "from-tool", SourceType: "imap", Content: "y"}}},
+	}}
+
+	gen := &fakeGenerator{eventsPerCall: [][]llm.Event{
+		{
+			{Kind: llm.EventText, TextDelta: "Let me search. "}, // round-1 preamble
+			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Name: "nexus_search", ArgsJSON: `{"query":"x"}`}},
+			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Final: true}},
+			{Kind: llm.EventDone, StopReason: llm.StopToolUse},
+		},
+		{
+			{Kind: llm.EventText, TextDelta: "You paid it [2]."},
+			{Kind: llm.EventDone, StopReason: llm.StopEnd},
+		},
+	}}
+
+	noCitationModel := llm.ModelInfo{
+		ID: "openai:gpt-5", Provider: "openai", BareID: "gpt-5",
+		SupportsTools: true, SupportsCitations: false,
+	}
+	o, chats := newOrchTestWithSettings(t, gen, noCitationModel, srch, Settings{MaxToolRounds: 3})
+	chat := makeChat(t, chats, noCitationModel.ID)
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
+
+	// utf16("Let me search. ")=15 + utf16("You paid it ")=12.
+	const wantSpan = 27
+	span := -1
+	for _, ev := range events {
+		if ev.Kind == EvCitation && ev.Citation != nil {
+			span = ev.Citation.SpanStart
+		}
+	}
+	if span != wantSpan {
+		t.Errorf("citation SpanStart = %d, want %d (offset past round-1 preamble)", span, wantSpan)
+	}
+}
+
 func TestRunTurn_CitationParserRebuiltPerRound(t *testing.T) {
 	initialID := uuid.New().String()
 	toolID := uuid.New().String()

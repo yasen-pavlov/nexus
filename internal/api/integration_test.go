@@ -3899,3 +3899,124 @@ func TestUpdateLLMSettings_EncryptedAtRest(t *testing.T) {
 		t.Error("llm_openai_api_key is not flagged sensitive")
 	}
 }
+
+// TestTriggerReindex_ConflictWhenSyncRunning pins that a reindex is refused
+// with 409 while a sync is in flight, so the running sync can't resurrect a
+// pre-reindex cursor or write old-dimension vectors into the fresh index.
+func TestTriggerReindex_ConflictWhenSyncRunning(t *testing.T) {
+	st, sc, cm := newTestDeps(t)
+	em := NewEmbeddingManager(st, zap.NewNop())
+	p := pipeline.New(st, sc, em, zap.NewNop())
+	// nil-store manager: in-memory only, so Start doesn't persist a sync_runs
+	// row (which would need a real connector_configs FK). We only exercise the
+	// RunningCount gate here.
+	sjm := NewSyncJobManager(nil, zap.NewNop())
+	h := &handler{store: st, search: sc, pipeline: p, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), syncJobs: sjm, log: zap.NewNop()}
+	ctx := context.Background()
+
+	// Seed a document that must SURVIVE a rejected reindex.
+	doc := &model.Document{SourceType: "test", SourceName: "test", SourceID: "keep-1", Title: "Keep", Content: "must survive reindex"}
+	if err := sc.IndexDocument(ctx, doc); err != nil {
+		t.Fatalf("index doc: %v", err)
+	}
+	_ = sc.Refresh(ctx)
+
+	// Register a running sync job — do NOT complete it.
+	job, _, err := sjm.Start(uuid.New(), "busy", "filesystem")
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Post("/api/reindex", h.TriggerReindex)
+
+	// Reindex refused with 409 while the sync runs.
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/reindex", nil))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while sync running, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The index was NOT recreated — the seeded doc survives.
+	_ = sc.Refresh(ctx)
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "survive", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(result.Documents) != 1 {
+		t.Errorf("seeded doc should survive a rejected reindex, got %d results", len(result.Documents))
+	}
+
+	// Complete the job; the reindex now proceeds (202) and clears the index.
+	sjm.Complete(job.ID, nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/reindex", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 after job completes, got %d: %s", w.Code, w.Body.String())
+	}
+	time.Sleep(500 * time.Millisecond)
+	_ = sc.Refresh(ctx)
+	result, _ = sc.Search(ctx, model.SearchRequest{Query: "survive", Limit: 10})
+	if len(result.Documents) != 0 {
+		t.Errorf("expected index cleared after reindex, got %d results", len(result.Documents))
+	}
+}
+
+// TestTelegramAuthCode_ContextCanceledOnSend pins that a blocked codeCh send
+// (buffer already full from a prior submit) doesn't wedge the handler goroutine
+// forever: a client disconnect (canceled request context) unblocks the send
+// and returns 408.
+func TestTelegramAuthCode_ContextCanceledOnSend(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+	connIDStr := telegramAuthSetup(t, router, "auth-code-ctxcancel")
+	connID := uuid.MustParse(connIDStr)
+
+	cfg, err := st.GetConnectorConfig(context.Background(), connID)
+	if err != nil || cfg.UserID == nil {
+		t.Fatalf("get connector owner: %v", err)
+	}
+	flowKey := pendingAuthKey{connectorID: connID, userID: *cfg.UserID}
+
+	// Seed a pending flow whose codeCh buffer is already FULL, so the handler's
+	// send blocks; resultCh stays empty so it can only exit via ctx.Done().
+	flow := &authFlow{
+		codeCh:   make(chan string, 1),
+		passCh:   make(chan string, 1),
+		resultCh: make(chan authResult, 1),
+		cancel:   func() {},
+	}
+	flow.codeCh <- "already-queued"
+	pending.mu.Lock()
+	pending.flows[flowKey] = flow
+	pending.mu.Unlock()
+	defer func() {
+		pending.mu.Lock()
+		delete(pending.flows, flowKey)
+		pending.mu.Unlock()
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/"+connIDStr+"/auth/code",
+		bytes.NewBufferString(`{"code":"999"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		router.ServeHTTP(w, req)
+		close(done)
+	}()
+	// Let the handler pass the ownership check + decode and reach the blocked
+	// send, then simulate a client disconnect.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not return after context cancel (send blocked forever)")
+	}
+	if w.Code != http.StatusRequestTimeout {
+		t.Errorf("expected 408 on canceled send, got %d: %s", w.Code, w.Body.String())
+	}
+}

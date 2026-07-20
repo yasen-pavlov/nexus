@@ -226,3 +226,40 @@ func TestSplit_ByteBoundedMultibyteOddOffset(t *testing.T) {
 		}
 	}
 }
+
+// TestSplit_InvalidUTF8DoesNotHang covers the infinite-loop/OOM fix: a long run
+// of UTF-8 continuation bytes with no whitespace. Pre-fix this hung Split (and
+// the async flush goroutine) forever; post-fix the sanitizer replaces the
+// invalid bytes and Split returns promptly with valid, bounded chunks.
+func TestSplit_InvalidUTF8DoesNotHang(t *testing.T) {
+	blob := strings.Repeat("\x80", MaxChunkBytes*2+50)
+	chunks := Split(blob, 500, 100)
+	for _, c := range chunks {
+		if !utf8.ValidString(c.Text) {
+			t.Errorf("chunk is not valid UTF-8 after sanitize: %q", c.Text)
+		}
+		if len(c.Text) > MaxChunkBytes {
+			t.Errorf("chunk exceeds MaxChunkBytes: %d", len(c.Text))
+		}
+	}
+}
+
+// TestAppendByteBounded_InvalidUTF8Terminates directly exercises the
+// byte-bounded splitter's cut==0 guard with raw continuation bytes (bypassing
+// Split's sanitizer). It must terminate, cut every piece to (0, MaxChunkBytes],
+// and neither lose nor duplicate bytes.
+func TestAppendByteBounded_InvalidUTF8Terminates(t *testing.T) {
+	s := strings.Repeat("\x80", MaxChunkBytes*3+7)
+	idx := 0
+	chunks := appendByteBounded(nil, s, &idx)
+	total := 0
+	for _, c := range chunks {
+		if len(c.Text) == 0 || len(c.Text) > MaxChunkBytes {
+			t.Errorf("piece length %d out of (0, MaxChunkBytes]", len(c.Text))
+		}
+		total += len(c.Text)
+	}
+	if total != len(s) {
+		t.Errorf("byte total = %d, want %d (no bytes lost or duplicated)", total, len(s))
+	}
+}

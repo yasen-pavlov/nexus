@@ -4,7 +4,6 @@ import { ChevronLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ConnectorLogo } from "@/components/connectors/connector-logo";
@@ -19,7 +18,7 @@ import {
   ConnectorForm,
   type ConnectorFormValues,
 } from "@/components/connectors/connector-form";
-import { ScheduleField } from "@/components/connectors/schedule-field";
+import { ScheduleTab } from "@/components/connectors/schedule-tab";
 import { TelegramAuthPanel } from "@/components/connectors/telegram-auth-panel";
 import { ActivityTimeline } from "@/components/connectors/activity-timeline";
 import { DeleteConnectorDialog } from "@/components/connectors/delete-dialog";
@@ -232,34 +231,21 @@ function ConnectorDetailPage() {
         </TabsContent>
 
         <TabsContent value="schedule">
-          <div className="space-y-4 rounded-xl border border-border bg-card p-6">
-            <ScheduleField
-              value={connector.schedule}
-              onChange={async (next) => {
-                await updateConnector({
-                  type: connector.type,
-                  name: connector.name,
-                  enabled: connector.enabled,
-                  shared: connector.shared,
-                  schedule: next,
-                  config: connector.config,
-                });
-                toast.success("Schedule updated.");
-              }}
-            />
-            <Separator />
-            <div className="flex items-center justify-between text-[12.5px] text-muted-foreground">
-              <span>Force a full re-sync if indexed data looks stale.</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={!canManage}
-                onClick={() => void resetCursor(connector.id)}
-              >
-                Clear cursor
-              </Button>
-            </div>
-          </div>
+          <ScheduleTab
+            schedule={connector.schedule}
+            canManage={canManage}
+            onClearCursor={() => void resetCursor(connector.id)}
+            onSave={(next) =>
+              updateConnector({
+                type: connector.type,
+                name: connector.name,
+                enabled: connector.enabled,
+                shared: connector.shared,
+                schedule: next,
+                config: connector.config,
+              })
+            }
+          />
         </TabsContent>
 
         {hasIdentityTab && (

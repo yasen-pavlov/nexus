@@ -199,6 +199,7 @@ func (c *Connector) streamPaginatedDocs(ctx context.Context, cursor *model.SyncC
 	fetchURL := c.initialDocsURL(cursor)
 	now := time.Now()
 	emitted := 0
+	var lastModified time.Time
 	for fetchURL != "" {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -207,30 +208,37 @@ func (c *Connector) streamPaginatedDocs(ctx context.Context, cursor *model.SyncC
 		if err != nil {
 			return fmt.Errorf("paperless: fetch page: %w", err)
 		}
-		if !c.emitPage(ctx, page, tags, correspondents, docTypes, items, now, &emitted) {
+		if !c.emitPage(ctx, page, tags, correspondents, docTypes, items, &emitted, &lastModified) {
 			return ctx.Err()
 		}
 		fetchURL = nextURL
 	}
-	// Final checkpoint so last_sync_time advances even when the
-	// delta was empty or didn't land exactly on an every-N
-	// boundary.
+	// Final checkpoint stamps run-start: at end-of-stream every doc has been
+	// fetched, so run-start correctly captures anything touched during the run.
 	_ = emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)})
 	return nil
 }
 
 // emitPage fans out a single page of paperless docs to the items
 // channel, emitting periodic checkpoints. Returns false when the
-// context was cancelled mid-page.
-func (c *Connector) emitPage(ctx context.Context, page []paperlessDoc, tags, correspondents, docTypes map[int]string, items chan<- model.FetchItem, now time.Time, emitted *int) bool {
+// context was cancelled mid-page. lastModified tracks the last emitted doc's
+// Modified time so a mid-run checkpoint can persist a safe resume point.
+func (c *Connector) emitPage(ctx context.Context, page []paperlessDoc, tags, correspondents, docTypes map[int]string, items chan<- model.FetchItem, emitted *int, lastModified *time.Time) bool {
 	for _, pdoc := range page {
 		doc := c.toDocument(pdoc, tags, correspondents, docTypes)
 		if !emitItem(ctx, items, model.FetchItem{Doc: &doc}) {
 			return false
 		}
 		*emitted++
+		*lastModified = pdoc.Modified
 		if *emitted%paperlessCheckpointEvery == 0 {
-			if !emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(now)}) {
+			// Checkpoint the last emitted doc's Modified, NOT run-start. Docs
+			// are ordered modified-asc, so this is a safe resume point: an
+			// interrupted sync resumes at this doc instead of stamping
+			// run-start and permanently skipping every later page. The resume
+			// query uses modified__gte (see initialDocsURL) so a modified-tie
+			// straddling the boundary is re-fetched (idempotent), not skipped.
+			if !emitItem(ctx, items, model.FetchItem{Checkpoint: newPaperlessCursor(*lastModified)}) {
 				return false
 			}
 		}
@@ -247,7 +255,10 @@ func (c *Connector) initialDocsURL(cursor *model.SyncCursor) string {
 	params.Set("page_size", "100")
 	if cursor != nil {
 		if ts, ok := cursor.CursorData["last_sync_time"].(string); ok {
-			params.Set("modified__gt", ts)
+			// Inclusive (gte) so a checkpoint stamped with the last emitted
+			// doc's Modified re-fetches that doc and any modified-tie on the
+			// page boundary (idempotent upsert) instead of skipping it.
+			params.Set("modified__gte", ts)
 		}
 	} else if !c.syncSince.IsZero() {
 		params.Set("modified__gt", c.syncSince.Format(time.RFC3339))

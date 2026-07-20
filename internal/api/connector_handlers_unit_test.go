@@ -41,3 +41,35 @@ func TestWriteConnectorUpdateError_DispatchesByErrorKind(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConnectorName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{"plain", "mailbox", true},
+		{"with space", "My Email", true},
+		{"unicode", "Работа", true},
+		{"dot-in-name", "backup.2026", true},
+		{"empty", "", false},
+		{"whitespace only", "   ", false},
+		{"dot", ".", false},
+		{"dotdot", "..", false},
+		{"forward slash traversal", "../../../../var/lib/nexus", false},
+		{"backslash", `a\b`, false},
+		{"embedded slash", "a/b", false},
+		{"null byte", "a\x00b", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConnectorName(tc.in)
+			if tc.ok && err != nil {
+				t.Errorf("validateConnectorName(%q) = %v, want nil", tc.in, err)
+			}
+			if !tc.ok && err == nil {
+				t.Errorf("validateConnectorName(%q) = nil, want error", tc.in)
+			}
+		})
+	}
+}

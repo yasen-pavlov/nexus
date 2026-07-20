@@ -69,18 +69,20 @@ func (m *mockPipelineRunner) getCalls() []pipelineCall {
 }
 
 type mockConfigLister struct {
-	configs []model.ConnectorConfig
-	lastRun map[uuid.UUID]time.Time
-	mu      sync.Mutex
+	configs    []model.ConnectorConfig
+	lastRun    map[uuid.UUID]time.Time
+	lastRunCtx context.Context
+	mu         sync.Mutex
 }
 
 func (m *mockConfigLister) ListConnectorConfigs(_ context.Context) ([]model.ConnectorConfig, error) {
 	return m.configs, nil
 }
 
-func (m *mockConfigLister) UpdateLastRun(_ context.Context, id uuid.UUID, t time.Time) error {
+func (m *mockConfigLister) UpdateLastRun(ctx context.Context, id uuid.UUID, t time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastRunCtx = ctx
 	if m.lastRun == nil {
 		m.lastRun = make(map[uuid.UUID]time.Time)
 	}
@@ -531,5 +533,46 @@ func TestRunSync_FallsBackToLegacyPathWithoutJobManager(t *testing.T) {
 
 	if calls := pipe.getCalls(); len(calls) != 1 {
 		t.Errorf("expected pipeline call in legacy path, got %d", len(calls))
+	}
+}
+
+// TestScheduledSync_UsesProcessCtxNotRequestCtx pins that a cron closure
+// registered via OnConnectorChanged uses the Scheduler's process-lifetime
+// context, not the HTTP request context (which net/http cancels once the
+// handler returns). Before the fix, every scheduled run's UpdateLastRun ran on
+// a dead context and failed with context.Canceled forever.
+func TestScheduledSync_UsesProcessCtxNotRequestCtx(t *testing.T) {
+	id := uuid.New()
+	cm := &mockConnectorGetter{
+		connectors: map[uuid.UUID]connector.Connector{id: &mockConn{name: "sched"}},
+		configs:    map[uuid.UUID]*model.ConnectorConfig{id: {ID: id, Name: "sched"}},
+	}
+	pipe := &mockPipelineRunner{}
+	store := &mockConfigLister{}
+	s := New(cm, pipe, store, zap.NewNop())
+
+	// Schedule change arrives on a request context that is then canceled.
+	reqCtx, cancel := context.WithCancel(context.Background())
+	s.OnConnectorChanged(reqCtx, &model.ConnectorConfig{
+		ID: id, Name: "sched", Enabled: true, Schedule: "* * * * *",
+	})
+	cancel()
+
+	entries := s.cron.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 cron entry, got %d", len(entries))
+	}
+	entries[0].Job.Run() // synchronous — avoids cron timing flakiness
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, ok := store.lastRun[id]; !ok {
+		t.Fatal("expected last_run to be updated")
+	}
+	if store.lastRunCtx == nil {
+		t.Fatal("UpdateLastRun ctx not recorded")
+	}
+	if err := store.lastRunCtx.Err(); err != nil {
+		t.Errorf("scheduled UpdateLastRun ran on a canceled request context (%v); must use the process ctx", err)
 	}
 }

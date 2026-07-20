@@ -251,7 +251,7 @@ func TestLogoutServerFlagClearsOrphan(t *testing.T) {
 	isolateConfig(t)
 	// An orphaned keychain entry for server A while the file points at B.
 	storeToken("http://a:8080", "nexus_pat_a")
-	if err := SaveConfig(&Config{ServerURL: "http://b:8080", Username: "muty"}); err != nil {
+	if err := SaveConfig(&Config{ServerURL: "http://b:8080", TokenID: "id-b", Username: "muty"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -261,6 +261,45 @@ func TestLogoutServerFlagClearsOrphan(t *testing.T) {
 	}
 	if _, ok := loadToken("http://a:8080"); ok {
 		t.Fatal("orphaned keychain entry for server A was not cleared")
+	}
+	// Clearing A's orphan must NOT log out server B — its config file survives.
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServerURL != "http://b:8080" || cfg.Username != "muty" {
+		t.Errorf("server B's config was clobbered by an A-orphan cleanup: %+v", cfg)
+	}
+	// The server-side-token note references B's TokenID, so it must NOT print
+	// when clearing a different server's orphan.
+	if strings.Contains(out, "server-side") {
+		t.Errorf("unexpected server-side note when clearing a different server: %q", out)
+	}
+}
+
+// TestLogout_DifferentServerNoKeychainKeepsConfig guards the different-server
+// early-return predicate: a `logout --server B` while logged in to A (file
+// token, no B keychain entry) must report nothing-to-do and leave A intact,
+// NOT fall through to ClearConfig and destroy A's credentials.
+func TestLogout_DifferentServerNoKeychainKeepsConfig(t *testing.T) {
+	isolateConfig(t)
+	if err := SaveConfig(&Config{ServerURL: "http://a:8080", Token: "nexus_pat_a", TokenID: "id-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := run(t, "", "logout", "--server", "http://b:8080")
+	if err != nil {
+		t.Fatalf("logout: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "No stored credentials.") {
+		t.Errorf("expected 'No stored credentials.' for an unknown server, got %q", out)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServerURL != "http://a:8080" || cfg.Token != "nexus_pat_a" {
+		t.Errorf("server A's config was destroyed by a different-server logout: %+v", cfg)
 	}
 }
 

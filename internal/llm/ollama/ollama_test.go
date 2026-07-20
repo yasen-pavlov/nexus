@@ -146,6 +146,87 @@ func TestGenerate_StreamsToolCall(t *testing.T) {
 	}
 }
 
+// TestGenerate_ToolCall_DoneReasonStop pins that a native /api/chat tool-call
+// turn — which reports done_reason "stop", not "tool_calls" — still yields
+// StopToolUse so the orchestrator dispatches the tool instead of finalizing.
+func TestGenerate_ToolCall_DoneReasonStop(t *testing.T) {
+	frames := []string{
+		`{"model":"gemma3:12b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"nexus_search","arguments":{"query":"foo"}}}]},"done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":2}`,
+	}
+	srv := fakeNDJSON(t, frames)
+	defer srv.Close()
+
+	c := New(srv.URL, zap.NewNop())
+	ch, err := c.Generate(context.Background(), llm.GenerateRequest{
+		Model:    "gemma3:12b",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "search"}},
+		Tools:    []llm.Tool{{Name: "nexus_search", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	var sawFinal bool
+	var stop llm.StopReason
+	for ev := range ch {
+		switch ev.Kind {
+		case llm.EventToolCall:
+			if ev.ToolCall.Final {
+				sawFinal = true
+			}
+		case llm.EventDone:
+			stop = ev.StopReason
+		case llm.EventError:
+			t.Fatalf("err: %v", ev.Err)
+		}
+	}
+	if !sawFinal {
+		t.Error("expected Final tool delta")
+	}
+	if stop != llm.StopToolUse {
+		t.Errorf("stop = %q, want StopToolUse (done_reason 'stop' must not clobber a tool call)", stop)
+	}
+}
+
+// TestGenerate_NonStreamingToolCall_DoneReasonStop is the non-streaming
+// (known-broken-model fallback) variant of the same regression.
+func TestGenerate_NonStreamingToolCall_DoneReasonStop(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"nexus_search","arguments":{"query":"foo"}}}]},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":2}`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, zap.NewNop())
+	ch, err := c.Generate(context.Background(), llm.GenerateRequest{
+		Model:    "qwen3:14b",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "search"}},
+		Tools:    []llm.Tool{{Name: "nexus_search", Schema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	var sawTool bool
+	var stop llm.StopReason
+	for ev := range ch {
+		switch ev.Kind {
+		case llm.EventToolCall:
+			sawTool = true
+		case llm.EventDone:
+			stop = ev.StopReason
+		case llm.EventError:
+			t.Fatalf("err: %v", ev.Err)
+		}
+	}
+	if !sawTool {
+		t.Error("expected a tool call")
+	}
+	if stop != llm.StopToolUse {
+		t.Errorf("stop = %q, want StopToolUse", stop)
+	}
+}
+
 func TestGenerate_NonStreamingFallback_OnKnownBrokenModel(t *testing.T) {
 	// qwen3:14b is in knownToolStreamingBroken; tools must trigger fallback.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

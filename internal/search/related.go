@@ -368,9 +368,19 @@ func (c *Client) runChunkQuery(ctx context.Context, query map[string]any, opName
 	}
 	out := make([]model.Chunk, 0, len(resp.Hits.Hits))
 	for _, hit := range resp.Hits.Hits {
+		// Prefer the first_chunk inner_hit (sorted chunk_index asc, so index 0).
+		// The collapse representative in hit.Source is chosen by the main sort,
+		// which ties arbitrarily across a doc's chunks (they share created_at /
+		// _score) — so it can be an arbitrary mid-document chunk, making
+		// Document.Content start mid-document. The inner_hits are already
+		// round-tripped from OpenSearch on every call; use them. Fall back to
+		// hit.Source for any future caller that omits inner_hits.
+		src := hit.Source
+		if inner, ok := hit.InnerHits["first_chunk"]; ok && len(inner.Hits.Hits) > 0 {
+			src = inner.Hits.Hits[0].Source
+		}
 		var chunk model.Chunk
-		raw, _ := json.Marshal(hit.Source)
-		if err := json.Unmarshal(raw, &chunk); err != nil {
+		if err := json.Unmarshal(src, &chunk); err != nil {
 			continue
 		}
 		out = append(out, chunk)

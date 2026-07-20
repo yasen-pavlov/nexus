@@ -66,4 +66,27 @@ describe("ScheduleField", () => {
     fireEvent.change(input, { target: { value: "*/15 * * * *" } });
     expect(screen.getByText(/every 15 minutes/i)).toBeInTheDocument();
   });
+
+  it.each([
+    ["weekly-shaped", "0 5 * * 1"],
+    ["daily-shaped", "0 9 * * *"],
+    ["hourly-shaped", "0 * * * *"],
+  ])(
+    "typing a %s partial in Custom does not flip the tab or unmount the input",
+    async (_label, partial) => {
+      const user = userEvent.setup();
+      renderWithProviders(<Harness />);
+      await user.click(screen.getByRole("tab", { name: "Custom" }));
+      const input = screen.getByPlaceholderText("0 */4 * * *");
+      fireEvent.change(input, { target: { value: partial } });
+
+      expect(screen.getByRole("tab", { name: "Custom" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      // Input still mounted and holds the typed text (no focus loss).
+      expect(screen.getByPlaceholderText("0 */4 * * *")).toBeInTheDocument();
+      expect(screen.getByDisplayValue(partial)).toBeInTheDocument();
+    },
+  );
 });

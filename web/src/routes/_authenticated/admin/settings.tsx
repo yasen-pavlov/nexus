@@ -482,8 +482,12 @@ function EmbeddingsFormInner({ ctx }: Readonly<{ ctx: UseEmbeddingSettings }>) {
   const dirtyProvider = form.provider !== saved.provider;
   const dirtyModel = form.model !== saved.model;
   const dirtyOllama = form.ollama_url !== saved.ollama_url;
+  // Dirty when the key differs from saved and isn't still the mask. Not gated
+  // on replacingKey: an env-configured provider persists no key in the DB
+  // (saved key ""), so its field renders as a plain input and a first pasted
+  // key would otherwise never mark the form dirty (no Save bar).
   const dirtyKey =
-    replacingKey && form.api_key !== "" && !form.api_key.startsWith("****");
+    form.api_key !== saved.api_key && !form.api_key.startsWith("****");
   const dirty = dirtyProvider || dirtyModel || dirtyOllama || dirtyKey;
 
   const requiresReindex = dirtyProvider || dirtyModel;

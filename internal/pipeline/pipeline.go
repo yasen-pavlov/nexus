@@ -54,6 +54,13 @@ const minEmbeddingAlphabeticTokens = 10
 // less back-pressure on the connector goroutine.
 const indexBatchSize = 25
 
+// embedBatchSize caps how many chunk texts are sent per embedder request.
+// Conservatively under Cohere's 96-text hard cap, and ~64*500≈32K tokens keeps
+// a full sub-batch well under Voyage/OpenAI per-request token budgets and
+// bounds Ollama request size to avoid its 120s CPU timeout. A document with
+// more gated chunks than this is embedded across multiple requests.
+const embedBatchSize = 64
+
 // checkpointInterval is the time-based fallback cadence for persisting
 // cursor state when the connector's own Checkpoint emissions are sparse
 // (e.g. slow-streaming connectors that spend minutes between docs).
@@ -539,37 +546,60 @@ func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Docum
 		return
 	}
 
-	embeddings, err := embedder.Embed(ctx, embedTexts, embedding.InputTypeDocument)
-	if err != nil {
-		p.log.Warn("embedding failed, indexing without vectors",
-			zap.String("source_id", doc.SourceID),
-			zap.Error(err),
-		)
-		return
-	}
-	if len(embeddings) != len(embedTexts) {
-		return
-	}
-	// Guard against a dimension mismatch between the configured embedder and
-	// the index mapping (e.g. a custom model whose Dimension() falls through
-	// to a wrong default). Sending wrong-length vectors would make every
-	// affected item fail the bulk API — and historically that failure was
-	// invisible, silently degrading hybrid search to BM25-only. Skip the
-	// vectors (still indexed for BM25) and log loudly instead.
+	// Embed in provider-safe sub-batches. A large document (e.g. a 150-page
+	// PDF) can produce far more gated chunks than a provider's per-request cap
+	// (Cohere hard-caps at 96 texts; Voyage/OpenAI have token budgets; Ollama a
+	// 120s timeout), and a single over-cap call fails wholesale — for Cohere
+	// with a non-retryable 400, so the whole doc historically ended up indexed
+	// with ZERO vectors. Splitting keeps each request under the caps, and a
+	// failure in one window skips only that window (partial results retained).
 	want := embedder.Dimension()
-	for k := range embeddings {
-		if want > 0 && len(embeddings[k]) != want {
-			p.log.Error("embedding dimension mismatch, indexing without vectors",
+	for start := 0; start < len(embedTexts); start += embedBatchSize {
+		end := min(start+embedBatchSize, len(embedTexts))
+		window := embedTexts[start:end]
+
+		batchEmb, err := embedder.Embed(ctx, window, embedding.InputTypeDocument)
+		if err != nil {
+			p.log.Warn("embedding batch failed, indexing that batch without vectors",
+				zap.String("source_id", doc.SourceID),
+				zap.Int("batch_start", start),
+				zap.Int("batch_end", end),
+				zap.Error(err),
+			)
+			continue
+		}
+		if len(batchEmb) != len(window) {
+			continue
+		}
+		// Dimension guard, scoped to this window — a mismatch (e.g. a custom
+		// model whose Dimension() falls through to a wrong default) would make
+		// every affected item fail the bulk API and silently degrade to
+		// BM25-only. Skip this window's vectors, keep the others.
+		if !dimensionsMatch(batchEmb, want) {
+			p.log.Error("embedding dimension mismatch, indexing batch without vectors",
 				zap.String("source_id", doc.SourceID),
 				zap.Int("want", want),
-				zap.Int("got", len(embeddings[k])),
 			)
-			return
+			continue
+		}
+		for k := range batchEmb {
+			chunks[embedIndices[start+k]].Embedding = batchEmb[k]
 		}
 	}
-	for k, idx := range embedIndices {
-		chunks[idx].Embedding = embeddings[k]
+}
+
+// dimensionsMatch reports whether every vector has the expected dimension.
+// want<=0 means "no expectation" (custom model), so any dimension passes.
+func dimensionsMatch(vectors [][]float32, want int) bool {
+	if want <= 0 {
+		return true
 	}
+	for _, v := range vectors {
+		if len(v) != want {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcileDeletions runs a streaming sorted merge-diff between the

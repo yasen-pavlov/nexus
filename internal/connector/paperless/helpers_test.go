@@ -36,8 +36,10 @@ func TestInitialDocsURL_CursorWins(t *testing.T) {
 		},
 	}
 	got := c.initialDocsURL(cursor)
-	if !strings.Contains(got, "modified__gt=2026-01-01") {
-		t.Errorf("expected cursor date in URL, got %q", got)
+	// Cursor bound is inclusive (gte) so a last-doc-Modified checkpoint
+	// re-fetches boundary/tie docs idempotently instead of skipping them.
+	if !strings.Contains(got, "modified__gte=2026-01-01") {
+		t.Errorf("expected inclusive cursor date in URL, got %q", got)
 	}
 }
 

@@ -394,14 +394,14 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 	// Persist the cursor to keep carrying the value forward and
 	// move on without running the delta SEARCH or any body FETCH.
 	if st.unchanged() {
-		writeFolderCursor(cursorData, folder, st, cursorUIDForFolder(cursor, folder))
+		writeFolderCursor(cursorData, folder, st, st.cachedUID)
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return 0, ctx.Err()
 		}
 		return 0, nil
 	}
 
-	criteria, fetchOpts := c.buildDeltaCriteria(cursor, folder, st.cachedModSeq, st.newHighestModSeq)
+	criteria, fetchOpts := c.buildDeltaCriteria(st)
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
 		return 0, fmt.Errorf("search: %w", err)
@@ -416,14 +416,14 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 	}
 
 	if len(uids) == 0 {
-		writeFolderCursor(cursorData, folder, st, cursorUIDForFolder(cursor, folder))
+		writeFolderCursor(cursorData, folder, st, st.cachedUID)
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return 0, ctx.Err()
 		}
 		return 0, nil
 	}
 
-	return c.streamFolderBodies(ctx, mbc, folder, cursor, cursorData, startedAt, st, uids, fetchOpts, items)
+	return c.streamFolderBodies(ctx, mbc, folder, cursorData, startedAt, st, uids, fetchOpts, items)
 }
 
 // emitFolderEnumeration runs SEARCH ALL and streams every UID as a
@@ -463,9 +463,12 @@ func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient
 // interrupted sync fast-skip (unchanged()) or delta-skip the unfetched
 // batches on the next run, permanently dropping them. The new modseq is
 // committed only after the whole folder's delta is streamed.
-func (c *Connector) streamFolderBodies(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor, cursorData map[string]any, startedAt time.Time, st condStoreState, uids []imap.UID, fetchOpts *imap.FetchOptions, items chan<- model.FetchItem) (int, error) {
+func (c *Connector) streamFolderBodies(ctx context.Context, mbc mailboxClient, folder string, cursorData map[string]any, startedAt time.Time, st condStoreState, uids []imap.UID, fetchOpts *imap.FetchOptions, items chan<- model.FetchItem) (int, error) {
 	processed := 0
-	maxUID := cursorUIDForFolder(cursor, folder)
+	// Seed from st.cachedUID (0 after a UIDVALIDITY rotation) so a re-keyed
+	// folder tracks its new-generation max from scratch rather than the stale
+	// old lastUID — otherwise newly-arrived low UIDs would be missed forever.
+	maxUID := st.cachedUID
 	for i := 0; i < len(uids); i += imapBodyFetchBatch {
 		if ctx.Err() != nil {
 			return processed, ctx.Err()
@@ -534,6 +537,7 @@ func (c *Connector) streamFolderBatch(ctx context.Context, mbc mailboxClient, fo
 type condStoreState struct {
 	cachedUIDValidity uint32
 	cachedModSeq      uint64
+	cachedUID         imap.UID
 	newUIDValidity    uint32
 	newHighestModSeq  uint64
 }
@@ -547,19 +551,24 @@ func (s condStoreState) unchanged() bool {
 		s.cachedUIDValidity == s.newUIDValidity
 }
 
-// resolveCondStoreState reads the cursor's cached values and
-// applies RFC 7162 §5: a UIDVALIDITY change invalidates every
-// cached MODSEQ value, so we drop cachedModSeq and force a full
-// re-fetch from scratch.
+// resolveCondStoreState reads the cursor's cached values and applies RFC 7162
+// §5 / RFC 3501 §2.3.1.1: a UIDVALIDITY change invalidates every cached MODSEQ
+// AND every cached UID, so we drop both cachedModSeq and cachedUID and force a
+// full re-fetch from scratch (the delta search falls back to syncSince rather
+// than a stale UID>lastUID range that a re-keyed mailbox would return nothing
+// for, which would otherwise wipe the folder from the index and never rebuild
+// it).
 func resolveCondStoreState(cursor *model.SyncCursor, folder string, sel *imap.SelectData) condStoreState {
 	s := condStoreState{
 		cachedUIDValidity: cursorUIDValidityForFolder(cursor, folder),
 		cachedModSeq:      cursorModSeqForFolder(cursor, folder),
+		cachedUID:         cursorUIDForFolder(cursor, folder),
 		newUIDValidity:    sel.UIDValidity,
 		newHighestModSeq:  sel.HighestModSeq,
 	}
 	if s.cachedUIDValidity != 0 && s.cachedUIDValidity != s.newUIDValidity {
 		s.cachedModSeq = 0
+		s.cachedUID = 0
 	}
 	return s
 }
@@ -599,16 +608,17 @@ func writeFolderUIDCheckpoint(cursorData map[string]any, folder string, st condS
 // HighestModSeq, we ask the server for "UIDs with MODSEQ > cached"
 // — O(delta) regardless of mailbox size. Otherwise we fall back to
 // the UID-range heuristic (UID > lastUID) that predates CONDSTORE.
-func (c *Connector) buildDeltaCriteria(cursor *model.SyncCursor, folder string, cachedModSeq, newHighestModSeq uint64) (*imap.SearchCriteria, *imap.FetchOptions) {
+func (c *Connector) buildDeltaCriteria(st condStoreState) (*imap.SearchCriteria, *imap.FetchOptions) {
 	opts := defaultFetchOptions()
-	if newHighestModSeq > 0 && cachedModSeq > 0 {
-		opts.ChangedSince = cachedModSeq
+	if st.newHighestModSeq > 0 && st.cachedModSeq > 0 {
+		opts.ChangedSince = st.cachedModSeq
 		return &imap.SearchCriteria{
-			ModSeq: &imap.SearchCriteriaModSeq{ModSeq: cachedModSeq},
+			ModSeq: &imap.SearchCriteriaModSeq{ModSeq: st.cachedModSeq},
 		}, opts
 	}
-	lastUID := cursorUIDForFolder(cursor, folder)
-	return buildFolderSearchCriteria(lastUID, c.syncSince), opts
+	// st.cachedUID is 0 after a UIDVALIDITY rotation (see resolveCondStoreState),
+	// so a re-keyed mailbox falls back to syncSince instead of UID>oldLastUID.
+	return buildFolderSearchCriteria(st.cachedUID, c.syncSince), opts
 }
 
 // cursorUIDValidityForFolder reads the persisted UIDVALIDITY for

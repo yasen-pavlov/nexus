@@ -84,7 +84,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install sqlfluff
-        run: pip install "sqlfluff==4.1.0"
+        run: pip install "sqlfluff==4.2.2"
 
       - name: sqlfluff (migrations)
         run: make lint-sql

@@ -115,6 +115,34 @@ func TestResolveWindowMatch_CyrillicBytes(t *testing.T) {
 	}
 }
 
+func TestResolveWindowMatch_HTMLEscapedFragment(t *testing.T) {
+	// The highlighter HTML-escapes fragment text (encoder "html"), so a
+	// message containing an apostrophe comes back with &#x27; in the
+	// headline. Content stays raw. resolveWindowMatch must unescape the
+	// fragment before locating it in content — and account for the escaped
+	// entity BEFORE the first <mark> when computing the offset, otherwise it
+	// either fails to find the fragment or lands on the wrong line.
+	lines := []any{
+		lineMeta(100, "ok", "Alice", "avatars:1", 1, "2026-04-08T10:00:00Z"),
+		lineMeta(101, "don't be late", "Bob", "avatars:2", 2, "2026-04-08T10:05:00Z"),
+	}
+	content := "ok\ndon't be late"
+	// OpenSearch escapes the apostrophe and marks the matched term.
+	headline := "don&#x27;t be <mark>late</mark>"
+	hit := hitWith(content, headline, "group-7", lines)
+
+	m := resolveWindowMatch(hit)
+	if m == nil {
+		t.Fatal("expected match on fragment with an escaped apostrophe, got nil")
+	}
+	if m.MessageID != 101 {
+		t.Errorf("MessageID = %d, want 101 (the \"don't be late\" line)", m.MessageID)
+	}
+	if m.SenderName != "Bob" {
+		t.Errorf("SenderName = %q, want Bob", m.SenderName)
+	}
+}
+
 func TestResolveWindowMatch_NilCases(t *testing.T) {
 	t.Run("non-telegram hit", func(t *testing.T) {
 		hit := &model.DocumentHit{Rank: 1, Headline: "<mark>x</mark>"}

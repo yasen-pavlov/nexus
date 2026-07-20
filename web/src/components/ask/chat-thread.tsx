@@ -116,7 +116,7 @@ export function ChatThread({ chatID, initialContent }: Readonly<ChatThreadProps>
   // "streaming" card and hide its persisted twin from the message list.
   const showStreaming = turn.phase !== "idle";
   const persistedMessages = showStreaming
-    ? detail.data.messages.filter((m) => m.id !== turn.messageID && m.content !== turn.userContent)
+    ? hideStreamingTwin(detail.data.messages, turn.messageID)
     : detail.data.messages;
   const isFirstTurn = persistedMessages.length === 0 && turn.phase === "idle";
   const lastUserSeq = lastSeqOfRole(persistedMessages, "user");
@@ -258,6 +258,31 @@ function lastSeqOfRole(msgs: ChatMessage[], role: ChatMessage["role"]): number {
   let max = -1;
   for (const m of msgs) if (m.role === role && m.seq > max) max = m.seq;
   return max;
+}
+
+// hideStreamingTwin removes the just-persisted twin of the active streaming
+// turn from the message list: the assistant message with the turn's id, and the
+// user message immediately preceding it (by seq). Identifying the twin
+// STRUCTURALLY — not by matching content — is essential: a repeated short
+// message ("yes", "thanks") would otherwise hide an EARLIER identical user
+// bubble too, orphaning its answer. When the twin isn't persisted yet
+// (messageID undefined, or the refetch hasn't landed) all messages are kept.
+function hideStreamingTwin(
+  messages: ChatMessage[],
+  messageID: string | undefined,
+): ChatMessage[] {
+  if (!messageID) return messages;
+  const assistant = messages.find((m) => m.id === messageID);
+  if (!assistant) return messages;
+  let twinUserSeq = -1;
+  for (const m of messages) {
+    if (m.role === "user" && m.seq < assistant.seq && m.seq > twinUserSeq) {
+      twinUserSeq = m.seq;
+    }
+  }
+  return messages.filter(
+    (m) => m.id !== messageID && !(m.role === "user" && m.seq === twinUserSeq),
+  );
 }
 
 // filterToCited returns the chunks whose DocID appears in `citations`.

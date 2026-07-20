@@ -4,10 +4,28 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/muty/nexus/internal/lang"
 )
+
+func TestRegistry_RegistersTikaEvenWhenUnreachable(t *testing.T) {
+	// Boot-race fix: Tika must be registered whenever the URL is set, even if
+	// it is unreachable at construction — otherwise a transient outage at boot
+	// permanently disables binary extraction for the whole process lifetime.
+	r := NewRegistry("http://127.0.0.1:59999", nil) // no listener
+	if !r.CanExtract("application/pdf") {
+		t.Fatal("Tika should be registered despite being unreachable")
+	}
+	_, err := r.Extract(context.Background(), "application/pdf", []byte("data"))
+	if err == nil {
+		t.Fatal("expected a per-request error from the unreachable Tika")
+	}
+	if strings.Contains(err.Error(), "no extractor available") {
+		t.Errorf("Tika was not registered (got %q); a down Tika must surface a request error, not a missing extractor", err)
+	}
+}
 
 func TestTika_CanExtract(t *testing.T) {
 	tika := NewTika("http://localhost:9998", nil)

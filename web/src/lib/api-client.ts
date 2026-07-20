@@ -40,7 +40,26 @@ export async function fetchAPI<T>(
   // 204 No Content is a real success path (DELETE flows). Any caller
   // that types T as void doesn't expect a body anyway.
   if (res.status === 204) return undefined as T;
-  const body: APIResponse<T> = await res.json();
+  // Non-2xx: surface an actionable message. Prefer the {error} envelope, but
+  // fall back to the HTTP status for non-JSON error bodies — a backend panic
+  // (chi's Recoverer writes an empty/plain-text 500) or a reverse-proxy
+  // 502/504 HTML page would otherwise throw a cryptic SyntaxError that the
+  // query retry treats as transient.
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const env = (await res.json()) as APIResponse<T>;
+      if (env.error) msg = env.error;
+    } catch {
+      // non-JSON error body (proxy HTML, panic, empty) — keep the HTTP status
+    }
+    throw new Error(msg);
+  }
+  // 2xx: tolerate an empty body (e.g. a proxy that drops the payload) so we
+  // don't throw a JSON parse error on an otherwise-successful response.
+  const text = await res.text();
+  if (!text) return undefined as T;
+  const body = JSON.parse(text) as APIResponse<T>;
   if (body.error) throw new Error(body.error);
   return body.data as T;
 }

@@ -487,8 +487,11 @@ func ImageContentBlock(img llm.Image) sdk.ContentBlockParamUnion {
 
 // PDFContentBlock builds a native-PDF document block from raw bytes (Phase
 // 6b). Claude reads the PDF's text AND renders its pages, so charts/scans/
-// signatures that text extraction loses become visible. Title carries the
-// filename for provenance.
+// signatures that text extraction loses become visible. Title carries
+// pdf.SourceID (the chunk handle) so a citation Claude emits against this PDF
+// back-maps to its evidence chunk — mapCitation resolves DocID from the block
+// Title, exactly as docToBlock does. The human-readable filename moves to the
+// free-form Context annotation for provenance.
 //
 // Citations MUST be enabled to match the text document blocks: Anthropic
 // rejects a request that mixes citations-enabled and citations-disabled
@@ -501,9 +504,13 @@ func PDFContentBlock(pdf llm.PDF) sdk.ContentBlockParamUnion {
 			OfBase64: &sdk.Base64PDFSourceParam{Data: base64.StdEncoding.EncodeToString(pdf.Data)},
 		},
 		Citations: sdk.CitationsConfigParam{Enabled: sdk.Bool(true)},
+		// Chunk handle, mirroring docToBlock (Title=doc.ID). SourceID is always
+		// populated on this path, so no guard — an empty Title would recreate
+		// the unresolvable-citation-pill bug this fixes.
+		Title: sdk.String(pdf.SourceID),
 	}
 	if pdf.Filename != "" {
-		block.Title = sdk.String(pdf.Filename)
+		block.Context = sdk.String("filename=" + pdf.Filename)
 	}
 	return sdk.ContentBlockParamUnion{OfDocument: &block}
 }

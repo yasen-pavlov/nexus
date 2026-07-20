@@ -407,9 +407,11 @@ func (h *handler) purgeUserConnectors(ctx context.Context, id uuid.UUID) error {
 //	@Accept		json
 //	@Param		id		path	string					true	"User UUID"
 //	@Param		request	body	changePasswordRequest	true	"New password"
-//	@Success	204
+//	@Success	200	{object}	authResponse	"self-rotation: fresh token so the caller stays signed in"
+//	@Success	204	"admin changed another user's password"
 //	@Failure	400	{object}	APIResponse
 //	@Failure	403	{object}	APIResponse
+//	@Failure	404	{object}	APIResponse
 //	@Security	BearerAuth
 //	@Router		/users/{id}/password [put]
 func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {

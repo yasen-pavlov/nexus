@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/muty/nexus/internal/model"
@@ -86,12 +87,18 @@ func TestResolveCondStoreState_UIDValidityRotationInvalidatesModSeq(t *testing.T
 		CursorData: map[string]any{
 			"uidvalidity:INBOX": float64(42),
 			"modseq:INBOX":      float64(100),
+			"uid:INBOX":         float64(5000),
 		},
 	}
 	sel := &imap.SelectData{UIDValidity: 999, HighestModSeq: 200}
 	st := resolveCondStoreState(cursor, "INBOX", sel)
 	if st.cachedModSeq != 0 {
 		t.Errorf("cachedModSeq = %d, want 0 after UIDValidity rotation", st.cachedModSeq)
+	}
+	// The cached UID must also be reset — a re-keyed mailbox's old UIDs are
+	// invalid, so the delta must fall back to syncSince, not UID>5000.
+	if st.cachedUID != 0 {
+		t.Errorf("cachedUID = %d, want 0 after UIDValidity rotation", st.cachedUID)
 	}
 	if st.newUIDValidity != 999 {
 		t.Errorf("newUIDValidity = %d, want 999", st.newUIDValidity)
@@ -105,12 +112,16 @@ func TestResolveCondStoreState_CarriesCachedValues(t *testing.T) {
 		CursorData: map[string]any{
 			"uidvalidity:INBOX": float64(42),
 			"modseq:INBOX":      float64(100),
+			"uid:INBOX":         float64(5000),
 		},
 	}
 	sel := &imap.SelectData{UIDValidity: 42, HighestModSeq: 200}
 	st := resolveCondStoreState(cursor, "INBOX", sel)
 	if st.cachedModSeq != 100 {
 		t.Errorf("cachedModSeq = %d, want 100", st.cachedModSeq)
+	}
+	if st.cachedUID != 5000 {
+		t.Errorf("cachedUID = %d, want 5000 (validity matched)", st.cachedUID)
 	}
 	if st.newHighestModSeq != 200 {
 		t.Errorf("newHighestModSeq = %d, want 200", st.newHighestModSeq)
@@ -175,7 +186,7 @@ func TestWriteFolderCursor_OmitsModSeqOnNonCondStoreServer(t *testing.T) {
 // layer ChangedSince onto the FETCH options.
 func TestBuildDeltaCriteria_CondStoreDelta(t *testing.T) {
 	c := &Connector{}
-	criteria, opts := c.buildDeltaCriteria(nil, "INBOX", 50, 100)
+	criteria, opts := c.buildDeltaCriteria(condStoreState{cachedModSeq: 50, newHighestModSeq: 100})
 	if criteria.ModSeq == nil || criteria.ModSeq.ModSeq != 50 {
 		t.Errorf("expected ModSeq=50, got %+v", criteria.ModSeq)
 	}
@@ -189,8 +200,7 @@ func TestBuildDeltaCriteria_CondStoreDelta(t *testing.T) {
 // UID-range heuristic — UID > lastUID from the cursor.
 func TestBuildDeltaCriteria_FallsBackToUIDRange(t *testing.T) {
 	c := &Connector{}
-	cursor := &model.SyncCursor{CursorData: map[string]any{"uid:INBOX": float64(42)}}
-	criteria, _ := c.buildDeltaCriteria(cursor, "INBOX", 0, 0)
+	criteria, _ := c.buildDeltaCriteria(condStoreState{cachedUID: 42})
 	if criteria.ModSeq != nil {
 		t.Errorf("expected no ModSeq in fallback path, got %+v", criteria.ModSeq)
 	}
@@ -204,12 +214,28 @@ func TestBuildDeltaCriteria_FallsBackToUIDRange(t *testing.T) {
 // delta — fall back to UID-range just like the no-CONDSTORE case.
 func TestBuildDeltaCriteria_NoCachedModSeqFallsBack(t *testing.T) {
 	c := &Connector{}
-	criteria, opts := c.buildDeltaCriteria(nil, "INBOX", 0, 200)
+	criteria, opts := c.buildDeltaCriteria(condStoreState{newHighestModSeq: 200})
 	if criteria.ModSeq != nil {
 		t.Errorf("first sync shouldn't use MODSEQ criterion, got %+v", criteria.ModSeq)
 	}
 	if opts.ChangedSince != 0 {
 		t.Errorf("first sync shouldn't set ChangedSince, got %d", opts.ChangedSince)
+	}
+}
+
+// TestBuildDeltaCriteria_UIDValidityRotationUsesSyncSince: after a UIDVALIDITY
+// rotation resolveCondStoreState zeroes cachedUID (and cachedModSeq), so the
+// delta must fall back to syncSince — NOT emit UID>oldLastUID against a re-keyed
+// mailbox (which would return nothing and wipe the folder from the index).
+func TestBuildDeltaCriteria_UIDValidityRotationUsesSyncSince(t *testing.T) {
+	since := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	c := &Connector{syncSince: since}
+	criteria, _ := c.buildDeltaCriteria(condStoreState{cachedUID: 0, cachedModSeq: 0, newHighestModSeq: 0})
+	if len(criteria.UID) != 0 {
+		t.Errorf("expected no UID>lastUID range after rotation, got %+v", criteria.UID)
+	}
+	if !criteria.Since.Equal(since) {
+		t.Errorf("expected Since=%v (syncSince) after rotation, got %v", since, criteria.Since)
 	}
 }
 

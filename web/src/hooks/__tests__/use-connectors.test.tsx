@@ -11,6 +11,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
 import type { ReactNode } from "react";
 
+import { toast } from "sonner";
+
 import { server } from "@/test/mocks/server";
 import { setToken } from "@/lib/api-client";
 import { connectorKeys } from "@/lib/query-keys";
@@ -19,6 +21,10 @@ import { useConnectors, useConnector } from "../use-connectors";
 const navigate = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => navigate,
+}));
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
 }));
 
 function wrap() {
@@ -37,6 +43,7 @@ function wrap() {
 beforeEach(() => {
   setToken("tok");
   navigate.mockClear();
+  vi.mocked(toast.error).mockClear();
 });
 afterEach(() => server.resetHandlers());
 
@@ -108,6 +115,50 @@ describe("useConnectors", () => {
     });
     expect(deleted).toBe(true);
   });
+
+  it("toasts the error message on a failed create / update / delete", async () => {
+    server.use(
+      http.get("*/api/connectors/", () =>
+        HttpResponse.json({ data: [baseConnector] }),
+      ),
+      http.post("*/api/connectors/", () =>
+        HttpResponse.json({ error: "connector name already exists" }, { status: 409 }),
+      ),
+      http.put("*/api/connectors/c-1", () =>
+        HttpResponse.json({ error: "invalid cron" }, { status: 400 }),
+      ),
+      http.delete("*/api/connectors/c-1", () =>
+        HttpResponse.json({ error: "delete failed" }, { status: 500 }),
+      ),
+    );
+
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useConnectors(), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await expect(
+        result.current.createConnector({
+          type: "filesystem", name: "dup", config: {}, enabled: true, schedule: "", shared: false,
+        }),
+      ).rejects.toThrow("connector name already exists");
+    });
+    expect(toast.error).toHaveBeenCalledWith("connector name already exists");
+
+    await act(async () => {
+      await expect(
+        result.current.updateConnector({
+          id: "c-1", type: "filesystem", name: "x", config: {}, enabled: true, schedule: "", shared: false,
+        }),
+      ).rejects.toThrow("invalid cron");
+    });
+    expect(toast.error).toHaveBeenCalledWith("invalid cron");
+
+    await act(async () => {
+      await expect(result.current.deleteConnector("c-1")).rejects.toThrow("delete failed");
+    });
+    expect(toast.error).toHaveBeenCalledWith("delete failed");
+  });
 });
 
 describe("useConnector", () => {
@@ -157,5 +208,40 @@ describe("useConnector", () => {
     const { result } = renderHook(() => useConnector(""), { wrapper: Wrapper });
     expect(result.current.isLoading).toBe(true);
     expect(result.current.connector).toBeUndefined();
+  });
+
+  it("toasts on a failed update / delete", async () => {
+    server.use(
+      http.get("*/api/connectors/c-1", () =>
+        HttpResponse.json({ data: baseConnector }),
+      ),
+      http.get("*/api/connectors/c-1/runs", () =>
+        HttpResponse.json({ data: [] }),
+      ),
+      http.put("*/api/connectors/c-1", () =>
+        HttpResponse.json({ error: "save failed" }, { status: 400 }),
+      ),
+      http.delete("*/api/connectors/c-1", () =>
+        HttpResponse.json({ error: "delete failed" }, { status: 500 }),
+      ),
+    );
+
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useConnector("c-1"), { wrapper: Wrapper });
+    await waitFor(() => expect(result.current.connector?.id).toBe("c-1"));
+
+    await act(async () => {
+      await expect(
+        result.current.updateConnector({
+          type: "filesystem", name: "x", config: {}, enabled: true, schedule: "", shared: false,
+        }),
+      ).rejects.toThrow("save failed");
+    });
+    expect(toast.error).toHaveBeenCalledWith("save failed");
+
+    await act(async () => {
+      await expect(result.current.deleteConnector()).rejects.toThrow("delete failed");
+    });
+    expect(toast.error).toHaveBeenCalledWith("delete failed");
   });
 });

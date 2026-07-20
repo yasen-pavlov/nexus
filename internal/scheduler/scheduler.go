@@ -49,12 +49,13 @@ type JobManager interface {
 
 // Scheduler manages cron jobs for automatic connector syncs.
 //
-// Context handling: cron callbacks take no arguments, so the
-// process-lifetime context passed into Start is captured into each
-// cron job's closure at addJob time rather than stored on the struct.
-// OnConnectorChanged / OnConnectorRemoved also take a context so
-// late-arriving schedule changes capture the caller's context (typically
-// the HTTP request's) into the same closure shape.
+// Context handling: cron callbacks take no arguments, so each cron closure
+// uses the process-lifetime context stored on the struct (baseCtx, set from
+// Start's ctx). It must NOT capture a request context — OnConnectorChanged is
+// called from HTTP handlers, whose r.Context() is canceled the moment the
+// handler returns, so a captured request ctx would be dead by the time cron
+// fires (breaking the post-sync UpdateLastRun write, and the whole sync on the
+// legacy path). baseCtx is read/written under mu.
 type Scheduler struct {
 	cron    *cron.Cron
 	cm      ConnectorGetter
@@ -63,17 +64,21 @@ type Scheduler struct {
 	jobs    JobManager // may be nil
 	log     *zap.Logger
 	mu      sync.Mutex
+	baseCtx context.Context
 	entries map[uuid.UUID]cron.EntryID
 }
 
 // New creates a new Scheduler.
 func New(cm ConnectorGetter, pipe PipelineRunner, store ConfigLister, log *zap.Logger) *Scheduler {
 	return &Scheduler{
-		cron:    cron.New(),
-		cm:      cm,
-		pipe:    pipe,
-		store:   store,
-		log:     log,
+		cron:  cron.New(),
+		cm:    cm,
+		pipe:  pipe,
+		store: store,
+		log:   log,
+		// Non-nil default so a schedule change arriving before Start still has
+		// a usable (never-canceled) context.
+		baseCtx: context.Background(),
 		entries: make(map[uuid.UUID]cron.EntryID),
 	}
 }
@@ -88,6 +93,12 @@ func (s *Scheduler) SetJobManager(jm JobManager) {
 
 // Start loads scheduled connectors from the database and starts the cron runner.
 func (s *Scheduler) Start(ctx context.Context) error {
+	// Store the process-lifetime context so every cron closure uses it instead
+	// of a request context. addJob reads baseCtx under mu, so take the lock.
+	s.mu.Lock()
+	s.baseCtx = ctx
+	s.mu.Unlock()
+
 	configs, err := s.store.ListConnectorConfigs(ctx)
 	if err != nil {
 		return fmt.Errorf("scheduler: load configs: %w", err)
@@ -95,7 +106,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 	for _, cfg := range configs {
 		if cfg.Enabled && cfg.Schedule != "" {
-			s.addJob(ctx, cfg)
+			s.addJob(cfg)
 		}
 	}
 
@@ -111,13 +122,13 @@ func (s *Scheduler) Stop() {
 	s.log.Info("scheduler stopped")
 }
 
-// OnConnectorChanged is called when a connector is created or updated.
-// ctx is captured into the cron job's closure so late-arriving schedule
-// changes still have a context for cron-triggered syncs and the
-// post-sync UpdateLastRun write — typically the HTTP request's context.
-func (s *Scheduler) OnConnectorChanged(ctx context.Context, cfg *model.ConnectorConfig) {
+// OnConnectorChanged is called when a connector is created or updated. The ctx
+// is intentionally ignored: it is the HTTP request's context, which net/http
+// cancels when the handler returns, so it must never reach the cron closure —
+// the closure uses the Scheduler's process-lifetime baseCtx instead.
+func (s *Scheduler) OnConnectorChanged(_ context.Context, cfg *model.ConnectorConfig) {
 	if cfg.Enabled && cfg.Schedule != "" {
-		s.addJob(ctx, *cfg)
+		s.addJob(*cfg)
 	} else {
 		s.removeJob(cfg.ID)
 	}
@@ -128,7 +139,7 @@ func (s *Scheduler) OnConnectorRemoved(_ context.Context, id uuid.UUID, _ string
 	s.removeJob(id)
 }
 
-func (s *Scheduler) addJob(ctx context.Context, cfg model.ConnectorConfig) {
+func (s *Scheduler) addJob(cfg model.ConnectorConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -140,9 +151,12 @@ func (s *Scheduler) addJob(ctx context.Context, cfg model.ConnectorConfig) {
 
 	connName := cfg.Name
 	connID := cfg.ID
+	// Capture the process-lifetime base context (read under mu), never a
+	// request context — see the Scheduler and OnConnectorChanged docs.
+	baseCtx := s.baseCtx
 
 	eid, err := s.cron.AddFunc(cfg.Schedule, func() {
-		s.runSync(ctx, connID)
+		s.runSync(baseCtx, connID)
 	})
 	if err != nil {
 		s.log.Error("failed to add cron job",

@@ -82,6 +82,38 @@ describe("fetchAPI", () => {
     );
     await expect(fetchAPI("/api/nope")).rejects.toThrow("bad input");
   });
+
+  it("throws HTTP <status> on a non-JSON error body (backend panic / proxy HTML)", async () => {
+    server.use(
+      http.get("*/api/boom", () =>
+        new HttpResponse("Internal Server Error", { status: 500 }),
+      ),
+    );
+    await expect(fetchAPI("/api/boom")).rejects.toThrow(/HTTP 500/);
+  });
+
+  it("throws HTTP <status> on an empty-body error (chi Recoverer)", async () => {
+    server.use(
+      http.get("*/api/empty500", () => new HttpResponse(null, { status: 500 })),
+    );
+    await expect(fetchAPI("/api/empty500")).rejects.toThrow(/HTTP 500/);
+  });
+
+  it("throws (not resolves undefined) on a non-2xx JSON body without an error field", async () => {
+    server.use(
+      http.get("*/api/badgateway", () =>
+        HttpResponse.json({ data: null }, { status: 502 }),
+      ),
+    );
+    await expect(fetchAPI("/api/badgateway")).rejects.toThrow(/HTTP 502/);
+  });
+
+  it("resolves undefined for an empty 2xx body", async () => {
+    server.use(
+      http.get("*/api/empty200", () => new HttpResponse(null, { status: 200 })),
+    );
+    await expect(fetchAPI("/api/empty200")).resolves.toBeUndefined();
+  });
 });
 
 describe("fetchAuthedBlob", () => {

@@ -199,18 +199,22 @@ describe("ChatThread", () => {
     expect(screen.getByText("Generating answer")).toBeInTheDocument();
   });
 
-  it("hides the persisted twin of the streaming turn (de-dupe by messageID/content)", async () => {
-    // The persisted list already contains the message the stream is
-    // replaying; it must be filtered out so it doesn't render twice.
+  it("hides the persisted twin (structural: assistant by id + preceding user)", async () => {
+    // A finished turn whose twin IS persisted (messageID set). The persisted
+    // user+assistant pair must be hidden so only the streaming card shows it.
     setChat({
       isPending: false,
       isError: false,
-      data: detail([userMsg({ content: "Dup question" })]),
+      data: detail([
+        userMsg({ id: "u1", seq: 0, content: "Dup question" }),
+        assistantMsg({ id: "a1", seq: 1 }),
+      ]),
     });
     useChatStreamMock.mockReturnValue({
       turn: {
         ...IDLE_TURN,
-        phase: "streaming",
+        phase: "done",
+        messageID: "a1",
         userContent: "Dup question",
         answer: "answer",
         startedAt: Date.now(),
@@ -223,5 +227,43 @@ describe("ChatThread", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Dup question")).toHaveLength(1),
     );
+  });
+
+  it("does NOT hide an earlier identical user bubble when the message repeats", async () => {
+    // Two turns both with user content "yes". Only the just-persisted twin
+    // (messageID a2 + its preceding user u2) is hidden — the earlier "yes"
+    // bubble and its answer must survive.
+    setChat({
+      isPending: false,
+      isError: false,
+      data: detail([
+        userMsg({ id: "u0", seq: 0, content: "yes" }),
+        assistantMsg({ id: "a0", seq: 1, content: "first answer" }),
+        userMsg({ id: "u2", seq: 2, content: "yes" }),
+        assistantMsg({ id: "a2", seq: 3, content: "second answer" }),
+      ]),
+    });
+    useChatStreamMock.mockReturnValue({
+      turn: {
+        ...IDLE_TURN,
+        phase: "done",
+        messageID: "a2",
+        userContent: "yes",
+        answer: "streamed",
+        startedAt: Date.now(),
+      },
+      start: vi.fn(),
+      cancel: vi.fn(),
+      reset: vi.fn(),
+    });
+    renderWithRouter(<ChatThread chatID="chat-1" />);
+    // Earlier turn survives.
+    await waitFor(() =>
+      expect(screen.getByText("first answer")).toBeInTheDocument(),
+    );
+    // Two "yes": the earlier persisted u0 + the streaming card. u2 (twin) hidden.
+    expect(screen.getAllByText("yes")).toHaveLength(2);
+    // The just-persisted assistant twin is hidden (streaming card shows it).
+    expect(screen.queryByText("second answer")).not.toBeInTheDocument();
   });
 });

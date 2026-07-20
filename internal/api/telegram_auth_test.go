@@ -3,10 +3,34 @@ package api
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
 )
+
+func TestInteractiveAuth_Code_ContextCanceled(t *testing.T) {
+	// codeCh stays empty so Code() would block forever on a bare receive; a
+	// canceled ctx must unblock it (otherwise an abandoned auth flow wedges the
+	// goroutine + MTProto client for the process lifetime).
+	a := &interactiveAuth{codeCh: make(chan string)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.Code(ctx, &tg.AuthSentCode{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Code() returned nil error on canceled ctx, want ctx.Err()")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Code() did not observe context cancellation (still blocked)")
+	}
+}
 
 func TestInteractiveAuth_Phone(t *testing.T) {
 	a := &interactiveAuth{phone: "+1234567890"}

@@ -537,10 +537,21 @@ func (h *handler) runBatchSyncJob(cid uuid.UUID, ctx context.Context, name strin
 //	@Tags		sync
 //	@Produce	json
 //	@Success	202	{object}	map[string]any
+//	@Failure	409	{object}	APIResponse	"A sync is running; cancel it and retry"
 //	@Failure	500	{object}	APIResponse
 //	@Security	BearerAuth
 //	@Router		/reindex [post]
 func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
+	// Refuse to reindex while a sync is in flight. A running sync would keep
+	// bulk-writing into the freshly recreated index (possibly with the old
+	// embedding dimension) and, worse, its next checkpoint would re-persist a
+	// pre-reindex cursor — resurrecting it and permanently skipping everything
+	// before it. Fail fast; the admin cancels the sync and retries.
+	if n := h.syncJobs.RunningCount(); n > 0 {
+		writeError(w, http.StatusConflict, "cannot reindex while syncs are running; cancel them and retry")
+		return
+	}
+
 	// 1. Recreate index with current dimension
 	dim := h.em.Dimension()
 	if err := h.search.RecreateIndex(r.Context(), dim); err != nil {

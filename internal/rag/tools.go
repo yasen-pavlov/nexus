@@ -421,18 +421,68 @@ func appendUniqueDocs(dst, src []llm.Document) []llm.Document {
 	if len(src) == 0 {
 		return dst
 	}
-	seen := make(map[string]struct{}, len(dst)+len(src))
-	for _, d := range dst {
-		seen[d.ID] = struct{}{}
+	idx := make(map[string]int, len(dst)+len(src))
+	for i, d := range dst {
+		idx[d.ID] = i
 	}
 	for _, d := range src {
-		if _, ok := seen[d.ID]; ok {
+		if i, ok := idx[d.ID]; ok {
+			// Already present — usually a text-only entry from the initial
+			// retrieval or a prior nexus_search round. Merge any media the
+			// incoming copy carries onto the existing entry IN PLACE, preserving
+			// the stable append order citation indices depend on. This is the
+			// nexus_open_attachment path: the opened chunk id is always already
+			// in dst as text, so discarding the media-bearing copy (the old
+			// behavior) meant the model was told "(image attached below)" for
+			// media it never actually received.
+			mergeDocMedia(&dst[i], d)
 			continue
 		}
-		seen[d.ID] = struct{}{}
+		idx[d.ID] = len(dst)
 		dst = append(dst, d)
 	}
 	return dst
+}
+
+// mergeDocMedia appends src's Images/PDFs onto dst, skipping any whose SourceID
+// is already present so re-opening an already-auto-attached binary doesn't
+// double-attach it (wasted provider budget). Media with an empty SourceID
+// always appends, to avoid collapsing distinct payloads.
+func mergeDocMedia(dst *llm.Document, src llm.Document) {
+	if len(src.Images) > 0 {
+		have := make(map[string]struct{}, len(dst.Images))
+		for _, im := range dst.Images {
+			if im.SourceID != "" {
+				have[im.SourceID] = struct{}{}
+			}
+		}
+		for _, im := range src.Images {
+			if im.SourceID != "" {
+				if _, ok := have[im.SourceID]; ok {
+					continue
+				}
+				have[im.SourceID] = struct{}{}
+			}
+			dst.Images = append(dst.Images, im)
+		}
+	}
+	if len(src.PDFs) > 0 {
+		have := make(map[string]struct{}, len(dst.PDFs))
+		for _, p := range dst.PDFs {
+			if p.SourceID != "" {
+				have[p.SourceID] = struct{}{}
+			}
+		}
+		for _, p := range src.PDFs {
+			if p.SourceID != "" {
+				if _, ok := have[p.SourceID]; ok {
+					continue
+				}
+				have[p.SourceID] = struct{}{}
+			}
+			dst.PDFs = append(dst.PDFs, p)
+		}
+	}
 }
 
 // appendUniqueChunks is the ChunkPreview twin of appendUniqueDocs —

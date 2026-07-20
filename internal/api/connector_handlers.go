@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -207,6 +208,11 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateConnectorName(req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := validateSchedule(req.Schedule); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -259,6 +265,7 @@ func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 //	@Param		request	body	updateConnectorRequest	true	"Updated config"
 //	@Success	200	{object}	model.ConnectorConfig
 //	@Failure	400	{object}	APIResponse
+//	@Failure	403	{object}	APIResponse	"Not the owner, or non-admin attempting to share"
 //	@Failure	404	{object}	APIResponse
 //	@Failure	409	{object}	APIResponse	"Name already exists"
 //	@Security	BearerAuth
@@ -280,6 +287,11 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateConnectorName(req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := validateSchedule(req.Schedule); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -298,6 +310,18 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 
 	if !canModifyConnector(auth.UserFromContext(r.Context()), existing) {
 		writeMutationDenied(w, auth.UserFromContext(r.Context()), existing)
+		return
+	}
+
+	// Only admins may flip a connector to shared, mirroring CreateConnector.
+	// Without this, a non-admin owner of a private connector passes the
+	// canModifyConnector check above (it's still private, so they own it) and
+	// could set Shared=true — propagateOwnershipChange would then expose all of
+	// their indexed chunks to every user, and the owner would be trapped since
+	// canModifyConnector denies a non-admin any mutation once Shared is true.
+	claims := auth.UserFromContext(r.Context())
+	if req.Shared && !existing.Shared && (claims == nil || claims.Role != "admin") {
+		writeError(w, http.StatusForbidden, "only admins can share a connector")
 		return
 	}
 
@@ -473,6 +497,29 @@ func (h *handler) GetConnectorAvatar(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, rc); err != nil {
 		h.log.Warn("stream avatar failed", zap.Error(err))
 	}
+}
+
+// validateConnectorName rejects names that could escape the binary-cache
+// directory layout, which uses the connector name raw as a path component
+// (filepath.Join(basePath, sourceType, sourceName, hash)). A targeted denylist
+// rather than a strict allowlist, so legitimate names with spaces or unicode
+// ("My Email", "Работа") still work — only path separators, NUL bytes, the
+// dot-directories, and absurd lengths are blocked. Paired with a filepath.Rel
+// containment check in the storage layer as defense-in-depth.
+func validateConnectorName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("name is required")
+	}
+	if len(name) > 128 {
+		return errors.New("name must be 128 characters or fewer")
+	}
+	if strings.TrimSpace(name) == "." || strings.TrimSpace(name) == ".." {
+		return errors.New("name must not be '.' or '..'")
+	}
+	if strings.ContainsAny(name, "/\\\x00") {
+		return errors.New("name must not contain path separators or null bytes")
+	}
+	return nil
 }
 
 func validateSchedule(schedule string) error {

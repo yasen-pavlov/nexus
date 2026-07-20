@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 
 import { fetchAPI } from "@/lib/api-client";
 import type { ConnectorConfig, SyncRun } from "@/lib/api-types";
@@ -42,6 +43,7 @@ export function useConnectors() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: connectorKeys.list() });
     },
+    onError: (err: Error) => toast.error(err.message || "Create failed"),
   });
 
   const update = useMutation({
@@ -55,6 +57,7 @@ export function useConnectors() {
       queryClient.invalidateQueries({ queryKey: connectorKeys.list() });
       queryClient.invalidateQueries({ queryKey: connectorKeys.detail(variables.id) });
     },
+    onError: (err: Error) => toast.error(err.message || "Save failed"),
   });
 
   const remove = useMutation({
@@ -64,6 +67,7 @@ export function useConnectors() {
       queryClient.invalidateQueries({ queryKey: connectorKeys.list() });
       queryClient.removeQueries({ queryKey: connectorKeys.detail(id) });
     },
+    onError: (err: Error) => toast.error(err.message || "Delete failed"),
   });
 
   return {
@@ -111,6 +115,7 @@ export function useConnector(id: string) {
       queryClient.invalidateQueries({ queryKey: connectorKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: connectorKeys.list() });
     },
+    onError: (err: Error) => toast.error(err.message || "Save failed"),
   });
 
   const remove = useMutation({
@@ -120,6 +125,7 @@ export function useConnector(id: string) {
       queryClient.removeQueries({ queryKey: connectorKeys.detail(id) });
       navigate({ to: "/connectors" });
     },
+    onError: (err: Error) => toast.error(err.message || "Delete failed"),
   });
 
   return {

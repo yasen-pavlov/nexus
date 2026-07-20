@@ -70,8 +70,12 @@ function RerankFormInner({ ctx }: Readonly<{ ctx: UseRerankSettings }>) {
 
   const dirtyProvider = form.provider !== saved.provider;
   const dirtyModel = form.model !== saved.model;
+  // Dirty when the key differs from saved and isn't still the mask. Not gated
+  // on replacingKey: an empty saved key ("leave blank to reuse the embedding
+  // key") renders a plain input with replacing=false, so a first pasted key
+  // would otherwise never mark the form dirty.
   const dirtyKey =
-    replacingKey && form.api_key !== "" && !form.api_key.startsWith("****");
+    form.api_key !== saved.api_key && !form.api_key.startsWith("****");
   const dirtyMinScore = Math.abs(form.min_score - saved.min_score) > 1e-6;
   const dirty = dirtyProvider || dirtyModel || dirtyKey || dirtyMinScore;
 

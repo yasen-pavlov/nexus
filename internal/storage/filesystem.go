@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/store"
@@ -48,9 +49,26 @@ func New(basePath string, db StoreDB, log *zap.Logger) (*BinaryStore, error) {
 // prefix is only 64 bits, where birthday collisions become plausible
 // across a large corpus, and a collision would silently corrupt one
 // blob by aliasing it onto another's path.
-func (s *BinaryStore) keyPath(sourceType, sourceName, sourceID string) string {
+func (s *BinaryStore) keyPath(sourceType, sourceName, sourceID string) (string, error) {
 	sum := sha256.Sum256([]byte(sourceID))
-	return filepath.Join(s.basePath, sourceType, sourceName, hex.EncodeToString(sum[:])+".bin")
+	dst := filepath.Join(s.basePath, sourceType, sourceName, hex.EncodeToString(sum[:])+".bin")
+	return contained(s.basePath, dst)
+}
+
+// contained returns dst only if it resolves inside base, otherwise an error.
+// Defense-in-depth against a connector name (used raw as a path component) that
+// slipped path separators past handler validation: filepath.Join cleans ".."
+// so a crafted sourceName could otherwise escape the store root and let an
+// attacker write/remove files outside NEXUS_BINARY_STORE_PATH.
+func contained(base, dst string) (string, error) {
+	rel, err := filepath.Rel(base, dst)
+	if err != nil {
+		return "", fmt.Errorf("storage: path %q escapes store root: %w", dst, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("storage: path %q escapes store root", dst)
+	}
+	return dst, nil
 }
 
 // Put writes a binary blob to disk and upserts its metadata row. The
@@ -61,7 +79,10 @@ func (s *BinaryStore) keyPath(sourceType, sourceName, sourceID string) string {
 // If size is 0 (unknown), it's computed from the bytes actually
 // written. The metadata row's size reflects the final blob size.
 func (s *BinaryStore) Put(ctx context.Context, sourceType, sourceName, sourceID string, r io.Reader, size int64) error {
-	dst := s.keyPath(sourceType, sourceName, sourceID)
+	dst, err := s.keyPath(sourceType, sourceName, sourceID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("storage: mkdir %q: %w", filepath.Dir(dst), err)
 	}
@@ -124,7 +145,11 @@ func (s *BinaryStore) Get(ctx context.Context, sourceType, sourceName, sourceID 
 		return nil, os.ErrNotExist
 	}
 
-	f, err := os.Open(s.keyPath(sourceType, sourceName, sourceID))
+	path, err := s.keyPath(sourceType, sourceName, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// Metadata row exists but file is gone (manual deletion,
@@ -191,8 +216,12 @@ func (s *BinaryStore) DeleteBySource(ctx context.Context, sourceType, sourceName
 	}
 	// Best-effort: remove the now-empty source-name directory so the
 	// directory listing doesn't accumulate stubs across connector
-	// lifetimes. Silently ignored if it's not actually empty.
-	_ = os.Remove(filepath.Join(s.basePath, sourceType, sourceName))
+	// lifetimes. Silently ignored if it's not actually empty. Guarded by
+	// contained() so a crafted sourceName can't os.Remove a directory
+	// outside the store root.
+	if dir, err := contained(s.basePath, filepath.Join(s.basePath, sourceType, sourceName)); err == nil {
+		_ = os.Remove(dir)
+	}
 	return nil
 }
 

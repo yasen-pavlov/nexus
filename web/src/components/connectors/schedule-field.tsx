@@ -63,7 +63,12 @@ export interface ScheduleFieldProps {
  * the next fire time via cron-parser.
  */
 export function ScheduleField({ value, onChange, className }: Readonly<ScheduleFieldProps>) {
-  const preset = detectPreset(value);
+  // Selected preset is explicit user intent, seeded once from the value — NOT
+  // re-derived from `value` on every render. Typing in the Custom input pushes
+  // each keystroke into `value`, and a partial cron that momentarily matches a
+  // preset shape (e.g. "0 5 * * 1" → weekly) would otherwise flip the tab,
+  // unmount the input under the cursor, and drop the rest of the keystrokes.
+  const [preset, setPreset] = useState<Preset>(() => detectPreset(value));
   const [customDraft, setCustomDraft] = useState(value);
 
   const setHourly = () => onChange("0 * * * *");
@@ -113,6 +118,9 @@ export function ScheduleField({ value, onChange, className }: Readonly<ScheduleF
               aria-selected={active}
               type="button"
               onClick={() => {
+                // Only an explicit tab click switches the preset — typing in
+                // Custom never does (setCustom must not touch preset).
+                setPreset(p);
                 if (p === "off") onChange("");
                 else if (p === "hourly") setHourly();
                 else if (p === "daily") setDaily(daily.hour, daily.minute);

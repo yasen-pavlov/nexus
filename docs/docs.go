@@ -733,6 +733,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/internal_api.APIResponse"
                         }
                     },
+                    "403": {
+                        "description": "Not the owner, or non-admin attempting to share",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
                         "schema": {
@@ -1430,6 +1436,12 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "A sync is running; cancel it and retry",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
                         }
                     },
                     "500": {
@@ -2640,8 +2652,14 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
+                    "200": {
+                        "description": "self-rotation: fresh token so the caller stays signed in",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.authResponse"
+                        }
+                    },
                     "204": {
-                        "description": "No Content"
+                        "description": "admin changed another user's password"
                     },
                     "400": {
                         "description": "Bad Request",
@@ -2651,6 +2669,12 @@ const docTemplate = `{
                     },
                     "403": {
                         "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.APIResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/internal_api.APIResponse"
                         }
@@ -2950,6 +2974,10 @@ const docTemplate = `{
                 },
                 "created_at": {
                     "type": "string"
+                },
+                "credentials_unreadable": {
+                    "description": "CredentialsUnreadable is a transient, read-time-only flag (never\npersisted): it is set true when this row's encrypted secret fields\ncould not be decrypted with the active NEXUS_ENCRYPTION_KEY. When true,\nthe sensitive fields are stripped from Config so no ciphertext leaks,\nand the connector loads inactive — the owner can re-enter the secret to\nrestore it. A single such row no longer bricks boot for every connector.",
+                    "type": "boolean"
                 },
                 "enabled": {
                     "type": "boolean"
@@ -3414,6 +3442,10 @@ const docTemplate = `{
                 },
                 "created_at": {
                     "type": "string"
+                },
+                "credentials_unreadable": {
+                    "description": "CredentialsUnreadable is a transient, read-time-only flag (never\npersisted): it is set true when this row's encrypted secret fields\ncould not be decrypted with the active NEXUS_ENCRYPTION_KEY. When true,\nthe sensitive fields are stripped from Config so no ciphertext leaks,\nand the connector loads inactive — the owner can re-enter the secret to\nrestore it. A single such row no longer bricks boot for every connector.",
+                    "type": "boolean"
                 },
                 "enabled": {
                     "type": "boolean"

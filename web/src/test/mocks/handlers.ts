@@ -303,6 +303,7 @@ export const handlers = [
           user_id: "u1",
           external_id: "",
           external_name: "",
+          credentials_unreadable: false,
         },
       ]),
     );

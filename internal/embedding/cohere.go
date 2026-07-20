@@ -32,10 +32,11 @@ func NewCohere(apiKey, model string, log *zap.Logger) *Cohere {
 }
 
 type cohereEmbedRequest struct {
-	Model          string   `json:"model"`
-	Texts          []string `json:"texts"`
-	InputType      string   `json:"input_type"`
-	EmbeddingTypes []string `json:"embedding_types"`
+	Model           string   `json:"model"`
+	Texts           []string `json:"texts"`
+	InputType       string   `json:"input_type"`
+	EmbeddingTypes  []string `json:"embedding_types"`
+	OutputDimension int      `json:"output_dimension,omitempty"`
 }
 
 type cohereEmbedResponse struct {
@@ -55,11 +56,21 @@ func (c *Cohere) Embed(ctx context.Context, texts []string, inputType string) ([
 	case InputTypeDocument:
 		cohereInputType = "search_document"
 	}
+	// embed-v4.0 defaults to 1536-dim output when output_dimension is omitted,
+	// but Dimension() (and thus the knn index mapping) reports 1024 — the
+	// mismatch makes the pipeline drop every vector. Pin the request to 1024 so
+	// the wire dimension matches the index. v3 models reject output_dimension,
+	// so only send it for v4 (omitempty drops the 0 for everything else).
+	outputDim := 0
+	if c.model == "embed-v4.0" {
+		outputDim = 1024
+	}
 	body, err := json.Marshal(cohereEmbedRequest{
-		Model:          c.model,
-		Texts:          texts,
-		InputType:      cohereInputType,
-		EmbeddingTypes: []string{"float"},
+		Model:           c.model,
+		Texts:           texts,
+		InputType:       cohereInputType,
+		EmbeddingTypes:  []string{"float"},
+		OutputDimension: outputDim,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("cohere: marshal request: %w", err)
