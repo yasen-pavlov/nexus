@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -33,6 +35,7 @@ const (
 	errRegistrationFailed = "registration failed"
 	errChangePasswordFail = "failed to change password"
 	errNotAuthenticated   = "not authenticated"
+	errFailedDeleteUser   = "failed to delete user"
 )
 
 type registerRequest struct {
@@ -332,44 +335,14 @@ func (h *handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cascade-clean the user's OWNED connectors first. connector_configs.user_id
-	// is a plain FK with no ON DELETE action, so a bare DELETE FROM users would
-	// fail with an FK violation for any user who owns a connector.
-	//
-	// Private connectors are the user's own data — hard-delete them via
-	// cm.Remove, which also purges their OpenSearch docs, cached binaries, sync
-	// cursor, and scheduler jobs. Shared connectors are community data others
-	// search — DO NOT destroy them; orphan them (user_id = NULL) so they survive
-	// with no owner. Splitting on Shared here is what keeps deleting a user (esp.
-	// an admin) from silently wiping shared corpus for everyone else.
-	if h.cm != nil {
-		conns, err := h.store.ListConnectorConfigsByOwner(r.Context(), id)
-		if err != nil {
-			h.log.Error("list owned connectors for user deletion failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to delete user")
-			return
-		}
-		for i := range conns {
-			if conns[i].Shared {
-				continue // kept alive; orphaned below
-			}
-			if err := h.cm.Remove(r.Context(), conns[i].ID); err != nil && !errors.Is(err, store.ErrNotFound) {
-				h.log.Error("remove owned connector for user deletion failed",
-					zap.String("connector", conns[i].Name), zap.Error(err))
-				writeError(w, http.StatusInternalServerError, "failed to delete user")
-				return
-			}
-		}
-
-		// Release the FK on the user's shared connectors without destroying them.
-		if _, err := h.store.OrphanSharedConnectorsByOwner(r.Context(), id); err != nil {
-			h.log.Error("orphan shared connectors for user deletion failed", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "failed to delete user")
-			return
-		}
-		// Refresh the in-memory configs so a future sync of an orphaned shared
-		// connector doesn't tag new chunks with the deleted owner.
-		h.cm.ClearOwner(id)
+	// Clean up the user's owned connectors before deleting the row:
+	// connector_configs.user_id is a plain FK with no ON DELETE action, so a
+	// bare DELETE FROM users would fail with an FK violation for any user who
+	// owns a connector.
+	if err := h.purgeUserConnectors(r.Context(), id); err != nil {
+		h.log.Error("purge user connectors for deletion failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, errFailedDeleteUser)
+		return
 	}
 
 	// Defense-in-depth: sweep any remaining PRIVATE chunks owned by this user
@@ -389,11 +362,42 @@ func (h *handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.log.Error("delete user failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to delete user")
+		writeError(w, http.StatusInternalServerError, errFailedDeleteUser)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// purgeUserConnectors hard-deletes the user's PRIVATE connectors (their
+// OpenSearch docs, cached binaries, sync cursor, and scheduler jobs go with
+// them via cm.Remove) and orphans their SHARED connectors (user_id = NULL) so
+// community data others search survives with no owner. Splitting on Shared is
+// what keeps deleting a user — especially an admin — from silently wiping
+// shared corpus for everyone else. Returns an error on any hard failure.
+func (h *handler) purgeUserConnectors(ctx context.Context, id uuid.UUID) error {
+	if h.cm == nil {
+		return nil
+	}
+	conns, err := h.store.ListConnectorConfigsByOwner(ctx, id)
+	if err != nil {
+		return fmt.Errorf("list owned connectors: %w", err)
+	}
+	for i := range conns {
+		if conns[i].Shared {
+			continue // kept alive; orphaned below
+		}
+		if err := h.cm.Remove(ctx, conns[i].ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("remove connector %q: %w", conns[i].Name, err)
+		}
+	}
+	if _, err := h.store.OrphanSharedConnectorsByOwner(ctx, id); err != nil {
+		return fmt.Errorf("orphan shared connectors: %w", err)
+	}
+	// Refresh the in-memory configs so a future sync of an orphaned shared
+	// connector doesn't tag new chunks with the deleted owner.
+	h.cm.ClearOwner(id)
+	return nil
 }
 
 // ChangePassword godoc

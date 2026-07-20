@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/muty/nexus/internal/crypto"
 )
 
@@ -30,108 +31,153 @@ func (s *Store) RotateEncryptionKey(ctx context.Context, oldKey, newKey []byte) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// --- connector_configs ---
-	type rawConfig struct {
-		id     uuid.UUID
-		typ    string
-		config map[string]any
+	if report.Connectors, err = rotateConnectorConfigs(ctx, tx, oldKey, newKey); err != nil {
+		return report, err
 	}
-	var configs []rawConfig
-	rows, err := tx.Query(ctx, `SELECT id, type, config FROM connector_configs`)
-	if err != nil {
-		return report, fmt.Errorf("store: list configs for rotation: %w", err)
-	}
-	for rows.Next() {
-		var id uuid.UUID
-		var typ string
-		var configJSON []byte
-		if err := rows.Scan(&id, &typ, &configJSON); err != nil {
-			rows.Close()
-			return report, fmt.Errorf("store: scan config for rotation: %w", err)
-		}
-		var config map[string]any
-		if err := json.Unmarshal(configJSON, &config); err != nil {
-			rows.Close()
-			return report, fmt.Errorf("store: unmarshal config for rotation: %w", err)
-		}
-		configs = append(configs, rawConfig{id: id, typ: typ, config: config})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return report, fmt.Errorf("store: config rows for rotation: %w", err)
-	}
-
-	for _, rc := range configs {
-		changed := false
-		for _, field := range crypto.SensitiveFields[rc.typ] {
-			val, ok := rc.config[field].(string)
-			if !ok || val == "" || !crypto.IsEncrypted(val) {
-				continue
-			}
-			plain, err := crypto.Decrypt(oldKey, val)
-			if err != nil {
-				return report, fmt.Errorf("store: decrypt connector %s field %q with old key: %w", rc.id, field, err)
-			}
-			reenc, err := crypto.Encrypt(newKey, plain)
-			if err != nil {
-				return report, fmt.Errorf("store: re-encrypt connector %s field %q: %w", rc.id, field, err)
-			}
-			rc.config[field] = reenc
-			changed = true
-		}
-		if !changed {
-			continue
-		}
-		configJSON, err := json.Marshal(rc.config)
-		if err != nil {
-			return report, fmt.Errorf("store: marshal rotated config %s: %w", rc.id, err)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE connector_configs SET config = $1 WHERE id = $2`, configJSON, rc.id); err != nil {
-			return report, fmt.Errorf("store: update rotated config %s: %w", rc.id, err)
-		}
-		report.Connectors++
-	}
-
-	// --- settings ---
-	type kv struct{ k, v string }
-	var settings []kv
-	srows, err := tx.Query(ctx, `SELECT key, value FROM settings`)
-	if err != nil {
-		return report, fmt.Errorf("store: list settings for rotation: %w", err)
-	}
-	for srows.Next() {
-		var k, v string
-		if err := srows.Scan(&k, &v); err != nil {
-			srows.Close()
-			return report, fmt.Errorf("store: scan setting for rotation: %w", err)
-		}
-		if !crypto.IsSensitiveSettingsKey(k) || v == "" || !crypto.IsEncrypted(v) {
-			continue
-		}
-		settings = append(settings, kv{k, v})
-	}
-	srows.Close()
-	if err := srows.Err(); err != nil {
-		return report, fmt.Errorf("store: settings rows for rotation: %w", err)
-	}
-
-	for _, row := range settings {
-		plain, err := crypto.Decrypt(oldKey, row.v)
-		if err != nil {
-			return report, fmt.Errorf("store: decrypt setting %q with old key: %w", row.k, err)
-		}
-		reenc, err := crypto.Encrypt(newKey, plain)
-		if err != nil {
-			return report, fmt.Errorf("store: re-encrypt setting %q: %w", row.k, err)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE settings SET value = $1 WHERE key = $2`, reenc, row.k); err != nil {
-			return report, fmt.Errorf("store: update rotated setting %q: %w", row.k, err)
-		}
-		report.Settings++
+	if report.Settings, err = rotateSettings(ctx, tx, oldKey, newKey); err != nil {
+		return report, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return report, fmt.Errorf("store: commit key rotation: %w", err)
 	}
 	return report, nil
+}
+
+// reencryptValue decrypts val with oldKey and re-encrypts it with newKey.
+func reencryptValue(val string, oldKey, newKey []byte) (string, error) {
+	plain, err := crypto.Decrypt(oldKey, val)
+	if err != nil {
+		return "", fmt.Errorf("decrypt with old key: %w", err)
+	}
+	reenc, err := crypto.Encrypt(newKey, plain)
+	if err != nil {
+		return "", fmt.Errorf("re-encrypt: %w", err)
+	}
+	return reenc, nil
+}
+
+// reencryptFields re-encrypts each named field of config in place, skipping
+// fields that are missing, empty, or not encrypted. Returns whether anything
+// changed.
+func reencryptFields(config map[string]any, fields []string, oldKey, newKey []byte) (bool, error) {
+	changed := false
+	for _, field := range fields {
+		val, ok := config[field].(string)
+		if !ok || val == "" || !crypto.IsEncrypted(val) {
+			continue
+		}
+		reenc, err := reencryptValue(val, oldKey, newKey)
+		if err != nil {
+			return false, fmt.Errorf("field %q: %w", field, err)
+		}
+		config[field] = reenc
+		changed = true
+	}
+	return changed, nil
+}
+
+type rawRotateConfig struct {
+	id     uuid.UUID
+	typ    string
+	config map[string]any
+}
+
+// loadConnectorConfigsForRotation reads every connector config row within tx.
+func loadConnectorConfigsForRotation(ctx context.Context, tx pgx.Tx) ([]rawRotateConfig, error) {
+	rows, err := tx.Query(ctx, `SELECT id, type, config FROM connector_configs`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list configs for rotation: %w", err)
+	}
+	defer rows.Close()
+
+	var out []rawRotateConfig
+	for rows.Next() {
+		var c rawRotateConfig
+		var configJSON []byte
+		if err := rows.Scan(&c.id, &c.typ, &configJSON); err != nil {
+			return nil, fmt.Errorf("store: scan config for rotation: %w", err)
+		}
+		if err := json.Unmarshal(configJSON, &c.config); err != nil {
+			return nil, fmt.Errorf("store: unmarshal config for rotation: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// rotateConnectorConfigs re-encrypts the sensitive fields of every connector
+// config within tx, returning how many rows changed.
+func rotateConnectorConfigs(ctx context.Context, tx pgx.Tx, oldKey, newKey []byte) (int, error) {
+	configs, err := loadConnectorConfigsForRotation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, rc := range configs {
+		changed, err := reencryptFields(rc.config, crypto.SensitiveFields[rc.typ], oldKey, newKey)
+		if err != nil {
+			return 0, fmt.Errorf("store: connector %s: %w", rc.id, err)
+		}
+		if !changed {
+			continue
+		}
+		configJSON, err := json.Marshal(rc.config)
+		if err != nil {
+			return 0, fmt.Errorf("store: marshal rotated config %s: %w", rc.id, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE connector_configs SET config = $1 WHERE id = $2`, configJSON, rc.id); err != nil {
+			return 0, fmt.Errorf("store: update rotated config %s: %w", rc.id, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+type rawRotateSetting struct{ key, value string }
+
+// loadSensitiveSettingsForRotation reads every encrypted sensitive setting
+// within tx (skipping plaintext/legacy and non-sensitive keys).
+func loadSensitiveSettingsForRotation(ctx context.Context, tx pgx.Tx) ([]rawRotateSetting, error) {
+	rows, err := tx.Query(ctx, `SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list settings for rotation: %w", err)
+	}
+	defer rows.Close()
+
+	var out []rawRotateSetting
+	for rows.Next() {
+		var s rawRotateSetting
+		if err := rows.Scan(&s.key, &s.value); err != nil {
+			return nil, fmt.Errorf("store: scan setting for rotation: %w", err)
+		}
+		if !crypto.IsSensitiveSettingsKey(s.key) || s.value == "" || !crypto.IsEncrypted(s.value) {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// rotateSettings re-encrypts every sensitive setting within tx, returning how
+// many rows changed.
+func rotateSettings(ctx context.Context, tx pgx.Tx, oldKey, newKey []byte) (int, error) {
+	settings, err := loadSensitiveSettingsForRotation(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, row := range settings {
+		reenc, err := reencryptValue(row.value, oldKey, newKey)
+		if err != nil {
+			return 0, fmt.Errorf("store: setting %q: %w", row.key, err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE settings SET value = $1 WHERE key = $2`, reenc, row.key); err != nil {
+			return 0, fmt.Errorf("store: update rotated setting %q: %w", row.key, err)
+		}
+		count++
+	}
+	return count, nil
 }
