@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/muty/nexus/internal/auth"
@@ -102,8 +101,7 @@ func (h *handler) UpdateLLMSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req llmSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 

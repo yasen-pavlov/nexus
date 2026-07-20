@@ -287,6 +287,39 @@ func TestStreamFetch_EnumeratesAllUIDsAcrossFolders(t *testing.T) {
 	}
 }
 
+// TestStreamFetch_PrefixNestedFolders_GlobalSourceIDOrder pins the invariant
+// the pipeline merge-diff depends on: the emitted SourceID stream is globally
+// byte-ascending. Regression for the mass-deletion bug where a folder whose
+// name is a byte-prefix of another (e.g. "INBOX" vs "INBOX/Receipts", where
+// '/' 0x2F < ':' 0x3A so "INBOX/Receipts:1" < "INBOX:1") was emitted in
+// folder-name order — reversing the two subfolders' SourceID ranges relative
+// to OpenSearch's global sort and making the whole subfolder look stale.
+//
+// Unlike TestStreamFetch_EnumeratesAllUIDsAcrossFolders (which sorts `got`
+// before comparing and so only checks the SET of ids), this asserts the
+// emitted ORDER equals the global sort.
+func TestStreamFetch_PrefixNestedFolders_GlobalSourceIDOrder(t *testing.T) {
+	// Configure the folders in name order (INBOX before INBOX/Receipts) so a
+	// broken folder-name sort can't accidentally emit the right order.
+	c := &Connector{name: "test-mail", folders: []string{"INBOX", "INBOX/Receipts"}}
+	mock := &mockMailboxClient{uids: []imap.UID{1, 2}, msgs: []*imapclient.FetchMessageBuffer{}}
+
+	result := runStreamFetch(t, c, mock, nil)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+
+	got := append([]string{}, result.SourceIDs...)
+	if len(got) != 4 {
+		t.Fatalf("expected 4 source ids (2 folders × 2 uids), got %d: %v", len(got), got)
+	}
+	want := append([]string{}, got...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("emitted SourceID stream is not globally byte-ascending:\n got  %v\n want %v", got, want)
+	}
+}
+
 func TestStreamFetch_EnumerationFailureAbortsSync(t *testing.T) {
 	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
 	mock := &mockMailboxClient{
@@ -626,6 +659,57 @@ func TestStreamFetch_CondStore_FastSkipUnchangedFolder(t *testing.T) {
 	// SEARCH ALL is expected (1 call); the delta SEARCH is skipped.
 	if mock.searchCallCount != 1 {
 		t.Errorf("expected exactly 1 SEARCH call (SEARCH ALL), got %d", mock.searchCallCount)
+	}
+}
+
+// TestStreamFetch_CondStore_MidFolderCheckpointKeepsCachedModSeq pins the
+// checkpoint contract for a multi-batch folder: mid-folder checkpoints keep
+// the cursor's PRE-SYNC modseq, and only the final (folder-complete)
+// checkpoint advances to the folder's new HighestModSeq. Regression for the
+// bug where the folder-final modseq was written after every batch — so an
+// interrupted sync fast-skipped or delta-skipped the unfetched batches on the
+// next run, permanently dropping mail.
+func TestStreamFetch_CondStore_MidFolderCheckpointKeepsCachedModSeq(t *testing.T) {
+	deltaUIDs := make([]imap.UID, imapBodyFetchBatch+50) // 150 → 2 body-fetch batches
+	for i := range deltaUIDs {
+		deltaUIDs[i] = imap.UID(i + 1)
+	}
+	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
+	mock := &mockMailboxClient{
+		selectData: imap.SelectData{UIDValidity: 42, HighestModSeq: 5000},
+		uids:       deltaUIDs,
+	}
+	cursor := &model.SyncCursor{
+		CursorData: map[string]any{
+			"uidvalidity:INBOX": float64(42),
+			"modseq:INBOX":      float64(3000), // cached < new (5000) → delta path
+			"uid:INBOX":         float64(50),
+		},
+	}
+
+	result := runStreamFetch(t, c, mock, cursor)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	if len(result.Checkpoints) < 2 {
+		t.Fatalf("expected at least 2 checkpoints (mid + final), got %d", len(result.Checkpoints))
+	}
+
+	modseqAt := func(cur *model.SyncCursor) float64 {
+		v, _ := cur.CursorData["modseq:INBOX"].(float64)
+		return v
+	}
+	// Every checkpoint except the last must still carry the cached modseq —
+	// an interrupt at any of these must not let the next sync skip ahead.
+	for i := 0; i < len(result.Checkpoints)-1; i++ {
+		if got := modseqAt(result.Checkpoints[i]); got != 3000 {
+			t.Errorf("mid-folder checkpoint %d modseq:INBOX = %v, want 3000 (cached, not yet advanced)", i, got)
+		}
+	}
+	// The final checkpoint commits the new HighestModSeq.
+	last := result.Checkpoints[len(result.Checkpoints)-1]
+	if got := modseqAt(last); got != 5000 {
+		t.Errorf("final checkpoint modseq:INBOX = %v, want 5000", got)
 	}
 }
 

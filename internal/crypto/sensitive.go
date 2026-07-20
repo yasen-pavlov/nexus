@@ -148,6 +148,12 @@ func RestoreMaskedFields(connType string, newConfig, oldConfig map[string]any) m
 		if IsMasked(newVal) {
 			if oldVal, ok := oldConfig[field]; ok {
 				newConfig[field] = oldVal
+			} else {
+				// No original to restore — e.g. the row's credentials were
+				// unreadable (wrong/lost key) so the ciphertext was stripped.
+				// Never persist a mask literal as the real secret; drop it so
+				// validation forces the owner to re-enter the actual value.
+				delete(newConfig, field)
 			}
 		}
 	}

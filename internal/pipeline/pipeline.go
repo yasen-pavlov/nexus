@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -156,6 +157,17 @@ type runState struct {
 	flushSem chan struct{}
 	flushWG  sync.WaitGroup
 	reportMu sync.Mutex
+
+	// indexFailed latches true the first time a flush fails to write its
+	// batch to OpenSearch. Once set, persistLatestCursor stops advancing the
+	// sync cursor for the rest of the run: some documents at or before the
+	// latest checkpoint never made it into the index, so committing a cursor
+	// past them would make the next incremental sync skip them forever. The
+	// cursor stays at the last checkpoint that was fully durable, and the
+	// connector re-streams everything after it on the next run (re-indexing
+	// already-landed docs idempotently). Upholds the invariant that cursor
+	// advancement always follows durable OpenSearch writes.
+	indexFailed atomic.Bool
 }
 
 // RunWithProgress fetches documents from a connector, chunks them, generates
@@ -415,6 +427,10 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 				zap.Int("batch", len(batch)),
 				zap.Error(err),
 			)
+			// Latch the failure so the cursor stops advancing: these
+			// documents aren't in OpenSearch, and a cursor committed past
+			// them would make the next sync skip them permanently.
+			state.indexFailed.Store(true)
 			// Roll back the optimistic per-doc bumps and
 			// reclassify the batch as errors. reportMu
 			// serializes with handleItem and with any
@@ -436,6 +452,15 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 // time-ticker flushes don't re-persist an already-committed cursor.
 func (p *Pipeline) persistLatestCursor(ctx context.Context, state *runState) {
 	if state.latestCursor == nil {
+		return
+	}
+	// A failed flush means some documents at or before this checkpoint never
+	// reached OpenSearch. Advancing the cursor past them would drop them from
+	// every future incremental sync, so hold the cursor at the last durable
+	// checkpoint and let the connector re-stream from there next run.
+	if state.indexFailed.Load() {
+		p.log.Warn("holding sync cursor: a batch failed to index",
+			zap.String("connector", state.connName))
 		return
 	}
 	state.latestCursor.ConnectorID = state.connectorID

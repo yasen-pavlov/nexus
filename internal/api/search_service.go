@@ -83,9 +83,14 @@ func (s *SearchService) Run(ctx context.Context, req model.SearchRequest, opts S
 		}
 	}
 
-	// Stage 3: rerank with Voyage rerank-2. No-op when no reranker is wired.
-	rerankerActive := s.rm.Get() != nil
-	result = s.rerankResults(ctx, req.Query, result)
+	// Stage 3: rerank with Voyage rerank-2. `reranked` reports whether the
+	// documents were ACTUALLY rescored — false when no reranker is wired,
+	// when there's nothing to rerank (<=1 candidate), or when the reranker
+	// call failed and we kept the original retrieval order. The trust weights
+	// and score floor must act only on real reranker scores; applying the
+	// floor to raw RRF scores (bounded ~0.033) would wipe every result — see
+	// the project rule against filtering on RRF scores.
+	result, reranked := s.rerankResults(ctx, req.Query, result)
 
 	if opts.IncludeScoreDetails {
 		for i := range result.Documents {
@@ -98,8 +103,8 @@ func (s *SearchService) Run(ctx context.Context, req model.SearchRequest, opts S
 	// Pull a snapshot of ranking config once per query.
 	rankCfg := s.rankingConfig()
 
-	applySourceTrustWeights(result, rankCfg, rerankerActive)
-	applyRerankerFloor(result, rankCfg, rerankerActive)
+	applySourceTrustWeights(result, rankCfg, reranked)
+	applyRerankerFloor(result, rankCfg, reranked)
 
 	// Stage 5: recency decay.
 	search.ApplyRecencyDecay(result, rankCfg)
@@ -146,11 +151,17 @@ func (s *SearchService) retrieveCandidates(ctx context.Context, query string, re
 
 // rerankResults reorders Documents by reranker score. Drops near-duplicates
 // before sending to the reranker so we don't burn API budget on multiple
-// chunks of the same boilerplate-heavy newsletter.
-func (s *SearchService) rerankResults(ctx context.Context, query string, result *model.SearchResult) *model.SearchResult {
+// chunks of the same boilerplate-heavy newsletter. The returned bool reports
+// whether the documents were actually rescored: false when no reranker is
+// wired, when there's nothing to rerank (<=1 candidate, so the API call is
+// skipped), or when the reranker call errored and we kept the original
+// retrieval order. In every false case Documents still carry raw retrieval
+// (RRF/BM25) scores, which downstream trust-weighting and the score floor
+// must not treat as reranker scores.
+func (s *SearchService) rerankResults(ctx context.Context, query string, result *model.SearchResult) (*model.SearchResult, bool) {
 	reranker := s.rm.Get()
 	if reranker == nil || len(result.Documents) <= 1 {
-		return result
+		return result, false
 	}
 
 	result.Documents = dedupeNearDuplicates(result.Documents)
@@ -163,8 +174,8 @@ func (s *SearchService) rerankResults(ctx context.Context, query string, result 
 	ranked, err := reranker.Rerank(ctx, query, texts)
 	if err != nil {
 		s.log.Warn("reranking failed, using original order", zap.Error(err))
-		return result
+		return result, false
 	}
 
-	return reorderByRerankScores(result, ranked)
+	return reorderByRerankScores(result, ranked), true
 }

@@ -65,6 +65,7 @@ func newTestDeps(t *testing.T) (*store.Store, *search.Client, *ConnectorManager)
 	t.Cleanup(func() { sc.DeleteIndex(context.Background()) }) //nolint:errcheck // test
 
 	cm := NewConnectorManager(st, zap.NewNop())
+	cm.SetSearchClient(sc)
 	return st, sc, cm
 }
 
@@ -1416,6 +1417,52 @@ func TestNewRouter_Integration(t *testing.T) {
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("health: expected 200, got %d", w.Code)
+	}
+}
+
+func TestHealthReady_Healthy(t *testing.T) {
+	_, _, _, router := newTestRouter(t)
+
+	w := doJSON(t, router, http.MethodGet, "/api/health/ready", "", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	data := decodeAPI(t, w.Body).Data.(map[string]any)
+	if data["status"] != "ok" {
+		t.Errorf("expected status=ok, got %v", data["status"])
+	}
+	comps, ok := data["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected components map, got %T", data["components"])
+	}
+	if comps["postgres"] != "ok" {
+		t.Errorf("expected postgres=ok, got %v", comps["postgres"])
+	}
+	if comps["opensearch"] != "ok" {
+		t.Errorf("expected opensearch=ok, got %v", comps["opensearch"])
+	}
+}
+
+func TestHealthReady_DegradedWhenPostgresDown(t *testing.T) {
+	st, _, _, router := newTestRouter(t)
+
+	// Close the pool so the readiness Ping fails, forcing the degraded path.
+	st.Close()
+
+	w := doJSON(t, router, http.MethodGet, "/api/health/ready", "", "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when Postgres is down, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	data := decodeAPI(t, w.Body).Data.(map[string]any)
+	if data["status"] != "degraded" {
+		t.Errorf("expected status=degraded, got %v", data["status"])
+	}
+	comps, ok := data["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected components map, got %T", data["components"])
+	}
+	if comps["postgres"] != "down" {
+		t.Errorf("expected postgres=down, got %v", comps["postgres"])
 	}
 }
 

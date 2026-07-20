@@ -209,12 +209,16 @@ export async function* openChatMessageStream(
   }
 }
 
-// fetchAuthedBlob fetches an authenticated binary resource (e.g. a
-// cached avatar) and returns an object URL the caller can assign to an
-// <img src>. Caller is responsible for revoking via URL.revokeObjectURL
-// when the image unmounts. Returns null when the resource doesn't
-// exist — callers render a fallback.
-export async function fetchAuthedBlob(url: string): Promise<string | null> {
+// fetchAuthedBlobData fetches an authenticated binary resource (e.g. a
+// cached avatar or document body) and returns the raw Blob. Returns null
+// when the resource doesn't exist (404) — callers render a fallback.
+//
+// Prefer this over fetchAuthedBlob when the result is cached (e.g. React
+// Query): cache the Blob and mint the object URL per-consumer, so the URL's
+// lifetime is tied to the DOM node rather than the cache entry. Caching the
+// object URL directly and revoking it on unmount produces dead blob: URLs on
+// the next mount while the cache still hands back the revoked string.
+export async function fetchAuthedBlobData(url: string): Promise<Blob | null> {
   const headers = new Headers();
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -226,6 +230,15 @@ export async function fetchAuthedBlob(url: string): Promise<string | null> {
   }
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
+  return res.blob();
+}
+
+// fetchAuthedBlob fetches an authenticated binary resource and returns an
+// object URL the caller can assign to an <img src>. Caller is responsible
+// for revoking via URL.revokeObjectURL when the image unmounts. Only safe
+// for uncached, per-effect fetches — see fetchAuthedBlobData for the cached
+// case. Returns null when the resource doesn't exist.
+export async function fetchAuthedBlob(url: string): Promise<string | null> {
+  const blob = await fetchAuthedBlobData(url);
+  return blob ? URL.createObjectURL(blob) : null;
 }

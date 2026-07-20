@@ -25,6 +25,13 @@ import (
 // amortize server round-trips. 100 is a pragmatic middle.
 const imapBodyFetchBatch = 100
 
+// imapIDSeparator joins the folder name and UID into a SourceID
+// ("<folder>:<uid>"). It MUST NOT appear in a folder name (IMAP
+// hierarchy delimiters are '/' or '.', never ':'), which makes the set
+// of per-folder SourceID prefixes ("<folder>:") prefix-free — the
+// property the folder ordering in streamFetchWithClient relies on.
+const imapIDSeparator = ":"
+
 // Per-folder cursor-data key prefixes. Concatenated with the folder
 // name at runtime (e.g. "uid:INBOX"). Kept as constants so a typo
 // in one use site can't silently split the cursor map.
@@ -297,7 +304,20 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 // drive it with a mock without needing a live IMAP dial/login.
 func (c *Connector) streamFetchWithClient(ctx context.Context, mbc mailboxClient, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	folders := append([]string(nil), c.folders...)
-	sort.Strings(folders)
+	// Sort by SourceID prefix ("<folder>:"), NOT by folder name. The
+	// pipeline merge-diff walks the emitted SourceID stream against
+	// OpenSearch's globally source_id-ascending stream, so the folders
+	// must be emitted in the order their SourceIDs sort globally. Folder
+	// name order breaks this whenever one folder name is a byte-prefix of
+	// another and the hierarchy delimiter sorts below ':' — e.g. "INBOX"
+	// vs "INBOX/Receipts", where "INBOX/Receipts:1" < "INBOX:1" ('/' 0x2F
+	// < ':' 0x3A) but "INBOX" sorts first by name. Emitting in the wrong
+	// order desyncs the two-pointer walk and mass-deletes the subfolder.
+	// Because the "<folder>:" prefixes are prefix-free, this per-folder
+	// grouping is exactly the global SourceID order.
+	sort.Slice(folders, func(i, j int) bool {
+		return folders[i]+imapIDSeparator < folders[j]+imapIDSeparator
+	})
 
 	now := time.Now()
 	cursorData := copyCursorData(cursor)
@@ -419,7 +439,7 @@ func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient
 	}
 	sourceIDs := make([]string, len(allUIDs))
 	for i, uid := range allUIDs {
-		sourceIDs[i] = fmt.Sprintf("%s:%d", folder, uid)
+		sourceIDs[i] = fmt.Sprintf("%s%s%d", folder, imapIDSeparator, uid)
 	}
 	sort.Strings(sourceIDs)
 	for i := range sourceIDs {
@@ -435,6 +455,14 @@ func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient
 // imapBodyFetchBatch-sized windows, streaming per-message docs as
 // the server returns them and checkpointing after each batch so a
 // mid-folder cancel only loses one batch of re-fetch work.
+//
+// Mid-folder checkpoints advance ONLY the UID cursor — they must NOT
+// advance the CONDSTORE modseq to the folder's new HighestModSeq, because
+// that value means "every change up to here has been fetched", which is
+// false until the last batch completes. Writing it early lets an
+// interrupted sync fast-skip (unchanged()) or delta-skip the unfetched
+// batches on the next run, permanently dropping them. The new modseq is
+// committed only after the whole folder's delta is streamed.
 func (c *Connector) streamFolderBodies(ctx context.Context, mbc mailboxClient, folder string, cursor *model.SyncCursor, cursorData map[string]any, startedAt time.Time, st condStoreState, uids []imap.UID, fetchOpts *imap.FetchOptions, items chan<- model.FetchItem) (int, error) {
 	processed := 0
 	maxUID := cursorUIDForFolder(cursor, folder)
@@ -460,10 +488,16 @@ func (c *Connector) streamFolderBodies(ctx context.Context, mbc mailboxClient, f
 		if ctx.Err() != nil {
 			return processed, ctx.Err()
 		}
-		writeFolderCursor(cursorData, folder, st, maxUID)
+		writeFolderUIDCheckpoint(cursorData, folder, st, maxUID)
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return processed, ctx.Err()
 		}
+	}
+	// Folder fully drained: it's now safe to commit the new HighestModSeq
+	// so the next sync can fast-skip or delta from here.
+	writeFolderCursor(cursorData, folder, st, maxUID)
+	if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
+		return processed, ctx.Err()
 	}
 	return processed, nil
 }
@@ -538,6 +572,24 @@ func writeFolderCursor(cursorData map[string]any, folder string, st condStoreSta
 	cursorData[cursorKeyUIDValidity+folder] = float64(st.newUIDValidity)
 	if st.newHighestModSeq > 0 {
 		cursorData[cursorKeyModSeq+folder] = float64(st.newHighestModSeq)
+	}
+	cursorData[cursorKeyUID+folder] = float64(uid)
+}
+
+// writeFolderUIDCheckpoint records a mid-folder checkpoint that advances the
+// UID cursor but deliberately keeps the modseq at its PRE-SYNC cached value
+// (st.cachedModSeq), never the folder's new HighestModSeq. That way an
+// interrupted sync re-runs this folder's delta and re-fetches the unprocessed
+// batches on the next run instead of skipping them. When cachedModSeq is 0
+// (first sync, or UIDVALIDITY rotated so resolveCondStoreState cleared it) the
+// modseq key is removed, so a stale value from a previous UID generation can't
+// be mistaken for a valid cache alongside the freshly written UIDVALIDITY.
+func writeFolderUIDCheckpoint(cursorData map[string]any, folder string, st condStoreState, uid imap.UID) {
+	cursorData[cursorKeyUIDValidity+folder] = float64(st.newUIDValidity)
+	if st.cachedModSeq > 0 {
+		cursorData[cursorKeyModSeq+folder] = float64(st.cachedModSeq)
+	} else {
+		delete(cursorData, cursorKeyModSeq+folder)
 	}
 	cursorData[cursorKeyUID+folder] = float64(uid)
 }
@@ -685,7 +737,7 @@ func (c *Connector) messageToDocuments(msg *imapclient.FetchMessageBuffer, folde
 	// RFC 2047 encoded-word subjects (common for non-ASCII European
 	// mail) need decoding before they're useful for BM25 or the UI.
 	decodedSubject := decodeHeader(env.Subject)
-	emailSourceID := fmt.Sprintf("%s:%d", folder, msg.UID)
+	emailSourceID := fmt.Sprintf("%s%s%d", folder, imapIDSeparator, msg.UID)
 	emailDocID := model.DocumentID("imap", c.name, emailSourceID)
 
 	// Denormalize the {id, filename} of each attachment onto the parent

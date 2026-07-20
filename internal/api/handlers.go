@@ -79,6 +79,48 @@ func (h *handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// HealthReady godoc
+//
+//	@Summary	Readiness check
+//	@Description	Probes the hard dependencies (Postgres + OpenSearch) required to serve search. Returns 503 with a per-component map when any is unreachable. Soft deps (Tika, embeddings, LLM) are excluded — BM25 search works without them.
+//	@Tags		system
+//	@Produce	json
+//	@Success	200	{object}	map[string]any
+//	@Failure	503	{object}	map[string]any
+//	@Router		/health/ready [get]
+func (h *handler) HealthReady(w http.ResponseWriter, r *http.Request) {
+	components := map[string]string{}
+	healthy := true
+
+	if h.store != nil {
+		if err := h.store.Ping(r.Context()); err != nil {
+			components["postgres"] = "down"
+			healthy = false
+		} else {
+			components["postgres"] = "ok"
+		}
+	}
+	if h.search != nil {
+		if err := h.search.Ping(r.Context()); err != nil {
+			components["opensearch"] = "down"
+			healthy = false
+		} else {
+			components["opensearch"] = "ok"
+		}
+	}
+
+	status := "ok"
+	code := http.StatusOK
+	if !healthy {
+		status = "degraded"
+		code = http.StatusServiceUnavailable
+	}
+	// Use writeJSON (the {data:…} envelope) even on 503 so envelope-based
+	// clients tolerate it — writeError would set an `error` field that the FE
+	// api-client treats as a hard failure.
+	writeJSON(w, code, map[string]any{"status": status, "components": components})
+}
+
 // Search godoc
 //
 //	@Summary	Search across all indexed documents
@@ -439,8 +481,9 @@ func (h *handler) SyncAll(w http.ResponseWriter, r *http.Request) {
 		if job == nil {
 			continue
 		}
-		snapshot := *job
-		jobs = append(jobs, &snapshot)
+		// job is already a private snapshot taken before the run goroutine
+		// started (see startBatchSyncJob), so it's safe to hand to the response.
+		jobs = append(jobs, job)
 	}
 	writeJSON(w, http.StatusAccepted, jobs)
 }
@@ -463,8 +506,12 @@ func (h *handler) startBatchSyncJob(connID uuid.UUID, entry ConnectorWithConfig,
 		h.log.Error(logPrefix+": start failed", zap.String("connector", connName), zap.Error(err))
 		return nil
 	}
+	// Snapshot the freshly-created job before the run goroutine starts
+	// mutating it via syncJobs.Update — the caller may read the returned job
+	// for the HTTP response, which would otherwise race the progress writes.
+	snapshot := *job
 	go h.runBatchSyncJob(connID, runCtx, connName, entry.Conn, ownerID, entry.Config.Shared, job.ID, logPrefix)
-	return job
+	return &snapshot
 }
 
 // runBatchSyncJob drives a single connector sync inside the pipeline and

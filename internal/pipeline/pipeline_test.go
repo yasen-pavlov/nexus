@@ -198,6 +198,67 @@ func TestPipelineRun(t *testing.T) {
 	}
 }
 
+// TestPipelineRun_IndexFailureHoldsCursorAndRetries pins the invariant that
+// the sync cursor never advances past documents that failed to reach
+// OpenSearch. A middle sync uses a client with an invalid index name so
+// IndexChunks fails; the un-indexed doc must be re-streamed and indexed on the
+// next healthy sync rather than skipped forever. Regression for the silent
+// data-loss bug where the cursor was persisted even when the flush errored.
+func TestPipelineRun_IndexFailureHoldsCursorAndRetries(t *testing.T) {
+	st, sc := newTestDeps(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	os.WriteFile(dir+"/one.txt", []byte("first durable document about aardvarks"), 0o644) //nolint:errcheck // test file
+	fsConn := configureFSWithExtractor(t, "pipeline-hold", dir, "*.txt,*.md")
+
+	connID := uuid.New()
+	if err := st.CreateConnectorConfig(ctx, &model.ConnectorConfig{
+		ID: connID, Type: "filesystem", Name: "pipeline-hold",
+		Config: map[string]any{}, Enabled: true, Shared: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sync 1 (healthy): index the first doc and persist a cursor.
+	if _, err := New(st, sc, nil, zap.NewNop()).RunWithProgress(ctx, connID, fsConn, "", false, nil); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// A new file the next sync will try — and fail — to index.
+	os.WriteFile(dir+"/two.txt", []byte("second document about zebras that must be retried"), 0o644) //nolint:errcheck // test file
+
+	// Sync 2: a client whose index name is invalid (uppercase + space), so
+	// IndexChunks fails at the bulk write. The cursor must be held.
+	osURL, _ := testutil.TestOSConfig(t, "pipeline")
+	brokenSC, err := search.NewWithIndex(ctx, osURL, "Invalid Index", nil, lang.Default())
+	if err != nil {
+		t.Skipf("OpenSearch not available: %v", err)
+	}
+	report, err := New(st, brokenSC, nil, zap.NewNop()).RunWithProgress(ctx, connID, fsConn, "", false, nil)
+	if err != nil {
+		t.Fatalf("second sync returned a terminal error: %v", err)
+	}
+	if report.Errors == 0 {
+		t.Fatalf("expected the failed index batch to be counted as errors, got 0")
+	}
+
+	// Sync 3 (healthy again): because the cursor was held at sync 1, the
+	// connector re-streams two.txt and it now indexes. Had the cursor
+	// advanced despite the failure, two.txt would be skipped forever.
+	if _, err := New(st, sc, nil, zap.NewNop()).RunWithProgress(ctx, connID, fsConn, "", false, nil); err != nil {
+		t.Fatalf("third sync: %v", err)
+	}
+	sc.Refresh(ctx) //nolint:errcheck // test
+	result, err := sc.Search(ctx, model.SearchRequest{Query: "zebras", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if result.TotalCount != 1 {
+		t.Errorf("expected the retried doc to be indexed on the next sync, got %d results for 'zebras'", result.TotalCount)
+	}
+}
+
 // scriptedRun is a single Fetch call's scripted output for
 // fakeDeletionConnector. It mirrors the old (Documents,
 // CurrentSourceIDs, Cursor) triple so the existing tests keep their

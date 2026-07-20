@@ -1794,6 +1794,28 @@ paths:
       summary: Health check
       tags:
       - system
+  /health/ready:
+    get:
+      description: Probes the hard dependencies (Postgres + OpenSearch) required to
+        serve search. Returns 503 with a per-component map when any is unreachable.
+        Soft deps (Tika, embeddings, LLM) are excluded — BM25 search works without
+        them.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Readiness check
+      tags:
+      - system
   /llm/default:
     get:
       description: Returns the configured default model id (provider-prefixed). The

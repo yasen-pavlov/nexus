@@ -104,8 +104,21 @@ type Action =
   | { type: "start"; userContent: string }
   | { type: "frame"; frame: SSEFrame }
   | { type: "transport_error"; message: string }
+  | { type: "cancelled" }
   | { type: "reset" }
   | { type: "hydrate"; turn: StreamingTurn };
+
+// settleTurn lands an in-flight turn (retrieving/streaming) in a terminal
+// phase, preserving whatever partial answer/evidence streamed in. Used when
+// the user stops the stream or navigates away: the underlying fetch is
+// aborted, so without this the turn would stay "streaming" forever — the
+// composer stays disabled and the cached turn re-hydrates as a frozen card.
+// Terminal phases (done/error) and idle are returned unchanged, and no
+// messageID is set so chat-thread's done-refetch stays inert.
+function settleTurn(t: StreamingTurn): StreamingTurn {
+  if (t.phase !== "retrieving" && t.phase !== "streaming") return t;
+  return { ...t, phase: "done", completedAt: t.completedAt ?? Date.now() };
+}
 
 function reducer(state: StreamingTurn, action: Action): StreamingTurn {
   switch (action.type) {
@@ -123,6 +136,8 @@ function reducer(state: StreamingTurn, action: Action): StreamingTurn {
         error: { kind: "transport", message: action.message },
         completedAt: Date.now(),
       };
+    case "cancelled":
+      return settleTurn(state);
     case "reset":
       return INITIAL;
     case "hydrate":
@@ -391,7 +406,10 @@ export function useChatStream(
       if (!key) return;
       const t = turnRef.current;
       if (t.phase === "idle") return;
-      queryClient.setQueryData(key, t);
+      // Aborting the fetch above stops the stream, so an in-flight turn must
+      // be settled to a terminal phase before caching — otherwise navigating
+      // back re-hydrates a frozen "streaming" card with a disabled composer.
+      queryClient.setQueryData(key, settleTurn(t));
     };
   }, [queryClient]);
 
@@ -415,11 +433,18 @@ export function useChatStream(
           if (ctrl.signal.aborted) break;
           dispatch({ type: "frame", frame });
         }
+        // The loop can exit cleanly on abort (break) without throwing —
+        // settle the turn so the composer re-enables.
+        if (ctrl.signal.aborted) {
+          dispatch({ type: "cancelled" });
+        }
       } catch (err) {
         if (ctrl.signal.aborted) {
           // User-initiated cancel. The BE persists a partial assistant
           // message marked cancelled; the FE just surfaces "done with
-          // partial answer" — no error frame needed.
+          // partial answer" — no error frame needed. Settle the turn so the
+          // composer re-enables and the cached turn isn't stuck streaming.
+          dispatch({ type: "cancelled" });
           return;
         }
         const msg = err instanceof Error ? err.message : "stream failed";

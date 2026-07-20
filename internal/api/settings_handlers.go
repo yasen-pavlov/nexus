@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -70,8 +69,7 @@ func (h *handler) GetEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 //	@Router		/settings/embedding [put]
 func (h *handler) UpdateEmbeddingSettings(w http.ResponseWriter, r *http.Request) {
 	var req embeddingSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -194,8 +192,7 @@ func (h *handler) GetRerankSettings(w http.ResponseWriter, r *http.Request) {
 //	@Router		/settings/rerank [put]
 func (h *handler) UpdateRerankSettings(w http.ResponseWriter, r *http.Request) {
 	var req rerankSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.MinScore < 0 || req.MinScore > 1 {
@@ -299,8 +296,7 @@ func (h *handler) GetRetentionSettings(w http.ResponseWriter, r *http.Request) {
 //	@Router			/settings/retention [put]
 func (h *handler) UpdateRetentionSettings(w http.ResponseWriter, r *http.Request) {
 	var req retentionSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.RetentionDays < 0 {
@@ -417,8 +413,7 @@ func (h *handler) GetRankingSettings(w http.ResponseWriter, r *http.Request) {
 //	@Router			/settings/ranking [put]
 func (h *handler) UpdateRankingSettings(w http.ResponseWriter, r *http.Request) {
 	var req rankingSettings
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if errMsg := validateRankingSettings(&req); errMsg != "" {

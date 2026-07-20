@@ -11,6 +11,7 @@ import (
 	tgconn "github.com/muty/nexus/internal/connector/telegram"
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline/extractor"
+	"github.com/muty/nexus/internal/search"
 	"github.com/muty/nexus/internal/storage"
 	"github.com/muty/nexus/internal/store"
 	"go.uber.org/zap"
@@ -42,6 +43,7 @@ type ConnectorManager struct {
 	schedObserver ScheduleObserver
 	extractor     *extractor.Registry
 	binaryStore   *storage.BinaryStore
+	searchClient  *search.Client
 }
 
 // SetScheduleObserver sets the observer that is notified when connector schedules change.
@@ -59,6 +61,27 @@ func (m *ConnectorManager) SetExtractor(ext *extractor.Registry) {
 // policy) during instantiation.
 func (m *ConnectorManager) SetBinaryStore(bs *storage.BinaryStore) {
 	m.binaryStore = bs
+}
+
+// SetSearchClient sets the OpenSearch client used to purge a connector's
+// indexed documents when it is removed. Nil disables index cleanup (used by
+// unit tests that don't run OpenSearch).
+func (m *ConnectorManager) SetSearchClient(sc *search.Client) {
+	m.searchClient = sc
+}
+
+// ClearOwner nulls the in-memory UserID on every loaded connector owned by
+// userID, after their DB rows have been orphaned (user_id set NULL by
+// OrphanSharedConnectorsByOwner). This keeps a future sync of an orphaned
+// shared connector from tagging new chunks with the now-deleted owner.
+func (m *ConnectorManager) ClearOwner(userID uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.connectors {
+		if e.config.UserID != nil && *e.config.UserID == userID {
+			e.config.UserID = nil
+		}
+	}
 }
 
 // NewConnectorManager creates a new ConnectorManager.
@@ -224,6 +247,20 @@ func (m *ConnectorManager) Remove(ctx context.Context, id uuid.UUID) error {
 	if m.binaryStore != nil {
 		if err := m.binaryStore.DeleteBySource(ctx, cfg.Type, cfg.Name); err != nil {
 			m.log.Warn("failed to delete cached binaries",
+				zap.String("type", cfg.Type),
+				zap.String("name", cfg.Name),
+				zap.Error(err),
+			)
+		}
+	}
+
+	// Purge the connector's indexed documents from OpenSearch — keyed by the
+	// same (source_type, source_name). Best-effort: the DB row is already gone,
+	// so a transient OpenSearch failure must not fail the delete (the orphaned
+	// docs can be swept later via reindex).
+	if m.searchClient != nil {
+		if err := m.searchClient.DeleteBySource(ctx, cfg.Type, cfg.Name); err != nil {
+			m.log.Warn("failed to delete indexed documents",
 				zap.String("type", cfg.Type),
 				zap.String("name", cfg.Name),
 				zap.Error(err),

@@ -419,29 +419,33 @@ func (m *SyncJobManager) Subscribe(id string) <-chan SyncJob {
 }
 
 // notify sends the current job state to all per-job and global subscribers.
+//
+// The sends run while the RLock is still held. This is deliberate: a
+// subscriber channel is only ever closed under the write Lock (by
+// unsubscribe / closeSubscribers), so holding the read lock across the sends
+// guarantees no channel can be closed mid-send — a send on a closed channel
+// panics even inside a select/default, which would crash the whole server on
+// the routine event of an SSE client disconnecting during a sync. The sends
+// are non-blocking (select/default), so keeping the read lock over them adds
+// no meaningful contention.
 func (m *SyncJobManager) notify(id string) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	job, ok := m.jobs[id]
 	if !ok {
-		m.mu.RUnlock()
 		return
 	}
 	snapshot := *job
-	subs := m.subscribers[id]
-	globalSubs := make([]chan SyncJob, 0, len(m.globalSubscribers))
-	for _, ch := range m.globalSubscribers {
-		globalSubs = append(globalSubs, ch)
-	}
-	m.mu.RUnlock()
 
-	for _, ch := range subs {
+	for _, ch := range m.subscribers[id] {
 		select {
 		case ch <- snapshot:
 		default:
 			// subscriber is slow, skip this update
 		}
 	}
-	for _, ch := range globalSubs {
+	for _, ch := range m.globalSubscribers {
 		select {
 		case ch <- snapshot:
 		default:

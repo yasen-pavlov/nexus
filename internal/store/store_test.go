@@ -42,3 +42,15 @@ func TestRunMigrations_InvalidURL(t *testing.T) {
 		t.Fatal("expected error for invalid migration URL")
 	}
 }
+
+func TestStore_Ping(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.Ping(context.Background()); err != nil {
+		t.Fatalf("ping on live pool: %v", err)
+	}
+
+	closed := newClosedStore(t)
+	if err := closed.Ping(context.Background()); err == nil {
+		t.Error("ping on closed pool: expected error, got nil")
+	}
+}

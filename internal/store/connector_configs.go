@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/muty/nexus/internal/crypto"
 	"github.com/muty/nexus/internal/model"
+	"go.uber.org/zap"
 )
 
 var ErrDuplicateName = errors.New("connector name already exists")
@@ -34,7 +35,22 @@ func (s *Store) scanConnectorConfig(scan func(dest ...any) error) (model.Connect
 	}
 	decrypted, err := crypto.DecryptConfig(s.encryptionKey, cfg.Type, cfg.Config)
 	if err != nil {
-		return cfg, fmt.Errorf("store: decrypt connector config %q: %w", cfg.Name, err)
+		// Degrade this row instead of failing the whole list — one row
+		// encrypted under a different/lost key must not brick boot (which
+		// would take down login, search, and chats for everyone). Mark it
+		// unreadable, strip the ciphertext so the API never emits it, and let
+		// the owner re-enter the secret. The connector loads inactive because
+		// the manager skips connectors that fail to instantiate/validate.
+		s.log.Warn("connector config credentials unreadable; re-enter secrets to restore",
+			zap.String("connector", cfg.Name),
+			zap.String("type", cfg.Type),
+			zap.Error(err),
+		)
+		cfg.CredentialsUnreadable = true
+		for _, field := range crypto.SensitiveFields[cfg.Type] {
+			delete(cfg.Config, field)
+		}
+		return cfg, nil
 	}
 	cfg.Config = decrypted
 	return cfg, nil
@@ -50,6 +66,33 @@ func (s *Store) ListConnectorConfigs(ctx context.Context) ([]model.ConnectorConf
 func (s *Store) ListUserConnectorConfigs(ctx context.Context, userID uuid.UUID) ([]model.ConnectorConfig, error) {
 	query := `SELECT ` + connectorCols + ` FROM connector_configs WHERE user_id = $1 OR shared = true ORDER BY name`
 	return s.listConnectorConfigsWithArg(ctx, query, userID)
+}
+
+// ListConnectorConfigsByOwner returns only connectors the given user OWNS
+// (user_id = userID). Unlike ListUserConnectorConfigs it deliberately excludes
+// shared connectors owned by others — used when deleting a user, where we must
+// clean up that user's connectors but never touch connectors shared by anyone
+// else. The seeded filesystem connector has a NULL user_id, so it is excluded.
+func (s *Store) ListConnectorConfigsByOwner(ctx context.Context, userID uuid.UUID) ([]model.ConnectorConfig, error) {
+	query := `SELECT ` + connectorCols + ` FROM connector_configs WHERE user_id = $1 ORDER BY name`
+	return s.listConnectorConfigsWithArg(ctx, query, userID)
+}
+
+// OrphanSharedConnectorsByOwner clears the owner of every SHARED connector the
+// user owns (user_id = userID AND shared = true), setting user_id = NULL. Used
+// when deleting a user: their shared connectors are community data and must
+// survive, but the FK to the deleted user must be released. The
+// (user_id IS NOT NULL OR shared) check constraint (migration 008) permits the
+// NULL owner because these rows are shared. Returns the number of rows orphaned.
+func (s *Store) OrphanSharedConnectorsByOwner(ctx context.Context, userID uuid.UUID) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE connector_configs SET user_id = NULL, updated_at = now() WHERE user_id = $1 AND shared = true`,
+		userID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: orphan shared connectors: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (s *Store) listConnectorConfigs(ctx context.Context, query string) ([]model.ConnectorConfig, error) {

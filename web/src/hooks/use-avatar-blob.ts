@@ -1,12 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
-import { fetchAuthedBlob } from "@/lib/api-client";
+import { fetchAuthedBlobData } from "@/lib/api-client";
 import { avatarKeys } from "@/lib/query-keys";
+import { useObjectURL } from "@/hooks/use-object-url";
 
-// useAvatarBlob fetches an authenticated avatar image from the
-// connector endpoint and returns an object URL suitable for an <img
-// src>. Revokes the URL when the query result churns so blob memory
-// doesn't leak across conversation navigations. Returns null for
+// useAvatarBlob fetches an authenticated avatar image from the connector
+// endpoint and returns an object URL suitable for an <img src>.
+//
+// The query caches the raw Blob; the object URL is minted per-consumer via
+// useObjectURL and revoked on unmount. This keeps the URL's lifetime tied to
+// the DOM node rather than the cache entry, so two components sharing the
+// avatar don't revoke each other's URL and a remount within the cache window
+// re-mints a live URL instead of returning a revoked one. Returns null for
 // sources/users without a cached avatar — caller renders initials.
 export function useAvatarBlob(
   connectorID: string | null | undefined,
@@ -14,10 +18,10 @@ export function useAvatarBlob(
 ) {
   const enabled = Boolean(connectorID && externalID);
 
-  const query = useQuery<string | null>({
+  const query = useQuery<Blob | null>({
     queryKey: avatarKeys.blob(connectorID ?? "", externalID ?? ""),
     queryFn: () =>
-      fetchAuthedBlob(
+      fetchAuthedBlobData(
         `/api/connectors/${encodeURIComponent(connectorID!)}/avatars/${encodeURIComponent(externalID!)}`,
       ),
     enabled,
@@ -25,11 +29,10 @@ export function useAvatarBlob(
     retry: false,
   });
 
-  useEffect(() => {
-    const url = query.data;
-    if (!url) return;
-    return () => URL.revokeObjectURL(url);
-  }, [query.data]);
-
-  return query;
+  const url = useObjectURL(query.data);
+  return {
+    ...query,
+    data: url,
+    isLoading: query.isLoading || (query.data != null && url == null),
+  };
 }

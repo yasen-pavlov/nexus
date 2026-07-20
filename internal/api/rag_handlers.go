@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"go.uber.org/zap"
@@ -62,8 +61,7 @@ func (h *handler) UpdateRAGSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req ragSettingsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	snap := RAGSnapshot(req)

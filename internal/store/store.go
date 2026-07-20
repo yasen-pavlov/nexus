@@ -44,6 +44,11 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies the Postgres connection is alive. Used by the readiness probe.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func (s *Store) RunMigrations(databaseURL string, migrationsFS fs.FS) error {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {

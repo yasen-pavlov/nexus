@@ -139,7 +139,7 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_LLM_ANTHROPIC_API_KEY` — Anthropic API key (enables Claude models)
 - `NEXUS_LLM_OPENAI_API_KEY` — OpenAI API key (enables GPT models)
 - `NEXUS_LLM_OLLAMA_URL` — dedicated LLM Ollama URL; falls back to `NEXUS_OLLAMA_URL` when empty
-- `NEXUS_ENCRYPTION_KEY` — 64-char hex string (32 bytes) for AES-256-GCM encryption of sensitive connector config fields (empty = disabled)
+- `NEXUS_ENCRYPTION_KEY` — 64-char hex string (32 bytes) for AES-256-GCM encryption of sensitive connector config fields (empty = disabled). A changed/lost key no longer bricks boot: rows that fail to decrypt degrade per-row (`scanConnectorConfig` sets the transient `credentials_unreadable` flag + strips the ciphertext) and load inactive so the owner can re-enter secrets. Planned rotation: `nexus rotate-key -new-key <hex>` (store.RotateEncryptionKey re-encrypts connector + settings secrets in one transaction).
 - `NEXUS_JWT_SECRET` — secret used to sign JWT session tokens. If empty, a random one is generated on each boot (which logs everyone out on restart). Set explicitly for stable sessions across restarts.
 - `NEXUS_CORS_ORIGINS` — comma-separated list of allowed CORS origins (default: `http://localhost:5173`)
 - `NEXUS_FS_ROOT_PATH` — filesystem connector root (seeds DB on first run as a shared connector)

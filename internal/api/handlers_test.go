@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/muty/nexus/internal/model"
 	"github.com/muty/nexus/internal/pipeline"
 	"github.com/muty/nexus/internal/rerank"
+	"github.com/muty/nexus/internal/search"
 	"go.uber.org/zap"
 )
 
@@ -91,6 +93,58 @@ func TestHealthHandler(t *testing.T) {
 	}
 	if resp.Error != "" {
 		t.Errorf("unexpected error: %s", resp.Error)
+	}
+}
+
+// TestHealthReadyHandler_NilDeps covers the nil-guard branch: with no store or
+// search wired (newTestHandler leaves both nil), readiness reports 200 "ok"
+// with an empty component map rather than panicking.
+func TestHealthReadyHandler_NilDeps(t *testing.T) {
+	h := newTestHandler()
+	req := httptest.NewRequest(http.MethodGet, "/api/health/ready", nil)
+	w := httptest.NewRecorder()
+
+	h.HealthReady(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 with nil deps, got %d", w.Code)
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map data, got %T", resp.Data)
+	}
+	if data["status"] != "ok" {
+		t.Errorf("expected status=ok, got %v", data["status"])
+	}
+	if comps, ok := data["components"].(map[string]any); !ok || len(comps) != 0 {
+		t.Errorf("expected empty components map, got %v", data["components"])
+	}
+}
+
+// TestConnectorResponse_SurfacesCredentialsUnreadable locks the wire contract:
+// a connector whose secrets couldn't be decrypted must expose
+// credentials_unreadable through the connectors API so the UI can prompt the
+// owner to re-enter the secret.
+func TestConnectorResponse_SurfacesCredentialsUnreadable(t *testing.T) {
+	resp := connectorResponse{
+		ConnectorConfig: model.ConnectorConfig{
+			Type:                  "imap",
+			Name:                  "unreadable",
+			Config:                map[string]any{"host": "mail.example.com"},
+			CredentialsUnreadable: true,
+		},
+		Status: "inactive",
+	}
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"credentials_unreadable":true`) {
+		t.Errorf("expected credentials_unreadable in JSON, got %s", b)
 	}
 }
 
@@ -409,7 +463,10 @@ func TestRerankResults(t *testing.T) {
 		},
 	}
 
-	reranked := s.rerankResults(context.Background(), "test", result)
+	reranked, ok := s.rerankResults(context.Background(), "test", result)
+	if !ok {
+		t.Fatal("expected reranked=true when a reranker rescores >1 candidate")
+	}
 
 	if len(reranked.Documents) != 3 {
 		t.Fatalf("expected 3 docs, got %d", len(reranked.Documents))
@@ -432,7 +489,10 @@ func TestRerankResults_NoReranker(t *testing.T) {
 		},
 	}
 
-	reranked := s.rerankResults(context.Background(), "test", result)
+	reranked, ok := s.rerankResults(context.Background(), "test", result)
+	if ok {
+		t.Error("expected reranked=false when no reranker is wired")
+	}
 	if reranked.Documents[0].Title != "A" {
 		t.Error("should return original order when no reranker")
 	}
@@ -469,12 +529,86 @@ func TestRerankResults_DedupesNearDuplicates(t *testing.T) {
 		},
 	}
 
-	reranked := s.rerankResults(context.Background(), "test", result)
+	reranked, ok := s.rerankResults(context.Background(), "test", result)
+	if !ok {
+		t.Error("expected reranked=true after a successful rerank")
+	}
 	if len(rec.received) != 2 {
 		t.Errorf("expected reranker to receive 2 deduped docs, got %d", len(rec.received))
 	}
 	if len(reranked.Documents) != 2 {
 		t.Errorf("expected 2 docs after dedup, got %d", len(reranked.Documents))
+	}
+}
+
+// errReranker always fails, to exercise the degraded "kept original order" path.
+type errReranker struct{}
+
+func (errReranker) Rerank(context.Context, string, []string) ([]rerank.Result, error) {
+	return nil, errors.New("reranker unavailable")
+}
+
+// TestRerankResults_ReportsWhetherReranked pins the bool that gates the score
+// floor. It must be false in every path where Documents still carry raw
+// retrieval (RRF/BM25) scores — no reranker, single candidate, or API error —
+// and true only when the reranker actually rescored. Regression for the floor
+// wiping raw-RRF results.
+func TestRerankResults_ReportsWhetherReranked(t *testing.T) {
+	mk := func(n int) *model.SearchResult {
+		docs := make([]model.DocumentHit, n)
+		for i := range docs {
+			docs[i] = model.DocumentHit{Document: model.Document{Title: string(rune('A' + i))}, Rank: 0.03}
+		}
+		return &model.SearchResult{Documents: docs}
+	}
+
+	cases := []struct {
+		name     string
+		reranker rerank.Reranker
+		docs     int
+		want     bool
+	}{
+		{"no reranker", nil, 3, false},
+		{"single candidate", &mockReranker{}, 1, false},
+		{"reranker error", errReranker{}, 3, false},
+		{"healthy rerank", &mockReranker{}, 3, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rm := NewRerankManager(nil, zap.NewNop())
+			if tc.reranker != nil {
+				rm.Set(tc.reranker)
+			}
+			s := &SearchService{rm: rm, log: zap.NewNop()}
+			if _, ok := s.rerankResults(context.Background(), "q", mk(tc.docs)); ok != tc.want {
+				t.Errorf("reranked=%v, want %v", ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyRerankerFloor_SkippedWhenNotReranked verifies the score floor only
+// culls real reranker scores. Raw RRF scores (~0.03) are far below the 0.4
+// floor, so applying it to un-reranked results would empty the response.
+func TestApplyRerankerFloor_SkippedWhenNotReranked(t *testing.T) {
+	cfg := search.DefaultRankingConfig() // RerankerMinScore = 0.4
+	mk := func() *model.SearchResult {
+		return &model.SearchResult{Documents: []model.DocumentHit{
+			{Document: model.Document{Title: "A"}, Rank: 0.033},
+			{Document: model.Document{Title: "B"}, Rank: 0.016},
+		}}
+	}
+
+	notReranked := mk()
+	applyRerankerFloor(notReranked, cfg, false)
+	if len(notReranked.Documents) != 2 {
+		t.Errorf("floor must not run on raw-RRF (un-reranked) results; got %d docs, want 2", len(notReranked.Documents))
+	}
+
+	reranked := mk()
+	applyRerankerFloor(reranked, cfg, true)
+	if len(reranked.Documents) != 0 {
+		t.Errorf("floor should drop sub-threshold reranked scores; got %d docs, want 0", len(reranked.Documents))
 	}
 }
 

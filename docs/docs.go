@@ -1283,6 +1283,34 @@ const docTemplate = `{
                 }
             }
         },
+        "/health/ready": {
+            "get": {
+                "description": "Probes the hard dependencies (Postgres + OpenSearch) required to serve search. Returns 503 with a per-component map when any is unreachable. Soft deps (Tika, embeddings, LLM) are excluded — BM25 search works without them.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Readiness check",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/llm/default": {
             "get": {
                 "security": [

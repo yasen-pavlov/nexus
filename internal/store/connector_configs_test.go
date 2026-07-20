@@ -89,6 +89,41 @@ func TestCreateConnectorConfig_DuplicateName(t *testing.T) {
 	}
 }
 
+// TestCreateConnectorConfig_DuplicateAcrossUsers pins GLOBAL (type, name)
+// uniqueness: two different users must not both own a same-type, same-name
+// connector, because their indexed documents, cached blobs, and ownership
+// operations all collide on (type, name). Regression for the cross-user
+// overwrite/delete hazard.
+func TestCreateConnectorConfig_DuplicateAcrossUsers(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	alice, err := st.CreateUser(ctx, "alice-dupe", "hash", "user")
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, err := st.CreateUser(ctx, "bob-dupe", "hash", "user")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	cfgA := &model.ConnectorConfig{Type: "telegram", Name: "telegram", Config: map[string]any{}, Enabled: true, UserID: &alice.ID}
+	cfgB := &model.ConnectorConfig{Type: "telegram", Name: "telegram", Config: map[string]any{}, Enabled: true, UserID: &bob.ID}
+
+	if err := st.CreateConnectorConfig(ctx, cfgA); err != nil {
+		t.Fatalf("alice create: %v", err)
+	}
+	if err := st.CreateConnectorConfig(ctx, cfgB); err != ErrDuplicateName {
+		t.Errorf("bob create with alice's (type,name): expected ErrDuplicateName, got %v", err)
+	}
+
+	// A different type with the same name is fine — document ids differ by type.
+	cfgC := &model.ConnectorConfig{Type: "filesystem", Name: "telegram", Config: map[string]any{}, Enabled: true, UserID: &bob.ID}
+	if err := st.CreateConnectorConfig(ctx, cfgC); err != nil {
+		t.Errorf("different-type same-name should be allowed, got %v", err)
+	}
+}
+
 func TestGetConnectorConfig_NotFound(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -457,5 +492,184 @@ func TestEncryptExistingConfigs_NoKey(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("encrypted %d, want 0 (no key)", n)
+	}
+}
+
+// TestListConnectorConfigsByOwner pins the owner-only scoping used by user
+// deletion: it must return exactly the connectors a user OWNS, excluding both
+// other users' connectors and NULL-owner shared connectors (which
+// ListUserConnectorConfigs would include via `OR shared = true`).
+func TestListConnectorConfigsByOwner(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	alice, err := st.CreateUser(ctx, "alice-owner", "hash", "user")
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, err := st.CreateUser(ctx, "bob-owner", "hash", "user")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	// Global (type,name) uniqueness forces distinct pairs per connector.
+	seed := []*model.ConnectorConfig{
+		{Type: "filesystem", Name: "alice-fs", Config: map[string]any{}, Enabled: true, UserID: &alice.ID},
+		{Type: "telegram", Name: "alice-tg", Config: map[string]any{}, Enabled: true, Shared: true, UserID: &alice.ID},
+		{Type: "imap", Name: "bob-imap", Config: map[string]any{}, Enabled: true, UserID: &bob.ID},
+		{Type: "paperless", Name: "shared-noowner", Config: map[string]any{}, Enabled: true, Shared: true},
+	}
+	for _, c := range seed {
+		if err := st.CreateConnectorConfig(ctx, c); err != nil {
+			t.Fatalf("create %s: %v", c.Name, err)
+		}
+	}
+
+	got, err := st.ListConnectorConfigsByOwner(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("list by owner: %v", err)
+	}
+	names := map[string]bool{}
+	for _, c := range got {
+		names[c.Name] = true
+	}
+	if len(got) != 2 || !names["alice-fs"] || !names["alice-tg"] {
+		t.Errorf("expected exactly alice's two connectors, got %v", names)
+	}
+	if names["bob-imap"] || names["shared-noowner"] {
+		t.Errorf("owner scoping leaked non-owned connectors: %v", names)
+	}
+}
+
+// TestOrphanSharedConnectorsByOwner: only the user's SHARED connectors get
+// user_id NULLed; their private connectors and other users' connectors are
+// untouched.
+func TestOrphanSharedConnectorsByOwner(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	alice, err := st.CreateUser(ctx, "alice-orphan", "hash", "user")
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, err := st.CreateUser(ctx, "bob-orphan", "hash", "user")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	aliceShared := &model.ConnectorConfig{Type: "telegram", Name: "a-shared", Config: map[string]any{}, Enabled: true, Shared: true, UserID: &alice.ID}
+	alicePrivate := &model.ConnectorConfig{Type: "filesystem", Name: "a-private", Config: map[string]any{}, Enabled: true, UserID: &alice.ID}
+	bobShared := &model.ConnectorConfig{Type: "imap", Name: "b-shared", Config: map[string]any{}, Enabled: true, Shared: true, UserID: &bob.ID}
+	for _, c := range []*model.ConnectorConfig{aliceShared, alicePrivate, bobShared} {
+		if err := st.CreateConnectorConfig(ctx, c); err != nil {
+			t.Fatalf("create %s: %v", c.Name, err)
+		}
+	}
+
+	n, err := st.OrphanSharedConnectorsByOwner(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("orphan: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 shared connector orphaned, got %d", n)
+	}
+
+	got, _ := st.GetConnectorConfig(ctx, aliceShared.ID)
+	if got.UserID != nil {
+		t.Errorf("alice's shared connector should be orphaned (NULL owner), got %v", got.UserID)
+	}
+	priv, _ := st.GetConnectorConfig(ctx, alicePrivate.ID)
+	if priv.UserID == nil || *priv.UserID != alice.ID {
+		t.Error("alice's private connector must keep its owner")
+	}
+	other, _ := st.GetConnectorConfig(ctx, bobShared.ID)
+	if other.UserID == nil || *other.UserID != bob.ID {
+		t.Error("bob's shared connector must be untouched")
+	}
+}
+
+// TestScanConnectorConfig_DegradesOnWrongKey pins the boot-brick fix: a row
+// whose secret can't be decrypted with the active key is returned marked
+// unreadable (not errored), with the ciphertext stripped — so one bad row no
+// longer takes down the whole list (and thus login/search/chats).
+func TestScanConnectorConfig_DegradesOnWrongKey(t *testing.T) {
+	keyA := testKey(t, "a")
+	keyB := testKey(t, "b")
+	stA, stB := newSharedPoolStores(t, keyA, keyB)
+	ctx := context.Background()
+
+	cfg := &model.ConnectorConfig{
+		Type:    "imap",
+		Name:    "degrade-me",
+		Config:  map[string]any{"host": "mail.example.com", "password": "hunter2"},
+		Enabled: true,
+		Shared:  true,
+	}
+	if err := stA.CreateConnectorConfig(ctx, cfg); err != nil {
+		t.Fatalf("create under key A: %v", err)
+	}
+
+	// List under the WRONG key must degrade, not error.
+	got, err := stB.ListConnectorConfigs(ctx)
+	if err != nil {
+		t.Fatalf("list under wrong key should degrade, got error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 connector, got %d", len(got))
+	}
+	if !got[0].CredentialsUnreadable {
+		t.Error("expected CredentialsUnreadable=true under wrong key")
+	}
+	if _, ok := got[0].Config["password"]; ok {
+		t.Error("expected the unreadable password ciphertext to be stripped")
+	}
+	if got[0].Config["host"] != "mail.example.com" {
+		t.Errorf("expected non-sensitive host to remain, got %v", got[0].Config["host"])
+	}
+
+	// The single-row getter degrades identically.
+	one, err := stB.GetConnectorConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get under wrong key should degrade, got error: %v", err)
+	}
+	if !one.CredentialsUnreadable {
+		t.Error("GetConnectorConfig: expected CredentialsUnreadable=true")
+	}
+}
+
+// TestListConnectorConfigs_MixedReadableAndUnreadable proves one bad row no
+// longer fails the whole list: a clean filesystem connector (no secrets) and an
+// imap connector under a different key both come back, the latter degraded.
+func TestListConnectorConfigs_MixedReadableAndUnreadable(t *testing.T) {
+	keyA := testKey(t, "a")
+	keyB := testKey(t, "b")
+	stA, stB := newSharedPoolStores(t, keyA, keyB)
+	ctx := context.Background()
+
+	fs := &model.ConnectorConfig{Type: "filesystem", Name: "clean-fs", Config: map[string]any{"root_path": "/data"}, Enabled: true, Shared: true}
+	imap := &model.ConnectorConfig{Type: "imap", Name: "secret-imap", Config: map[string]any{"host": "h", "password": "pw"}, Enabled: true, Shared: true}
+	if err := stA.CreateConnectorConfig(ctx, fs); err != nil {
+		t.Fatalf("create fs: %v", err)
+	}
+	if err := stA.CreateConnectorConfig(ctx, imap); err != nil {
+		t.Fatalf("create imap: %v", err)
+	}
+
+	got, err := stB.ListConnectorConfigs(ctx)
+	if err != nil {
+		t.Fatalf("list should not error with one unreadable row: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected both connectors returned, got %d", len(got))
+	}
+	byName := map[string]model.ConnectorConfig{}
+	for _, c := range got {
+		byName[c.Name] = c
+	}
+	if byName["clean-fs"].CredentialsUnreadable {
+		t.Error("filesystem connector has no secrets; should be readable")
+	}
+	if !byName["secret-imap"].CredentialsUnreadable {
+		t.Error("imap connector under wrong key should be marked unreadable")
 	}
 }
