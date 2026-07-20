@@ -1,13 +1,12 @@
 package embedding
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/muty/nexus/internal/providerhttp"
 	"go.uber.org/zap"
 )
 
@@ -65,37 +64,18 @@ func (c *Cohere) Embed(ctx context.Context, texts []string, inputType string) ([
 	if c.model == "embed-v4.0" {
 		outputDim = 1024
 	}
-	body, err := json.Marshal(cohereEmbedRequest{
+	reqBody := cohereEmbedRequest{
 		Model:           c.model,
 		Texts:           texts,
 		InputType:       cohereInputType,
 		EmbeddingTypes:  []string{"float"},
 		OutputDimension: outputDim,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cohere: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v2/embed", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("cohere: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("cohere: request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // HTTP response body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFromResponse(resp, "cohere")
 	}
 
 	var result cohereEmbedResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("cohere: decode response: %w", err)
+	if err := providerhttp.PostJSON(ctx, c.client, c.baseURL+"/v2/embed", c.apiKey, reqBody, &result,
+		func(resp *http.Response) error { return errorFromResponse(resp, "cohere") }); err != nil {
+		return nil, fmt.Errorf("cohere: embed: %w", err)
 	}
 
 	return result.Embeddings.Float, nil

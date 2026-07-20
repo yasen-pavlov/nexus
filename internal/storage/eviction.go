@@ -2,8 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
-	"os"
 	"time"
 
 	"go.uber.org/zap"
@@ -117,13 +115,11 @@ func (s *BinaryStore) evictOverBudget(ctx context.Context, sourceType string, ma
 		if freed >= excess {
 			break
 		}
+		// Delete already treats a missing blob (row gone, or file vanished
+		// between listing and delete) as success — it swallows os.ErrNotExist
+		// and returns nil — so a nil error here means the entry is reclaimed
+		// and counts as progress. Only a real DB/filesystem error lands here.
 		if err := s.Delete(ctx, e.SourceType, e.SourceName, e.SourceID); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// File vanished between listing and delete; still counts as progress.
-				freed += e.Size
-				count++
-				continue
-			}
 			s.log.Warn("eviction: delete LRU failed",
 				zap.String("source_type", e.SourceType),
 				zap.String("source_name", e.SourceName),
