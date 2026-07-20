@@ -41,6 +41,11 @@ func Split(text string, maxTokens, overlapTokens int) []Chunk {
 	}
 
 	text = strings.TrimSpace(text)
+	// Sanitize invalid UTF-8 at the single chokepoint every source flows
+	// through (filesystem, IMAP-cleaned bodies, Tika output, Telegram) so
+	// malformed bytes never reach the byte-bounded splitter or the index.
+	// ToValidUTF8 has a no-alloc fast path for already-valid input.
+	text = strings.ToValidUTF8(text, "�")
 	if text == "" {
 		return nil
 	}
@@ -86,6 +91,13 @@ func appendByteBounded(chunks []Chunk, s string, index *int) []Chunk {
 		cut := MaxChunkBytes
 		for cut > 0 && !utf8.RuneStart(s[cut]) {
 			cut--
+		}
+		// No rune boundary within the first MaxChunkBytes bytes (a run of
+		// invalid-UTF-8 continuation bytes with no whitespace). Cut hard at
+		// MaxChunkBytes, accepting one split rune, so cut is always ≥1 and s
+		// strictly shrinks — otherwise this loop spins forever and OOMs.
+		if cut == 0 {
+			cut = MaxChunkBytes
 		}
 		chunks = append(chunks, Chunk{Index: *index, Text: s[:cut]})
 		*index++

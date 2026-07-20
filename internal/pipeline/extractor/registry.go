@@ -13,19 +13,25 @@ type Registry struct {
 }
 
 // NewRegistry creates an extractor registry.
-// If tikaURL is provided and Tika is available, it's added as a fallback
-// extractor. languages drives the X-Tika-OCRLanguage header so Tesseract
-// knows which language packs to use when OCR'ing scanned PDFs and images.
+// If tikaURL is provided, Tika is added as a fallback extractor. languages
+// drives the X-Tika-OCRLanguage header so Tesseract knows which language packs
+// to use when OCR'ing scanned PDFs and images.
+//
+// Tika is registered UNCONDITIONALLY (no boot-time Available() probe): a single
+// startup probe would permanently disable binary extraction for the whole
+// process if Tika happened to be unreachable at that instant (a restart while
+// Tika is briefly down, `make dev` without the container, Tika crash-looping at
+// boot). Extract already surfaces per-request errors cleanly and every consumer
+// falls back to empty content on error, so a Tika-down state yields the same
+// output as before — but the moment Tika recovers, the next document extracts
+// correctly with no nexus restart required.
 func NewRegistry(tikaURL string, languages []lang.Language) *Registry {
 	r := &Registry{
 		extractors: []Extractor{&PlainText{}},
 	}
 
 	if tikaURL != "" {
-		tika := NewTika(tikaURL, languages)
-		if tika.Available(context.Background()) {
-			r.extractors = append(r.extractors, tika)
-		}
+		r.extractors = append(r.extractors, NewTika(tikaURL, languages))
 	}
 
 	return r

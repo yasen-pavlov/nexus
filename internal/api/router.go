@@ -51,7 +51,6 @@ func NewRouter(
 	// ever deployed behind a trusted reverse proxy, add a proxy-aware parser
 	// that only trusts XFF from known proxy addresses.
 	r.Use(chimw.Recoverer)
-	r.Use(chimw.Timeout(10 * time.Minute))
 	// Bound every request body before any handler reads it, so an
 	// unauthenticated client can't stream a huge body toward OOM. Global
 	// registration also covers the pre-auth login/register routes.
@@ -93,7 +92,10 @@ func NewRouter(
 	// resolved against the api_tokens table and acts as its owning user.
 	apiTokens := h.apiTokenAuth.validate
 
-	// SSE endpoints — outside the timeout middleware (long-lived connections).
+	// SSE endpoints — declared on the root mux, deliberately OUTSIDE the /api
+	// Route group where the 10-minute Timeout middleware lives (see below), so
+	// these long-lived connections are never force-closed mid-stream (a RAG turn
+	// against a slow local model, or a multiplexed sync stream, must outlast it).
 	// The GET progress streams are consumed by the browser EventSource API,
 	// which cannot set an Authorization header, so they accept a ?token= query
 	// param via SSEMiddleware. The chat stream is a POST issued with fetch(),
@@ -114,6 +116,12 @@ func NewRouter(
 	})
 
 	r.Route("/api", func(r chi.Router) {
+		// Hard per-request timeout for all regular /api routes. Registered on
+		// this sub-mux rather than the root so the long-lived SSE streams above
+		// (declared outside this group) are not force-closed at 10 minutes. Must
+		// precede every route declared on this sub-router (chi requirement).
+		r.Use(chimw.Timeout(10 * time.Minute))
+
 		// Public routes (no auth required)
 		r.Get("/health", h.Health)
 		r.Get("/health/ready", h.HealthReady)

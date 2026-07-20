@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -631,12 +632,27 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 	for _, rc := range chunkData {
 		results = append(results, rc)
 	}
+	// Map iteration is randomized, so sort deterministically by retrieval score
+	// (desc) with a stable parentID tiebreaker before any downstream stage runs.
+	// dedupeNearDuplicates relies on "first occurrence wins" meaning the
+	// highest-ranked survives, and this also stops ApplyRecencyDecay's
+	// non-stable sort from flapping equal-score ties between identical queries.
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		return results[i].parentID < results[j].parentID
+	})
 
 	// Compute facets from the full deduped result set
 	facets := computeFacets(results)
 
 	hits := make([]model.DocumentHit, 0, len(results))
-	sourceIDs := make([]string, 0, len(results))
+	// Keys for incoming-edge counting: each hit's own source_id plus, for IMAP,
+	// its RFC-2822 Message-ID. reply_to/member_of_thread edges target the
+	// Message-ID (not the folder:UID source_id), so a thread-root email's
+	// replies are only countable via this key — see CountIncomingEdges.
+	edgeKeys := make([]string, 0, len(results))
 	for _, rc := range results {
 		hits = append(hits, model.DocumentHit{
 			Document:     rc.doc,
@@ -644,7 +660,10 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 			Headline:     rc.headline,
 			RelatedCount: len(rc.doc.Relations), // outgoing, incoming added below
 		})
-		sourceIDs = append(sourceIDs, rc.doc.SourceID)
+		edgeKeys = append(edgeKeys, rc.doc.SourceID)
+		if mid := rc.doc.IMAPMessageID; mid != "" {
+			edgeKeys = append(edgeKeys, mid)
+		}
 	}
 
 	// Annotate each hit with incoming-edge counts so the frontend can hide
@@ -653,10 +672,13 @@ func (c *Client) hitsToResult(ctx context.Context, resp *opensearchapi.SearchRes
 	// outgoing-only counts — the footer just shows a toggle that reveals
 	// "nothing" instead of being correctly hidden; better than failing the
 	// whole search.
-	incoming, err := c.CountIncomingEdges(ctx, sourceIDs, req.OwnerID)
+	incoming, err := c.CountIncomingEdges(ctx, edgeKeys, req.OwnerID)
 	if err == nil {
 		for i := range hits {
 			hits[i].RelatedCount += incoming[hits[i].SourceID]
+			if mid := hits[i].IMAPMessageID; mid != "" {
+				hits[i].RelatedCount += incoming[mid]
+			}
 		}
 	}
 
@@ -707,6 +729,7 @@ func mergeRankedChunk(chunkData map[string]*rankedChunk, chunk *model.Chunk, hea
 			Metadata:       chunk.Metadata,
 			Relations:      chunk.Relations,
 			ConversationID: chunk.ConversationID,
+			IMAPMessageID:  chunk.IMAPMessageID,
 			URL:            chunk.URL,
 			Visibility:     chunk.Visibility,
 			CreatedAt:      chunk.CreatedAt,

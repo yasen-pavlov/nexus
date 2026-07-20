@@ -205,7 +205,12 @@ func emitChunkEvents(ctx context.Context, chunk chatResponseChunk, stopReason *l
 	}
 
 	if chunk.Done {
-		if chunk.DoneReason != "" {
+		// Don't let done_reason downgrade an observed tool call. Ollama's native
+		// /api/chat reports done_reason "stop" even for tool-call turns, so an
+		// unconditional override would clobber StopToolUse → the orchestrator
+		// would finalize immediately and silently discard the tool calls (the
+		// agentic loop never runs on Ollama).
+		if chunk.DoneReason != "" && *stopReason != llm.StopToolUse {
 			*stopReason = mapDoneReason(chunk.DoneReason)
 		}
 		if chunk.EvalCount > 0 || chunk.PromptEvalCount > 0 {
@@ -248,7 +253,8 @@ func (c *Client) runOneShot(_ context.Context, resp *http.Response, out chan<- l
 		}
 		stopReason = llm.StopToolUse
 	}
-	if chunk.DoneReason != "" {
+	// See emitChunkEvents: keep StopToolUse even when done_reason is "stop".
+	if chunk.DoneReason != "" && stopReason != llm.StopToolUse {
 		stopReason = mapDoneReason(chunk.DoneReason)
 	}
 

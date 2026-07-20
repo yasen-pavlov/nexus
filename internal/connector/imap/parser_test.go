@@ -31,6 +31,54 @@ func TestParseEmailBody_ConcatenatesMultipleTextPlainParts(t *testing.T) {
 	}
 }
 
+func TestParseEmailBody_InlineNonTextTreatedAsAttachment(t *testing.T) {
+	// Apple Mail/iOS attaches photos and PDFs with Content-Disposition: inline;
+	// go-message classifies any inline part as InlineHeader. Non-text inline
+	// parts (or inline parts with a filename) must become attachments, not be
+	// silently dropped.
+	boundary := "B0UND"
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; boundary=%s\r\n\r\n", boundary)
+	// 1. Plain-text inline body, no filename → stays body.
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n\r\n")
+	buf.WriteString("VISIBLE BODY\r\n")
+	// 2. Inline PNG with a filename → attachment.
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Type: image/png\r\n")
+	buf.WriteString("Content-Disposition: inline; filename=\"photo.png\"\r\n\r\n")
+	buf.WriteString("PNGDATA\r\n")
+	// 3. Inline PDF named via the Content-Type name param → attachment.
+	buf.WriteString("--" + boundary + "\r\n")
+	buf.WriteString("Content-Type: application/pdf; name=\"doc.pdf\"\r\n")
+	buf.WriteString("Content-Disposition: inline\r\n\r\n")
+	buf.WriteString("PDFDATA\r\n")
+	buf.WriteString("--" + boundary + "--\r\n")
+
+	content, attachments := parseEmailBody([]byte(buf.String()))
+	if !strings.Contains(content, "VISIBLE BODY") {
+		t.Errorf("lost the inline body text: %q", content)
+	}
+	if strings.Contains(content, "PNGDATA") || strings.Contains(content, "PDFDATA") {
+		t.Errorf("attachment bytes leaked into body text: %q", content)
+	}
+	if len(attachments) != 2 {
+		t.Fatalf("expected 2 inline attachments, got %d (%+v)", len(attachments), attachments)
+	}
+	byName := map[string]attachment{}
+	for _, a := range attachments {
+		byName[a.Filename] = a
+	}
+	png, ok := byName["photo.png"]
+	if !ok || png.ContentType != "image/png" || len(png.Data) == 0 {
+		t.Errorf("photo.png attachment wrong: %+v", png)
+	}
+	pdf, ok := byName["doc.pdf"]
+	if !ok || pdf.ContentType != "application/pdf" || len(pdf.Data) == 0 {
+		t.Errorf("doc.pdf attachment wrong: %+v", pdf)
+	}
+}
+
 func TestDecodeHeader(t *testing.T) {
 	tests := []struct {
 		name string

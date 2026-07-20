@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Nexus is a self-hosted personal search/RAG tool. It indexes data from multiple sources (filesystem, email, Telegram, Paperless-ngx, NAS) and provides unified full-text and semantic search via a web UI.
+Nexus is a self-hosted personal search/RAG tool. It indexes data from multiple sources (filesystem, email/IMAP, Telegram, Paperless-ngx, iCal/CalDAV) and provides unified full-text and semantic search via a web UI. A companion CLI (`nexus-cli`) and an MCP server expose the same search to the terminal and to agents.
 
 ## Tech Stack
 
@@ -16,14 +16,18 @@ Nexus is a self-hosted personal search/RAG tool. It indexes data from multiple s
 
 ```
 cmd/nexus/          Entry point, wiring, graceful shutdown
+cmd/nexus-cli/      Companion CLI (login/logout/search) — see `make build-cli`
 cmd/rag-eval/       Offline RAG quality eval harness (golden set → LLM judge → report)
 internal/
   api/              HTTP handlers, chi router, connector manager, static file serving
   auth/             JWT sessions, bcrypt passwords, role middleware, rate limiting
   chunking/         Splits text into overlapping chunks for embedding (pure logic)
+  cli/              Cobra commands backing nexus-cli (login, logout, search)
+  cliclient/        Shared HTTP client + OS-keychain token storage for the CLI/MCP
   config/           Environment-based configuration (envconfig)
   connector/        Connector interface, registry, source implementations
     filesystem/     Filesystem crawler connector
+    ical/           iCal / iCloud CalDAV calendar connector
     imap/           IMAP mailbox connector (body cleaning, CONDSTORE)
     paperless/      Paperless-ngx API connector
     telegram/       Telegram connector (conversation windows, media cache)
@@ -34,6 +38,7 @@ internal/
     anthropic/      Anthropic (Claude) adapter
     openai/         OpenAI (GPT) adapter
     ollama/         Ollama adapter
+  mcpserver/        MCP server exposing nexus_search to agents
   model/            Shared types (Document, SearchResult, SyncCursor, ConnectorConfig)
   netguard/         SSRF-guarded HTTP client for user-configured connector URLs
   pipeline/         Ingestion orchestration (fetch → extract → chunk → embed → index)
@@ -41,6 +46,7 @@ internal/
   rag/              RAG orchestrator (retrieval, tool loop, citations, streaming)
     eval/           RAG eval scoring + LLM judging logic
   rerank/           Pluggable reranking providers (Voyage, Cohere)
+  retry/            Shared retry/backoff helper for provider HTTP calls
   scheduler/        Cron-based automatic sync scheduling
   search/           OpenSearch client (indexing, search, highlighting)
   storage/          On-disk binary cache for attachments/media
@@ -63,6 +69,7 @@ make lint-sql            # Run sqlfluff on every migration
 make coverage            # Full coverage report (excludes testutil)
 make swagger             # Regenerate OpenAPI/Swagger spec (swag init → docs/)
 make build               # Build binary to bin/nexus (runs swagger first)
+make build-cli           # Build the companion CLI to bin/nexus-cli
 make dev-db              # Start Postgres + OpenSearch + Tika via docker-compose
 make dev                 # Start deps + run app locally against testdata/
 make up                  # Start the full stack (app + deps) in Docker (needs .env)

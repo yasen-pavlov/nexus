@@ -136,6 +136,31 @@ describe("EmbeddingsForm", () => {
     ).toBeInTheDocument();
   });
 
+  it("reveals Save when a first-time key is typed for a provider whose saved key is empty", async () => {
+    // An env-configured provider persists no key in the DB (saved key "") but
+    // still renders a plain input — typing a first key must reveal Save.
+    mockStats();
+    const savedVoyageNoKey = {
+      provider: "voyage",
+      model: "voyage-4-large",
+      api_key: "",
+      ollama_url: "http://localhost:11434",
+    };
+    server.use(
+      http.get("*/api/settings/embedding", () =>
+        HttpResponse.json({ data: savedVoyageNoKey }),
+      ),
+    );
+    render(<EmbeddingsForm />);
+    const input = await screen.findByPlaceholderText(/pa-/i);
+    await userEvent.type(input, "first-key");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /save changes/i }),
+      ).toBeEnabled(),
+    );
+  });
+
   it("switching provider cycles model + clears api_key, cycling back restores saved", async () => {
     mockStats();
     server.use(

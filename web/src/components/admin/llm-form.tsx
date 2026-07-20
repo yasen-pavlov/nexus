@@ -93,11 +93,14 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
     form.ollama_url !== saved.ollama_url ||
     form.rewriter_model !== saved.rewriter_model ||
     JSON.stringify(form.allowlist) !== JSON.stringify(saved.allowlist) ||
-    (replacingAnthropic &&
-      form.anthropic_api_key !== "" &&
+    // A key is dirty when it differs from the saved value and isn't still the
+    // mask. Do NOT gate on the `replacing*` flag: a first-time key (saved value
+    // is "") renders a plain input with replacing=false, so gating there meant
+    // a pasted first key never marked the form dirty and the Save bar never
+    // appeared.
+    (form.anthropic_api_key !== saved.anthropic_api_key &&
       !form.anthropic_api_key.startsWith("****")) ||
-    (replacingOpenAI &&
-      form.openai_api_key !== "" &&
+    (form.openai_api_key !== saved.openai_api_key &&
       !form.openai_api_key.startsWith("****"));
 
   const handleDefaultProviderChange = (next: LLMProvider | "") => {

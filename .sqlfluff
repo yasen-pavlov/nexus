@@ -31,7 +31,13 @@ sql_file_exts = .sql
 #          `content`, `key`, `value`, `role` — all legal in Postgres,
 #          flagged per SQL-92. Renaming would ripple through every Go
 #          query; not worth the churn.
-exclude_rules = LT05, LT09, RF02, RF03, ST06, CP02, AM04, LT02, RF04
+#   PG01 — DROP should use CONCURRENTLY (postgres.excessive_locks; enforced
+#          from sqlfluff 4.2). Not satisfiable here: DROP TABLE has no
+#          CONCURRENTLY form at all, and DROP INDEX CONCURRENTLY cannot run
+#          inside goose's transactional migrations. These are one-shot
+#          startup migrations on a single-node deploy where a brief lock is
+#          fine, so the rule doesn't apply.
+exclude_rules = LT05, LT09, RF02, RF03, ST06, CP02, AM04, LT02, RF04, PG01
 
 # Keep keywords upper-case (CREATE TABLE, NOT NULL, …) — Postgres lowercases
 # them internally but upper-case is the community convention and matches

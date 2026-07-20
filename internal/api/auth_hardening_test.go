@@ -409,6 +409,53 @@ func TestSharedConnector_NonAdminCannotCreate(t *testing.T) {
 	}
 }
 
+// TestSharedConnector_NonAdminCannotShareViaUpdate pins the finding that
+// CreateConnector's admin-only-share guard was missing on UpdateConnector: a
+// non-admin owner of a private connector could PUT shared:true and leak all of
+// their indexed data to every user.
+func TestSharedConnector_NonAdminCannotShareViaUpdate(t *testing.T) {
+	router, _ := newHardeningRouter(t, nil)
+	admin, user := setupAdminAndUser(t, router)
+
+	// User creates a private filesystem connector.
+	createBody := `{
+		"type":"filesystem","name":"alice-private",
+		"config":{"root_path":"/tmp"},
+		"enabled":true,"schedule":"","shared":false
+	}`
+	w := doJSON(t, router, http.MethodPost, "/api/connectors/", createBody, user.token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create connector: %d %s", w.Code, w.Body.String())
+	}
+	cid, _ := decodeAPI(t, w.Body).Data.(map[string]any)["id"].(string)
+
+	// Owner tries to flip their own private connector to shared — must 403.
+	updateShared := `{
+		"type":"filesystem","name":"alice-private",
+		"config":{"root_path":"/tmp"},
+		"enabled":true,"schedule":"","shared":true
+	}`
+	w = doJSON(t, router, http.MethodPut, "/api/connectors/"+cid, updateShared, user.token)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("owner share-via-update: expected 403, got %d (%s)", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+
+	// The forbidden call must not have mutated state — still private.
+	w = doJSON(t, router, http.MethodGet, "/api/connectors/"+cid, "", admin.token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin get connector: %d %s", w.Code, w.Body.String())
+	}
+	if shared, _ := decodeAPI(t, w.Body).Data.(map[string]any)["shared"].(bool); shared {
+		t.Errorf("connector became shared despite 403 — state was mutated")
+	}
+
+	// An admin can still share it.
+	w = doJSON(t, router, http.MethodPut, "/api/connectors/"+cid, updateShared, admin.token)
+	if w.Code != http.StatusOK {
+		t.Errorf("admin share-via-update: expected 200, got %d (%s)", w.Code, strings.TrimSpace(w.Body.String()))
+	}
+}
+
 // --- store-level: CreateFirstAdmin atomicity -------------------------------
 
 func TestCreateFirstAdmin_SecondCallReturnsErrFirstAdminExists(t *testing.T) {

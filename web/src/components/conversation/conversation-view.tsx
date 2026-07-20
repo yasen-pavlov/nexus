@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { ConversationHeader } from "./conversation-header";
 import { MessageList } from "./message-list";
@@ -40,6 +40,10 @@ export function ConversationView({
   const olderRef = useRef<HTMLDivElement>(null);
   const newerRef = useRef<HTMLDivElement>(null);
   const hasPositionedRef = useRef(false);
+  // Baseline for older-prepend scroll compensation (see the useLayoutEffect
+  // below). Seeded once the initial scroll-to-anchor completes.
+  const prevScrollHeightRef = useRef(0);
+  const prevFirstIdRef = useRef<string | null>(null);
   // Observers only activate after the initial scroll-to-anchor is
   // done. Otherwise both sentinels can appear in-viewport during
   // mount (especially in flex containers where min-height: auto
@@ -121,6 +125,35 @@ export function ConversationView({
     const handle = requestAnimationFrame(() => setObserversReady(true));
     return () => cancelAnimationFrame(handle);
   }, [anchorSourceId, isLoadingInitial, rows.length]);
+
+  // Compensate scroll position when an older page is PREPENDED above the
+  // viewport, so the content the user is looking at stays put. CSS scroll
+  // anchoring is unreliable here (it no-ops at scrollTop 0 — exactly where a
+  // fast scroll-to-top parks), so without this the older sentinel stays in view
+  // and chain-fetches the whole history. useLayoutEffect (not useEffect) so the
+  // adjustment lands before paint and never visibly yanks the viewport.
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !hasPositionedRef.current) return;
+
+    const firstId = rows[0]?.sourceId ?? null;
+    const prevFirst = prevFirstIdRef.current;
+    // Older prepend: rows[0] changed AND the previous first row is still present
+    // (content added ABOVE). A newer append leaves rows[0] unchanged, so it
+    // never enters here and its scroll position is left alone. On the first run
+    // after positioning (prevFirst === null) we only seed the baseline — the
+    // observersReady dep ensures that seed run happens right after the initial
+    // scroll settles, so the first real prepend already has a correct baseline.
+    if (
+      prevFirst !== null &&
+      firstId !== prevFirst &&
+      rows.some((r) => r.sourceId === prevFirst)
+    ) {
+      scroller.scrollTop += scroller.scrollHeight - prevScrollHeightRef.current;
+    }
+    prevFirstIdRef.current = firstId;
+    prevScrollHeightRef.current = scroller.scrollHeight;
+  }, [rows, observersReady]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

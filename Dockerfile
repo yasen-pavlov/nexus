@@ -26,8 +26,23 @@ FROM alpine:3.24
 # binary doesn't reap orphaned children — e.g. a Docker HEALTHCHECK using
 # BusyBox `wget https://…` forks an `ssl_client` TLS helper that orphans to
 # PID 1, accumulating <defunct> processes (~1 per healthcheck interval).
-RUN apk add --no-cache ca-certificates tini
+# Create a non-root user and a writable binary-store dir it owns. The nexus
+# process parses untrusted IMAP/Telegram/user content and terminates API
+# traffic, so it must not run as root — an RCE would otherwise be root over the
+# whole container FS + volume. Creating + chowning the store dir in the image is
+# required: a fresh named volume inherits this mount-point's ownership on first
+# init, so without it the non-root process's MkdirAll on the store path fails
+# with permission denied. (Existing root-owned volumes need a one-time
+# `chown -R 10001:10001` — see README.)
+RUN apk add --no-cache ca-certificates tini \
+	&& adduser -D -u 10001 nexus \
+	&& mkdir -p /var/lib/nexus/binaries \
+	&& chown -R nexus:nexus /var/lib/nexus
 COPY --from=backend-builder /nexus /nexus
+# Default the binary store onto the chowned path so a bare `docker run` (whose
+# working dir is / and can't write the relative default) still works; compose
+# also sets this explicitly.
+ENV NEXUS_BINARY_STORE_PATH=/var/lib/nexus/binaries
 EXPOSE 8080
 # Liveness probe: hit /api/health (always 200 while the HTTP server serves).
 # Deliberately NOT /api/health/ready — a container self-restart tied to a
@@ -35,4 +50,5 @@ EXPOSE 8080
 # busybox wget ships in alpine (no curl); tini reaps the wget child.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
 	CMD wget -qO- http://127.0.0.1:8080/api/health || exit 1
+USER 10001
 ENTRYPOINT ["/sbin/tini", "--", "/nexus"]

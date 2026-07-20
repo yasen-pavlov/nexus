@@ -809,6 +809,15 @@ export interface paths {
                         "application/json": components["schemas"]["internal_api.APIResponse"];
                     };
                 };
+                /** @description Not the owner, or non-admin attempting to share */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
                 /** @description Not Found */
                 404: {
                     headers: {
@@ -1473,6 +1482,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/health/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness check
+         * @description Probes the hard dependencies (Postgres + OpenSearch) required to serve search. Returns 503 with a per-component map when any is unreachable. Soft deps (Tika, embeddings, LLM) are excluded — BM25 search works without them.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+                /** @description Service Unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/llm/default": {
         parameters: {
             query?: never;
@@ -1642,6 +1703,15 @@ export interface paths {
                         "application/json": {
                             [key: string]: unknown;
                         };
+                    };
+                };
+                /** @description A sync is running; cancel it and retry */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["internal_api.APIResponse"];
                     };
                 };
                 /** @description Internal Server Error */
@@ -3073,7 +3143,16 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description No Content */
+                /** @description self-rotation: fresh token so the caller stays signed in */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "*/*": components["schemas"]["internal_api.authResponse"];
+                    };
+                };
+                /** @description admin changed another user's password */
                 204: {
                     headers: {
                         [name: string]: unknown;
@@ -3091,6 +3170,15 @@ export interface paths {
                 };
                 /** @description Forbidden */
                 403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "*/*": components["schemas"]["internal_api.APIResponse"];
+                    };
+                };
+                /** @description Not Found */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -3250,6 +3338,15 @@ export interface components {
                 [key: string]: unknown;
             };
             created_at?: string;
+            /**
+             * @description CredentialsUnreadable is a transient, read-time-only flag (never
+             *     persisted): it is set true when this row's encrypted secret fields
+             *     could not be decrypted with the active NEXUS_ENCRYPTION_KEY. When true,
+             *     the sensitive fields are stripped from Config so no ciphertext leaks,
+             *     and the connector loads inactive — the owner can re-enter the secret to
+             *     restore it. A single such row no longer bricks boot for every connector.
+             */
+            credentials_unreadable?: boolean;
             enabled?: boolean;
             /**
              * @description ExternalID and ExternalName identify who the Nexus user IS on the
@@ -3440,6 +3537,15 @@ export interface components {
                 [key: string]: unknown;
             };
             created_at?: string;
+            /**
+             * @description CredentialsUnreadable is a transient, read-time-only flag (never
+             *     persisted): it is set true when this row's encrypted secret fields
+             *     could not be decrypted with the active NEXUS_ENCRYPTION_KEY. When true,
+             *     the sensitive fields are stripped from Config so no ciphertext leaks,
+             *     and the connector loads inactive — the owner can re-enter the secret to
+             *     restore it. A single such row no longer bricks boot for every connector.
+             */
+            credentials_unreadable?: boolean;
             enabled?: boolean;
             /**
              * @description ExternalID and ExternalName identify who the Nexus user IS on the

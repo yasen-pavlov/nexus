@@ -43,7 +43,7 @@ func TestDocToBlock_AddsCachingAndContext(t *testing.T) {
 }
 
 func TestPDFContentBlock_BuildsBase64Document(t *testing.T) {
-	block := PDFContentBlock(llm.PDF{Data: []byte("%PDF-1.7 body"), Filename: "report.pdf"})
+	block := PDFContentBlock(llm.PDF{Data: []byte("%PDF-1.7 body"), Filename: "report.pdf", SourceID: "chunk-uuid-1"})
 	if block.OfDocument == nil {
 		t.Fatal("expected document content block")
 	}
@@ -53,8 +53,23 @@ func TestPDFContentBlock_BuildsBase64Document(t *testing.T) {
 	if block.OfDocument.Source.OfBase64.Data == "" {
 		t.Error("expected base64 data to be set")
 	}
-	if got := block.OfDocument.Title; got.Value != "report.pdf" {
-		t.Errorf("title = %v, want report.pdf", got)
+	// Title must carry the chunk handle (SourceID) so a citation back-maps to
+	// the evidence chunk — NOT the filename, which the FE can't resolve.
+	if got := block.OfDocument.Title; got.Value != "chunk-uuid-1" {
+		t.Errorf("title = %v, want chunk-uuid-1 (the chunk handle)", got)
+	}
+	if got := block.OfDocument.Context; got.Value != "filename=report.pdf" {
+		t.Errorf("context = %v, want provenance filename", got)
+	}
+}
+
+func TestPDFContentBlock_TitleFromSourceIDWithoutFilename(t *testing.T) {
+	block := PDFContentBlock(llm.PDF{Data: []byte("%PDF"), SourceID: "chunk-9"})
+	if got := block.OfDocument.Title; got.Value != "chunk-9" {
+		t.Errorf("title = %v, want chunk-9", got)
+	}
+	if got := block.OfDocument.Context; got.Value != "" {
+		t.Errorf("context = %v, want empty when no filename", got)
 	}
 }
 

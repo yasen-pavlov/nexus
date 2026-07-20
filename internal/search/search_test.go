@@ -1232,3 +1232,50 @@ func TestCheckMappingCurrent_WrongAnalyzer(t *testing.T) {
 		t.Error("expected CheckMappingCurrent to return false when some language sub-fields are missing")
 	}
 }
+
+// TestSearch_DeterministicOrdering pins that hitsToResult sorts its result set
+// before returning, restoring the "first occurrence wins" invariant
+// dedupeNearDuplicates relies on. Three docs with identical title+content tie
+// on BM25 score; before the fix, the map-drain order (and thus the returned
+// ordering) flapped between identical queries.
+func TestSearch_DeterministicOrdering(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	for _, sid := range []string{"c.txt", "a.txt", "b.txt"} {
+		if err := c.IndexDocument(ctx, testDoc(sid, "Newsletter", "identical widget newsletter body")); err != nil {
+			t.Fatalf("index: %v", err)
+		}
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	var first []string
+	for iter := 0; iter < 20; iter++ {
+		result, err := c.Search(ctx, model.SearchRequest{Query: "widget", Limit: 10})
+		if err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		order := make([]string, len(result.Documents))
+		for i, d := range result.Documents {
+			order[i] = d.SourceID
+		}
+		for i := 1; i < len(result.Documents); i++ {
+			if result.Documents[i].Rank > result.Documents[i-1].Rank {
+				t.Fatalf("ranks not monotonically non-increasing: %v", order)
+			}
+		}
+		if iter == 0 {
+			first = order
+			continue
+		}
+		same := len(first) == len(order)
+		for i := range order {
+			if same && first[i] != order[i] {
+				same = false
+			}
+		}
+		if !same {
+			t.Fatalf("ordering flapped between identical queries:\n first=%v\n iter %d=%v", first, iter, order)
+		}
+	}
+}

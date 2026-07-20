@@ -249,3 +249,85 @@ func intStr(i int) string {
 	}
 	return string(b)
 }
+
+// TestFindChunksByTerm_ReturnsFirstChunk pins that runChunkQuery returns the
+// chunk_index-0 inner_hit, not the arbitrary collapse representative. A
+// multi-chunk document must resolve to text that starts at the beginning.
+func TestFindChunksByTerm_ReturnsFirstChunk(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// One document as three chunks (same source_id → same doc_id, so they
+	// collapse). Indexed OUT of chunk_index order so the collapse
+	// representative is unlikely to be chunk 0.
+	prefix := "imap:t:INBOX:7"
+	for _, ci := range []int{2, 0, 1} {
+		indexRelChunk(t, c, model.Chunk{
+			SourceType: "imap", SourceName: "t", SourceID: "INBOX:7",
+			ID:         prefix + ":" + string(rune('0'+ci)),
+			ChunkIndex: ci,
+			Title:      "Long Email",
+			Content:    []string{"chunk-zero", "chunk-one", "chunk-two"}[ci],
+		})
+	}
+	_ = c.Refresh(ctx)
+
+	hits, err := c.FindChunksByTerm(ctx, "source_id", "INBOX:7")
+	if err != nil {
+		t.Fatalf("FindChunksByTerm: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 collapsed hit, got %d", len(hits))
+	}
+	if hits[0].ChunkIndex != 0 || hits[0].Content != "chunk-zero" {
+		t.Errorf("expected chunk_index 0 / chunk-zero, got index %d / %q", hits[0].ChunkIndex, hits[0].Content)
+	}
+}
+
+// TestSearchHit_RelatedCountIncludesThreadReplies pins that a search hit's
+// related_count counts incoming reply/thread edges, which target the email's
+// RFC-2822 Message-ID rather than its folder:UID source_id. Also asserts the
+// imap_message_id wire field is now populated on the hit's Document.
+func TestSearchHit_RelatedCountIncludesThreadReplies(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	// Thread-root email: no outgoing relations, keyed by its Message-ID.
+	indexRelChunk(t, c, model.Chunk{
+		SourceType: "imap", SourceName: "t", SourceID: "INBOX:1",
+		Title: "Quarterly", Content: "quarterly report root message",
+		IMAPMessageID: "root@x",
+	})
+	// Two replies pointing at the root via member_of_thread → its Message-ID.
+	for i, sid := range []string{"INBOX:2", "INBOX:3"} {
+		indexRelChunk(t, c, model.Chunk{
+			SourceType: "imap", SourceName: "t", SourceID: sid,
+			Title: "Reply", Content: "reply body " + string(rune('a'+i)),
+			IMAPMessageID: sid + "@x",
+			Relations: []model.Relation{{
+				Type: model.RelationMemberOfThread, TargetSourceID: "root@x",
+			}},
+		})
+	}
+	_ = c.Refresh(ctx)
+
+	result, err := c.Search(ctx, model.SearchRequest{Query: "quarterly", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	var root *model.DocumentHit
+	for i := range result.Documents {
+		if result.Documents[i].SourceID == "INBOX:1" {
+			root = &result.Documents[i]
+		}
+	}
+	if root == nil {
+		t.Fatalf("root email not in results: %+v", result.Documents)
+	}
+	if root.Document.IMAPMessageID != "root@x" {
+		t.Errorf("root hit IMAPMessageID = %q, want root@x (wire field must be populated)", root.Document.IMAPMessageID)
+	}
+	if root.RelatedCount != 2 {
+		t.Errorf("root RelatedCount = %d, want 2 (both thread replies)", root.RelatedCount)
+	}
+}

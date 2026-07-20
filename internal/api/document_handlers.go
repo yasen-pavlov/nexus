@@ -661,6 +661,7 @@ func chunkToDocument(ch *model.Chunk) *model.Document {
 		Metadata:       ch.Metadata,
 		Relations:      ch.Relations,
 		ConversationID: ch.ConversationID,
+		IMAPMessageID:  ch.IMAPMessageID,
 		URL:            ch.URL,
 		Visibility:     ch.Visibility,
 		CreatedAt:      ch.CreatedAt,

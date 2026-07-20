@@ -45,6 +45,14 @@ func NewCitationParser(docs []ParserDoc) *CitationParser {
 	return &CitationParser{docs: docs}
 }
 
+// NewCitationParserAt is NewCitationParser with the cursor pre-seeded to a
+// UTF-16 offset. Used when a fresh per-round parser must emit citation spans as
+// offsets into the whole-turn answer (which already contains earlier rounds'
+// text), not into this round's text alone.
+func NewCitationParserAt(docs []ParserDoc, cursor int) *CitationParser {
+	return &CitationParser{docs: docs, cursor: cursor}
+}
+
 // Feed consumes a chunk of streamed text. Returns the clean text to
 // emit downstream and any citations whose markers fully closed inside
 // the chunk. Buffers a trailing partial marker (e.g. ending mid-`[1`)

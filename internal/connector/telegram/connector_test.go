@@ -22,10 +22,13 @@ import (
 
 // mockTelegramAPI implements telegramAPI for testing.
 type mockTelegramAPI struct {
-	dialogs    tg.MessagesDialogsClass
-	dialogsErr error
-	msgList    []tg.MessagesMessagesClass // returned in order
-	msgIdx     int
+	dialogs     tg.MessagesDialogsClass
+	dialogPages []tg.MessagesDialogsClass // served in order when non-empty
+	dialogIdx   int
+	dialogCalls int
+	dialogsErr  error
+	msgList     []tg.MessagesMessagesClass // returned in order
+	msgIdx      int
 }
 
 // stubDownloader is a mediaDownloader that returns a fixed payload
@@ -105,6 +108,17 @@ func (*notExistErr) Is(target error) bool {
 }
 
 func (m *mockTelegramAPI) MessagesGetDialogs(_ context.Context, _ *tg.MessagesGetDialogsRequest) (tg.MessagesDialogsClass, error) {
+	m.dialogCalls++
+	if len(m.dialogPages) > 0 {
+		if m.dialogIdx < len(m.dialogPages) {
+			p := m.dialogPages[m.dialogIdx]
+			m.dialogIdx++
+			return p, m.dialogsErr
+		}
+		// Pages exhausted — keep returning the last (lets a "non-advancing
+		// offset" test verify the loop still terminates).
+		return m.dialogPages[len(m.dialogPages)-1], m.dialogsErr
+	}
 	return m.dialogs, m.dialogsErr
 }
 
@@ -922,6 +936,46 @@ func TestHelpers(t *testing.T) {
 
 // --- Conversation windowing tests ---
 
+// TestWindowMessages_SourceIDStableAcrossTailExtension pins that a window's
+// SourceID does not move when the tail extends on a later run — otherwise the
+// extended window orphans the prior run's doc in the index (Telegram opts out
+// of deletion sync). A second, time-gapped window still gets its own stable id.
+func TestWindowMessages_SourceIDStableAcrossTailExtension(t *testing.T) {
+	c := &Connector{name: "test"}
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+
+	run1 := []messageRecord{
+		{ID: 100, Text: "a", Date: base},
+		{ID: 101, Text: "b", Date: base.Add(1 * time.Minute)},
+	}
+	docs1, _ := c.windowMessages(run1, "Chat", "42", nil, 0, 0)
+	if len(docs1) != 1 || docs1[0].SourceID != "42:100" {
+		t.Fatalf("run1: expected single window 42:100, got %+v", sourceIDsOf(docs1))
+	}
+
+	// Run 2: same window plus one more in-window message (tail extends).
+	run2 := append(run1, messageRecord{ID: 102, Text: "c", Date: base.Add(2 * time.Minute)})
+	docs2, _ := c.windowMessages(run2, "Chat", "42", nil, 0, 0)
+	if len(docs2) != 1 || docs2[0].SourceID != "42:100" {
+		t.Fatalf("run2: extended window must keep SourceID 42:100 (overwrite, not orphan), got %+v", sourceIDsOf(docs2))
+	}
+
+	// A message far in the future forms a distinct window with its own stable id.
+	run3 := append(run2, messageRecord{ID: 103, Text: "d", Date: base.Add(2 * time.Hour)})
+	docs3, _ := c.windowMessages(run3, "Chat", "42", nil, 0, 0)
+	if len(docs3) != 2 || docs3[0].SourceID != "42:100" || docs3[1].SourceID != "42:103" {
+		t.Fatalf("run3: expected windows [42:100, 42:103], got %+v", sourceIDsOf(docs3))
+	}
+}
+
+func sourceIDsOf(docs []model.Document) []string {
+	out := make([]string, len(docs))
+	for i, d := range docs {
+		out[i] = d.SourceID
+	}
+	return out
+}
+
 func TestWindowMessages_GroupsByTimeGap(t *testing.T) {
 	c := &Connector{name: "test"}
 	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
@@ -1028,8 +1082,8 @@ func TestWindowMessages_DocMetadata(t *testing.T) {
 		t.Fatalf("expected 1 doc, got %d", len(docs))
 	}
 	d := docs[0]
-	if d.SourceID != "42:100-101" {
-		t.Errorf("source_id = %q, want '42:100-101'", d.SourceID)
+	if d.SourceID != "42:100" {
+		t.Errorf("source_id = %q, want '42:100' (keyed by first message only)", d.SourceID)
 	}
 	if d.Title != "Friends" {
 		t.Errorf("title = %q, want 'Friends'", d.Title)
@@ -1266,6 +1320,59 @@ func TestMediaToDocument_Document_TitleFromFilename(t *testing.T) {
 	// No caption, no extractor → content is empty
 	if doc.Content != "" {
 		t.Errorf("content = %q, want empty", doc.Content)
+	}
+}
+
+func TestMediaToDocument_OversizedSkipsDownload(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("should never be read")}
+	doc := sampleDocument()
+	doc.Size = maxMediaDownloadBytes + 1 // over the cap
+	m := &tg.Message{
+		ID:    7,
+		Date:  int(time.Now().Unix()),
+		Media: &tg.MessageMediaDocument{Document: doc},
+	}
+
+	got, ok := c.mediaToDocument(context.Background(), dl, m, "Some Chat", "5")
+	if !ok {
+		t.Fatal("expected ok=true (metadata-only stub), got false")
+	}
+	if dl.calls.Load() != 0 {
+		t.Errorf("download must NOT be attempted for oversized media, got %d calls", dl.calls.Load())
+	}
+	if got.Size != maxMediaDownloadBytes+1 {
+		t.Errorf("stub Size = %d, want advertised %d", got.Size, maxMediaDownloadBytes+1)
+	}
+	if got.Metadata["filename"] != "report.pdf" {
+		t.Errorf("filename metadata should be preserved on the stub, got %v", got.Metadata["filename"])
+	}
+	if got.Content != "" {
+		t.Errorf("oversized stub content = %q, want empty (no extraction)", got.Content)
+	}
+}
+
+func TestMediaToDocument_OversizedStubUsesCaption(t *testing.T) {
+	c := &Connector{name: "tg"}
+	dl := &stubDownloader{payload: []byte("x")}
+	doc := sampleDocument()
+	doc.Size = maxMediaDownloadBytes + 1
+	m := &tg.Message{
+		ID:      8,
+		Date:    int(time.Now().Unix()),
+		Message: "look at this huge video",
+		Media:   &tg.MessageMediaDocument{Document: doc},
+	}
+
+	got, ok := c.mediaToDocument(context.Background(), dl, m, "Chat", "5")
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if got.Content != "look at this huge video" {
+		t.Errorf("oversized stub content = %q, want caption fallback", got.Content)
+	}
+	if dl.calls.Load() != 0 {
+		t.Errorf("download must not run for oversized media, got %d", dl.calls.Load())
 	}
 }
 

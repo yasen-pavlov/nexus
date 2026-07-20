@@ -328,6 +328,56 @@ func TestCohere_Embed(t *testing.T) {
 	}
 }
 
+func TestCohere_Embed_V4SetsOutputDimension(t *testing.T) {
+	// embed-v4.0 must send output_dimension=1024 so the wire vectors match the
+	// 1024-dim index mapping Dimension() drives — otherwise the pipeline drops
+	// every vector as a dimension mismatch.
+	var req cohereEmbedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewEncoder(w).Encode(cohereEmbedResponse{
+			Embeddings: struct {
+				Float [][]float32 `json:"float"`
+			}{Float: [][]float32{{0.1}}},
+		})
+	}))
+	defer srv.Close()
+	c := NewCohere("key", "embed-v4.0", zap.NewNop())
+	c.baseURL = srv.URL
+	if _, err := c.Embed(context.Background(), []string{"d"}, InputTypeDocument); err != nil {
+		t.Fatal(err)
+	}
+	if req.OutputDimension != 1024 {
+		t.Errorf("output_dimension = %d, want 1024", req.OutputDimension)
+	}
+	if c.Dimension() != 1024 {
+		t.Errorf("Dimension() = %d, want 1024 (request and Dimension must agree)", c.Dimension())
+	}
+}
+
+func TestCohere_Embed_NonV4OmitsOutputDimension(t *testing.T) {
+	// v3 models reject output_dimension, so the field must be ABSENT on the wire
+	// (omitempty), not sent as 0.
+	var raw map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		_ = json.NewEncoder(w).Encode(cohereEmbedResponse{
+			Embeddings: struct {
+				Float [][]float32 `json:"float"`
+			}{Float: [][]float32{{0.1}}},
+		})
+	}))
+	defer srv.Close()
+	c := NewCohere("key", "embed-english-v3.0", zap.NewNop())
+	c.baseURL = srv.URL
+	if _, err := c.Embed(context.Background(), []string{"d"}, InputTypeDocument); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := raw["output_dimension"]; present {
+		t.Errorf("output_dimension must be absent for v3 models, got %v", raw["output_dimension"])
+	}
+}
+
 func TestCohere_Embed_QueryInputType(t *testing.T) {
 	// InputTypeQuery maps to Cohere's "search_query" — a distinct
 	// branch of the switch that the document-only test doesn't hit.

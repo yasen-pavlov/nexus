@@ -16,11 +16,6 @@ import (
 	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
-// filesystemCheckpointEvery is how often the connector emits a
-// cursor checkpoint during a WalkDir pass. Matches the pipeline's
-// indexBatchSize so a checkpoint coincides with a bulk-index flush.
-const filesystemCheckpointEvery = 200
-
 func init() {
 	connector.Register("filesystem", func() connector.Connector {
 		return &Connector{}
@@ -112,12 +107,11 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan
 
 // streamWalk does the single WalkDir pass, emitting SourceID / Doc /
 // Checkpoint items via the provided channel. Extracted from Fetch so
-// each piece of the walk — entry classification, periodic
-// checkpoint, terminal markers — is its own tightly-scoped helper.
+// each piece of the walk — entry classification, terminal markers — is
+// its own tightly-scoped helper.
 func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	lastSync := resolveFilesystemCursor(cursor, c.syncSince)
 	now := time.Now()
-	seen := 0
 	var sourceIDs []string
 
 	walkErr := filepath.WalkDir(c.rootPath, func(path string, d os.DirEntry, err error) error {
@@ -127,7 +121,7 @@ func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, it
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return c.emitWalkEntry(ctx, path, d, lastSync, now, &seen, &sourceIDs, items)
+		return c.emitWalkEntry(ctx, path, d, lastSync, &sourceIDs, items)
 	})
 	if walkErr != nil {
 		return fmt.Errorf("filesystem: walk: %w", walkErr)
@@ -149,33 +143,29 @@ func (c *Connector) streamWalk(ctx context.Context, cursor *model.SyncCursor, it
 	// any leftover index entries rather than being treated as
 	// "opted out of reconciliation."
 	_ = fsEmit(ctx, items, model.FetchItem{EnumerationComplete: true})
-	// Final checkpoint so the pipeline persists last_sync_time
-	// even on a walk that happened to land exactly on an
-	// every-N boundary (or a walk with < filesystemCheckpointEvery
-	// files).
+	// Single end-of-walk checkpoint. For a single-timestamp cursor this is the
+	// only sound persistence point: it fires after the full WalkDir pass and
+	// EnumerationComplete, so it can honestly assert "the whole tree is synced
+	// through run-start". A mid-walk checkpoint would durably advance the
+	// cursor past files not yet visited, and an interrupted walk (cancel, or an
+	// unreadable subdir aborting WalkDir) would then permanently skip them on
+	// the next run — so we deliberately do not emit one.
 	_ = fsEmit(ctx, items, model.FetchItem{Checkpoint: newFilesystemCursor(now)})
 	return nil
 }
 
-// emitWalkEntry runs the per-file emission sequence: SourceID
-// (always when the file matches the pattern), Doc (when the file's
-// content is fresh relative to lastSync), and a periodic Checkpoint
-// on every N-th emission. seen is incremented via pointer so the
-// checkpoint cadence survives across WalkDir callback invocations.
-func (c *Connector) emitWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync, startedAt time.Time, seen *int, sourceIDs *[]string, items chan<- model.FetchItem) error {
+// emitWalkEntry runs the per-file emission sequence: collect the SourceID
+// (whenever the file matches the pattern) and emit a Doc (when the file's
+// content is fresh relative to lastSync). No cursor checkpoint is emitted
+// mid-walk — see streamWalk's final-checkpoint comment for why.
+func (c *Connector) emitWalkEntry(ctx context.Context, path string, d os.DirEntry, lastSync time.Time, sourceIDs *[]string, items chan<- model.FetchItem) error {
 	doc, relPath, ok := c.processWalkEntry(ctx, path, d, lastSync)
 	if relPath != "" {
 		// Collect now, emit sorted after the walk (see streamWalk).
 		*sourceIDs = append(*sourceIDs, relPath)
-		*seen++
 	}
 	if ok {
 		if !fsEmit(ctx, items, model.FetchItem{Doc: &doc}) {
-			return ctx.Err()
-		}
-	}
-	if *seen > 0 && *seen%filesystemCheckpointEvery == 0 {
-		if !fsEmit(ctx, items, model.FetchItem{Checkpoint: newFilesystemCursor(startedAt)}) {
 			return ctx.Err()
 		}
 	}

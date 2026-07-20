@@ -37,6 +37,14 @@ const (
 	// characters, the next message starts a new window even if it's within
 	// the time gap.
 	conversationWindowMaxChars = 2000
+
+	// maxMediaDownloadBytes caps how large a media file we will download and
+	// buffer in memory. Telegram files go up to ~2-4 GB; the live downloader
+	// streams the whole file into a bytes.Buffer, so an unbounded download of a
+	// shared movie can OOM-kill the single-container deploy (and crash-loop the
+	// sync, since the cursor can't advance past the message). Files whose
+	// advertised size exceeds this are indexed as a metadata-only stub instead.
+	maxMediaDownloadBytes = 100 << 20 // 100 MiB
 )
 
 // messageRecord is a temporary representation of a Telegram message used
@@ -262,15 +270,10 @@ func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, i
 // sinceDate, not via per-message cursors).
 func (c *Connector) streamWithAPI(ctx context.Context, api telegramAPI, dl mediaDownloader, cursor *model.SyncCursor, selfID int64, items chan<- model.FetchItem) error {
 	sinceDate := c.resolveSinceDate(cursor)
-	dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-		OffsetPeer: &tg.InputPeerEmpty{},
-		Limit:      100,
-	})
+	chats, users, err := fetchAllDialogs(ctx, api)
 	if err != nil {
 		return fmt.Errorf("get dialogs: %w", err)
 	}
-
-	chats, users := dialogRoster(dialogs)
 	userMap := buildUserMap(users)
 
 	now := time.Now()
@@ -409,6 +412,157 @@ func dialogRoster(dialogs tg.MessagesDialogsClass) ([]tg.ChatClass, []tg.UserCla
 	default:
 		return nil, nil
 	}
+}
+
+// dialogPageLimit is Telegram's per-request cap for MessagesGetDialogs.
+const dialogPageLimit = 100
+
+// fetchAllDialogs paginates MessagesGetDialogs and merges chats/users across
+// pages. Telegram caps each request at ~100 dialogs ordered by recent activity,
+// so an account with more than that would otherwise silently miss everything
+// past the first page (and which chats are covered would drift with activity).
+// Termination is by response shape — only *MessagesDialogsSlice means "there
+// may be more"; a complete *MessagesDialogs (or NotModified) ends it — plus a
+// non-advancing-offset guard so a misbehaving server can't spin forever.
+func fetchAllDialogs(ctx context.Context, api telegramAPI) ([]tg.ChatClass, []tg.UserClass, error) {
+	var (
+		allChats   []tg.ChatClass
+		allUsers   []tg.UserClass
+		offsetDate int
+		offsetID   int
+		offsetPeer tg.InputPeerClass = &tg.InputPeerEmpty{}
+	)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		dialogs, err := api.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetDate: offsetDate,
+			OffsetID:   offsetID,
+			OffsetPeer: offsetPeer,
+			Limit:      dialogPageLimit,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		chats, users := dialogRoster(dialogs)
+		allChats = append(allChats, chats...)
+		allUsers = append(allUsers, users...)
+
+		slice, ok := dialogs.(*tg.MessagesDialogsSlice)
+		if !ok {
+			break // complete response — no more pages.
+		}
+		nDate, nID, nPeer, ok := nextDialogOffset(slice)
+		if !ok {
+			break
+		}
+		if nID == offsetID && inputPeerKey(nPeer) == inputPeerKey(offsetPeer) {
+			break // offset didn't advance — stop rather than loop forever.
+		}
+		offsetDate, offsetID, offsetPeer = nDate, nID, nPeer
+	}
+	return dedupeChats(allChats), dedupeUsers(allUsers), nil
+}
+
+// nextDialogOffset derives the pagination offset for the next page from the
+// last dialog of a slice: its top message id, that message's date, and an input
+// peer (with AccessHash) resolved from the page's chats/users.
+func nextDialogOffset(slice *tg.MessagesDialogsSlice) (date, id int, peer tg.InputPeerClass, ok bool) {
+	if len(slice.Dialogs) == 0 {
+		return 0, 0, nil, false
+	}
+	last, ok := slice.Dialogs[len(slice.Dialogs)-1].(*tg.Dialog)
+	if !ok {
+		return 0, 0, nil, false
+	}
+	id = last.TopMessage
+	for _, msg := range slice.Messages {
+		if m, ok := msg.(*tg.Message); ok && m.ID == id {
+			date = m.Date
+			break
+		}
+	}
+	peer = resolveOffsetPeer(last.Peer, slice.Chats, slice.Users)
+	if peer == nil {
+		return 0, 0, nil, false
+	}
+	return date, id, peer, true
+}
+
+// resolveOffsetPeer builds an InputPeer for a dialog's peer, resolving the
+// AccessHash from the page's chats/users where the peer kind requires one.
+func resolveOffsetPeer(p tg.PeerClass, chats []tg.ChatClass, users []tg.UserClass) tg.InputPeerClass {
+	switch v := p.(type) {
+	case *tg.PeerChat:
+		return &tg.InputPeerChat{ChatID: v.ChatID}
+	case *tg.PeerUser:
+		for _, u := range users {
+			if usr, ok := u.(*tg.User); ok && usr.ID == v.UserID {
+				return &tg.InputPeerUser{UserID: usr.ID, AccessHash: usr.AccessHash}
+			}
+		}
+	case *tg.PeerChannel:
+		for _, c := range chats {
+			if ch, ok := c.(*tg.Channel); ok && ch.ID == v.ChannelID {
+				return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}
+			}
+		}
+	}
+	return nil
+}
+
+// inputPeerKey returns a stable identity string for an InputPeer, used to
+// detect a non-advancing pagination offset.
+func inputPeerKey(p tg.InputPeerClass) string {
+	switch v := p.(type) {
+	case *tg.InputPeerUser:
+		return "u" + strconv.FormatInt(v.UserID, 10)
+	case *tg.InputPeerChat:
+		return "c" + strconv.FormatInt(v.ChatID, 10)
+	case *tg.InputPeerChannel:
+		return "ch" + strconv.FormatInt(v.ChannelID, 10)
+	case *tg.InputPeerEmpty:
+		return "empty"
+	default:
+		return "?"
+	}
+}
+
+// dedupeChats removes chats that appear on more than one dialog page (boundary
+// overlap), preserving first-seen order.
+func dedupeChats(chats []tg.ChatClass) []tg.ChatClass {
+	seen := make(map[string]struct{}, len(chats))
+	out := make([]tg.ChatClass, 0, len(chats))
+	for _, c := range chats {
+		k := chatIdentifier(c)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, c)
+	}
+	return out
+}
+
+// dedupeUsers removes duplicate *tg.User entries by ID across pages, preserving
+// first-seen order. Non-*tg.User entries are kept as-is.
+func dedupeUsers(users []tg.UserClass) []tg.UserClass {
+	seen := make(map[int64]struct{}, len(users))
+	out := make([]tg.UserClass, 0, len(users))
+	for _, u := range users {
+		usr, ok := u.(*tg.User)
+		if !ok {
+			out = append(out, u)
+			continue
+		}
+		if _, dup := seen[usr.ID]; dup {
+			continue
+		}
+		seen[usr.ID] = struct{}{}
+		out = append(out, u)
+	}
+	return out
 }
 
 // streamChat paginates one chat's history, builds conversation
@@ -861,7 +1015,16 @@ func (c *Connector) makeWindowDoc(window []messageRecord, chatName, chatID strin
 	}
 	content := strings.Join(texts, "\n")
 
-	sourceID := fmt.Sprintf("%s:%d-%d", chatID, first.ID, last.ID)
+	// Key the window by its FIRST message only, not firstID-lastID. Telegram
+	// opts out of deletion sync, so if identity encoded the tail boundary, a
+	// window that extends on a later run (15-20 → 15-22) would get a new
+	// SourceID and orphan the old doc in the index forever. Keying by firstID
+	// makes the extended window overwrite the prior one via the same
+	// DocumentID. Windowing decisions for [0..i] depend only on [0..i], so
+	// every window but the last is byte-identical across runs; only the last
+	// either extends (same firstID → overwrite) or flushes at the same
+	// boundary — neither orphans.
+	sourceID := fmt.Sprintf("%s:%d", chatID, first.ID)
 
 	return model.Document{
 		ID:         model.DocumentID("telegram", c.name, sourceID),
@@ -985,23 +1148,35 @@ func DisplayName(u *tg.User) string {
 //   - the media kind isn't downloadable (webpage/geo/poll/etc.)
 //   - the download itself fails (expired file reference, network, etc.)
 //
+// Media whose advertised size exceeds maxMediaDownloadBytes is NOT downloaded:
+// we emit a metadata-only stub (filename/size/caption, no cached bytes, no
+// extraction) so the message keeps a searchable attachment reference without
+// risking an OOM from buffering a multi-GB file.
+//
 // Eager cache population runs inline — the bytes are already in memory
 // from the download, so skipping the Put would mean the first preview
 // request has no way to recover (Telegram file references expire).
 func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *tg.Message, chatName, chatID string) (model.Document, bool) {
-	loc, mimeType, filename, _, ok := mediaLocation(m.Media)
+	loc, mimeType, filename, advertisedSize, ok := mediaLocation(m.Media)
 	if !ok {
 		return model.Document{}, false
 	}
 
-	data, err := dl.Download(ctx, loc)
-	if err != nil {
-		// Best-effort: a single media failure shouldn't derail the sync.
-		// The message's text (if any) still produces a window doc.
-		return model.Document{}, false
+	// Guard on the advertised size BEFORE downloading — the live downloader
+	// buffers the whole file in memory.
+	oversized := advertisedSize > maxMediaDownloadBytes
+	var data []byte
+	size := advertisedSize
+	if !oversized {
+		var err error
+		data, err = dl.Download(ctx, loc)
+		if err != nil {
+			// Best-effort: a single media failure shouldn't derail the sync.
+			// The message's text (if any) still produces a window doc.
+			return model.Document{}, false
+		}
+		size = int64(len(data))
 	}
-
-	size := int64(len(data))
 
 	// Photos have no filename attribute; synthesize one so the download
 	// endpoint can serve a sensible Content-Disposition without
@@ -1012,12 +1187,12 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 
 	sourceID := fmt.Sprintf("%s:%d:media", chatID, m.ID)
 
-	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
+	if !oversized && c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
 		_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
 	}
 
 	var extracted string
-	if c.extractor != nil && c.extractor.CanExtract(mimeType) {
+	if !oversized && c.extractor != nil && c.extractor.CanExtract(mimeType) {
 		if out, err := c.extractor.Extract(ctx, mimeType, data); err == nil {
 			extracted = out
 		}

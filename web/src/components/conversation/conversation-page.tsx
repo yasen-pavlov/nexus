@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import type { Document } from "@/lib/api-types";
 import { useConversation } from "@/hooks/use-conversation";
 import { useIdentities } from "@/hooks/use-identities";
@@ -111,6 +111,17 @@ export function ConversationPage({
     download,
   ]);
 
+  // Memoized so ConversationView's IntersectionObserver effects (which list
+  // these in their deps) don't tear down + rebuild the observers on every
+  // render — a fresh observer always re-fires its initial callback, which with
+  // the sentinel still in view would chain-fetch pages in a loop.
+  const handleOlderIntersect = useCallback(() => {
+    fetchOlder();
+  }, [fetchOlder]);
+  const handleNewerIntersect = useCallback(() => {
+    fetchNewer();
+  }, [fetchNewer]);
+
   return (
     <ConversationView
       sourceType={sourceType}
@@ -122,12 +133,8 @@ export function ConversationPage({
       hasOlder={hasOlder}
       hasNewer={hasNewer}
       anchorSourceId={anchorSourceId}
-      onOlderIntersect={() => {
-        fetchOlder();
-      }}
-      onNewerIntersect={() => {
-        fetchNewer();
-      }}
+      onOlderIntersect={handleOlderIntersect}
+      onNewerIntersect={handleNewerIntersect}
       onBack={onBack}
     />
   );

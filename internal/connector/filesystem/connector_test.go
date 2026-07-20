@@ -306,17 +306,17 @@ func TestFetch_WalkError_SurfacedOnErrsChannel(t *testing.T) {
 	}
 }
 
-// TestFetch_EmitsCheckpointEvery covers the per-batch checkpoint
-// emission inside the WalkDir callback (the inner
-// `seen%filesystemCheckpointEvery == 0` branch). Seeds more than one
-// batch's worth of files so we see at least two checkpoints.
-func TestFetch_EmitsCheckpointEvery(t *testing.T) {
+// TestFetch_OnlyFinalCheckpoint asserts the connector emits exactly ONE cursor
+// checkpoint — the final one after the full walk — even across many files. The
+// old per-batch checkpoint was removed: for a single-timestamp cursor it
+// durably advanced last_sync_time past files not yet visited, so an interrupted
+// walk would permanently skip them. Old buggy code would emit ≥2 checkpoints
+// here (one at file 200 + final); the fix emits exactly one.
+func TestFetch_OnlyFinalCheckpoint(t *testing.T) {
 	dir := t.TempDir()
-	// Seed filesystemCheckpointEvery+1 files so the counter hits the
-	// batch boundary inside the walk, *and* the trailing batch
-	// emits its own checkpoint at close.
-	const total = filesystemCheckpointEvery + 1
-	for i := 0; i < total; i++ {
+	const total = 250 // well over the old 200-file batch boundary
+	start := time.Now()
+	for i := range total {
 		writeFile(t, dir, fmt.Sprintf("f%04d.txt", i), "body")
 	}
 	c := &Connector{
@@ -327,8 +327,16 @@ func TestFetch_EmitsCheckpointEvery(t *testing.T) {
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
-	if len(result.Checkpoints) < 2 {
-		t.Errorf("expected ≥2 checkpoints (at batch boundary + final), got %d", len(result.Checkpoints))
+	if len(result.Checkpoints) != 1 {
+		t.Fatalf("expected exactly 1 checkpoint (final only), got %d", len(result.Checkpoints))
+	}
+	ts, _ := result.Checkpoints[0].CursorData["last_sync_time"].(string)
+	got, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		t.Fatalf("final checkpoint last_sync_time not parseable: %q (%v)", ts, err)
+	}
+	if got.Before(start.Add(-time.Second)) {
+		t.Errorf("final checkpoint last_sync_time %v is before run start %v", got, start)
 	}
 }
 

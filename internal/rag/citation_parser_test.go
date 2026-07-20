@@ -27,6 +27,23 @@ func TestCitationParser_CyrillicPrefixUTF16Span(t *testing.T) {
 	}
 }
 
+func TestCitationParserAt_SeededCursor(t *testing.T) {
+	// Seed the cursor at 10 (representing prior rounds' text). "ok " is 3 UTF-16
+	// units, so the [1] marker closes at 10+3=13 — an offset into the whole-turn
+	// answer, not this round's local offset of 3.
+	p := NewCitationParserAt(docs3(), 10)
+	out, cites := p.Feed("ok [1].")
+	if out != "ok ." {
+		t.Errorf("out=%q want %q", out, "ok .")
+	}
+	if len(cites) != 1 {
+		t.Fatalf("want 1 citation, got %d", len(cites))
+	}
+	if cites[0].SpanStart != 13 || cites[0].SpanEnd != 13 {
+		t.Errorf("span=[%d,%d] want [13,13] (seed 10 + \"ok \" 3)", cites[0].SpanStart, cites[0].SpanEnd)
+	}
+}
+
 func TestCitationParser_EmojiPrefixSurrogatePair(t *testing.T) {
 	p := NewCitationParser(docs3())
 	// "👍 " is 3 UTF-16 code units (emoji is a surrogate pair = 2, plus space).

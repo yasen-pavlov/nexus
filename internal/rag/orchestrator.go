@@ -864,7 +864,12 @@ func (l *roundLoop) drain(ctx context.Context, toolRound int, events <-chan llm.
 	// grown since the previous round via tool results).
 	var parser *CitationParser
 	if !l.useNativeCitations {
-		parser = NewCitationParser(parserDocsFromLLM(l.documents))
+		// Seed the cursor to the UTF-16 length of the text accumulated in prior
+		// rounds. handleText appends this round's clean text onto the same
+		// whole-turn answer and stores the parser's spans as offsets into it, so
+		// a round-2+ parser starting at cursor 0 would place every pill left by
+		// all earlier rounds' text. Seeding keeps the spans aligned.
+		parser = NewCitationParserAt(parserDocsFromLLM(l.documents), st.byteToUTF16(st.accumulatedText.Len()))
 	}
 
 	// Per-round accumulators. roundText feeds the assistant message we

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"html"
 	"strings"
 	"time"
 
@@ -67,12 +68,19 @@ func resolveWindowMatch(hit *model.DocumentHit) *windowMatch {
 	// pairs if the query has multiple terms) so the substring search
 	// matches the raw content.
 	stripped := stripMarkTags(hit.Headline)
-	// The offset of the first <mark> inside the stripped fragment equals
-	// its position inside the fragment-as-substring-of-content, because
-	// there are no tags before it in stripped form.
-	strippedMarkOffset := markStart
+	// hit.Content is raw, but the highlighter HTML-escapes fragment text
+	// (search.highlightConfig sets encoder "html", so & < > " ' become
+	// &amp; &lt; &gt; &quot; &#x27;). Unescape before locating the fragment in
+	// content, and compute the first-<mark> offset on the *unescaped* prefix so
+	// any entity ahead of the first mark (e.g. the apostrophe in "don't")
+	// doesn't throw the byte offset off. Without this, every fragment
+	// containing ' " & < > fails strings.Index and pinpoint attribution
+	// silently degrades to the bookended-window fallback — and English
+	// apostrophes make that a large fraction of hits.
+	strippedMarkOffset := len(html.UnescapeString(stripped[:markStart]))
+	unescaped := html.UnescapeString(stripped)
 
-	fragStart := strings.Index(hit.Content, stripped)
+	fragStart := strings.Index(hit.Content, unescaped)
 	if fragStart < 0 {
 		// OpenSearch may return a fragment that's been normalized
 		// (e.g. whitespace collapsing) — the round-trip isn't always

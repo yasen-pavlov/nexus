@@ -111,6 +111,24 @@ describe("LLMForm", () => {
     expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
   });
 
+  it("reveals the Save bar when a first-time API key is pasted (no other field touched)", async () => {
+    mount();
+    await waitFor(() =>
+      expect(screen.getByText("Default model")).toBeInTheDocument(),
+    );
+    // OpenAI's saved key is "" → plain input (no Replace button); Anthropic is
+    // masked so it renders no input, making this placeholder unambiguous.
+    await userEvent.type(
+      screen.getByPlaceholderText("paste your key or leave blank"),
+      "sk-newkey",
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /save changes/i }),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("PUTs the form on save and shows a success toast", async () => {
     let captured: unknown = null;
     server.use(

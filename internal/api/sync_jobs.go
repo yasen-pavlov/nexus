@@ -217,6 +217,40 @@ func (m *SyncJobManager) Cancel(id string) bool {
 	return true
 }
 
+// CancelAll signals every running job to stop and returns how many cancel
+// funcs were fired. Fire-and-forget like Cancel: each job's goroutine unwinds
+// on its next ctx.Done() check. Used on graceful shutdown so in-flight
+// scheduled syncs are recorded 'canceled' rather than SIGKILLed 'interrupted'.
+func (m *SyncJobManager) CancelAll() int {
+	m.mu.RLock()
+	cancels := make([]context.CancelFunc, 0, len(m.cancelFuncs))
+	for _, c := range m.cancelFuncs {
+		cancels = append(cancels, c)
+	}
+	m.mu.RUnlock()
+	for _, c := range cancels {
+		c()
+	}
+	return len(cancels)
+}
+
+// RunningCount returns the number of jobs currently in the running state.
+// Unlike Active(), it excludes terminal jobs lingering for completedTTL, so it
+// answers "is a sync in flight right now?" — used to 409 a reindex that would
+// otherwise race an in-flight sync into the freshly recreated index.
+func (m *SyncJobManager) RunningCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	n := 0
+	for _, job := range m.jobs {
+		if job.Status == SyncStatusRunning {
+			n++
+		}
+	}
+	return n
+}
+
 // Get returns a snapshot of a job by ID, or nil if not found.
 func (m *SyncJobManager) Get(id string) *SyncJob {
 	m.mu.RLock()

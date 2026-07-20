@@ -83,7 +83,7 @@ A query goes through three stages:
 3. **Reranking.** Top candidates are deduped and sent to a cross-encoder
    (Voyage `rerank-2` or Cohere `rerank-3`). The reranker returns a calibrated
    relevance score, which *is* filterable — results below the floor (default
-   0.12) are dropped.
+   0.4) are dropped.
 
 On top of that, a source-aware scoring layer applies:
 
@@ -264,6 +264,23 @@ can reach OpenSearch directly bypasses it. Two layers guard against that:
    certificate instead, point `NEXUS_OPENSEARCH_CA_FILE` at a CA bundle; note the
    demo cert's SANs do not include the `opensearch` hostname, so CA verification
    requires certificates regenerated with a matching SAN.
+
+## Upgrading
+
+The runtime container now runs as a **non-root** user (uid `10001`). A fresh
+deployment needs no action — the image creates and owns its binary-cache dir. If
+you are upgrading a deployment whose `nexus-binaries` volume was created by an
+older (root) image, chown it once so the non-root process can still write it:
+
+```bash
+docker compose down
+docker run --rm -v nexus_nexus-binaries:/v alpine chown -R 10001:10001 /v
+docker compose up -d
+```
+
+Docker does not re-seed ownership on an already-populated volume, so skipping
+this leaves the app logging `permission denied` when it tries to cache an
+attachment. (Adjust the `nexus_` prefix if you use a custom compose project name.)
 
 ## Backup & restore
 

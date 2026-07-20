@@ -109,8 +109,9 @@ test("schedule tab round-trips a Weekly preset through PUT → GET", async ({ pa
   const weekly = page.getByRole("tab", { name: "Weekly" });
   await expect(weekly).toHaveAttribute("aria-selected", "true");
 
-  // Persist. ScheduleField fires onChange → the detail page's inline
-  // onChange calls updateConnector. Give the PUT a moment to land.
+  // Persist. Editing the schedule only updates a local draft now — saving is
+  // an explicit action (no more PUT-per-keystroke), so click "Save schedule".
+  await page.getByRole("button", { name: /save schedule/i }).click();
   await expect(async () => {
     expect(mutable.schedule).toMatch(/^\d+ \d+ \* \* \d+(,\d+)*$/);
   }).toPass({ timeout: 3000 });

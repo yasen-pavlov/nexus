@@ -114,6 +114,30 @@ describe("RerankForm", () => {
     expect(toast.success).toHaveBeenCalledWith("Reranking settings saved");
   });
 
+  it("reveals Save when a first-time key is typed for a provider whose saved key is empty", async () => {
+    // "leave blank to reuse the embedding key" is a legit persisted state — the
+    // plain input must accept a first key and reveal Save with no other change.
+    const savedVoyageNoKey = {
+      provider: "voyage",
+      model: "voyage-rerank-2",
+      api_key: "",
+      min_score: 0.4,
+    };
+    server.use(
+      http.get("*/api/settings/rerank", () =>
+        HttpResponse.json({ data: savedVoyageNoKey }),
+      ),
+    );
+    render(<RerankForm />);
+    const input = await screen.findByPlaceholderText(/paste your key/i);
+    await userEvent.type(input, "first-key");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /save changes/i }),
+      ).toBeEnabled(),
+    );
+  });
+
   it("Cancel during replace restores the masked key without dirtying", async () => {
     server.use(
       http.get("*/api/settings/rerank", () =>

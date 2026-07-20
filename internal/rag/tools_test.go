@@ -202,6 +202,56 @@ func TestAppendUniqueDocs_Dedupes(t *testing.T) {
 	}
 }
 
+func TestAppendUniqueDocs_MergesMediaOntoExisting(t *testing.T) {
+	// The open_attachment case: "y" is already present as text-only, and the
+	// incoming duplicate carries an image. The media must be merged onto the
+	// existing entry (not discarded), preserving order x,y,z.
+	a := []llm.Document{{ID: "x"}, {ID: "y"}}
+	b := []llm.Document{
+		{ID: "y", Images: []llm.Image{{SourceID: "y", MediaType: "image/png", Data: []byte{1}}}},
+		{ID: "z"},
+	}
+	got := appendUniqueDocs(a, b)
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	for i, want := range []string{"x", "y", "z"} {
+		if got[i].ID != want {
+			t.Errorf("got[%d].ID = %q, want %q", i, got[i].ID, want)
+		}
+	}
+	if len(got[1].Images) != 1 {
+		t.Errorf("expected media merged onto existing 'y', got %d images", len(got[1].Images))
+	}
+}
+
+func TestAppendUniqueDocs_NoDoubleAttachSameSourceID(t *testing.T) {
+	// "y" already has an image with SourceID "y"; re-supplying the same
+	// SourceID must not double-attach it.
+	a := []llm.Document{{ID: "y", Images: []llm.Image{{SourceID: "y", MediaType: "image/png", Data: []byte{1}}}}}
+	b := []llm.Document{{ID: "y", Images: []llm.Image{{SourceID: "y", MediaType: "image/png", Data: []byte{1}}}}}
+	got := appendUniqueDocs(a, b)
+	if len(got) != 1 || len(got[0].Images) != 1 {
+		t.Errorf("expected single doc with a single image, got %d docs / %d images", len(got), len(got[0].Images))
+	}
+
+	// A distinct SourceID DOES attach.
+	c := []llm.Document{{ID: "y", Images: []llm.Image{{SourceID: "y-att", MediaType: "image/png", Data: []byte{2}}}}}
+	got = appendUniqueDocs(got, c)
+	if len(got[0].Images) != 2 {
+		t.Errorf("distinct SourceID should attach; got %d images", len(got[0].Images))
+	}
+}
+
+func TestAppendUniqueDocs_MergesPDFs(t *testing.T) {
+	a := []llm.Document{{ID: "doc"}}
+	b := []llm.Document{{ID: "doc", PDFs: []llm.PDF{{SourceID: "doc", MediaType: "application/pdf", Data: []byte("%PDF")}}}}
+	got := appendUniqueDocs(a, b)
+	if len(got) != 1 || len(got[0].PDFs) != 1 {
+		t.Errorf("expected PDF merged onto existing doc, got %d docs / %d pdfs", len(got), len(got[0].PDFs))
+	}
+}
+
 func TestAppendUniqueChunks_Dedupes(t *testing.T) {
 	a := []ChunkPreview{{DocID: "x"}, {DocID: "y"}}
 	b := []ChunkPreview{{DocID: "y"}, {DocID: "z"}}

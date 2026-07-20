@@ -527,3 +527,44 @@ func TestSyncJobManager_ConcurrentAccess(t *testing.T) {
 		t.Errorf("Status = %q, want completed", got.Status)
 	}
 }
+
+func TestSyncJobManager_RunningCount(t *testing.T) {
+	m := newTestSyncJobManager()
+	if got := m.RunningCount(); got != 0 {
+		t.Fatalf("empty manager RunningCount = %d, want 0", got)
+	}
+	job1, _ := mustStart(t, m, uuid.New(), "a", "filesystem")
+	_, _ = mustStart(t, m, uuid.New(), "b", "filesystem")
+	if got := m.RunningCount(); got != 2 {
+		t.Fatalf("RunningCount = %d, want 2", got)
+	}
+	// Completing a job drops it from RunningCount even though it lingers in
+	// Active() until its TTL — this is the distinction the reindex guard needs.
+	m.Complete(job1.ID, nil)
+	if got := m.RunningCount(); got != 1 {
+		t.Errorf("after Complete RunningCount = %d, want 1", got)
+	}
+	if got := len(m.Active()); got != 2 {
+		t.Errorf("Active len = %d, want 2 (terminal job still lingers)", got)
+	}
+}
+
+func TestSyncJobManager_CancelAll(t *testing.T) {
+	m := newTestSyncJobManager()
+	if got := m.CancelAll(); got != 0 {
+		t.Fatalf("empty manager CancelAll = %d, want 0", got)
+	}
+	_, ctx1 := mustStart(t, m, uuid.New(), "a", "filesystem")
+	_, ctx2 := mustStart(t, m, uuid.New(), "b", "filesystem")
+
+	if got := m.CancelAll(); got != 2 {
+		t.Fatalf("CancelAll = %d, want 2", got)
+	}
+	for i, ctx := range []context.Context{ctx1, ctx2} {
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+			t.Errorf("runCtx %d not canceled by CancelAll", i)
+		}
+	}
+}

@@ -579,6 +579,14 @@ describe("useChatStream", () => {
       started = first.result.current.start({ content: "x" });
       await tick();
     });
+    // Wait for the streamed text to actually land in the turn BEFORE navigating
+    // away. Otherwise the unmount below can cache a turn whose answer is still
+    // "" (the text event hadn't propagated to state yet), and the re-hydrated
+    // second hook never shows "half-written" — a race that surfaces under
+    // coverage's slower timing.
+    await waitFor(() =>
+      expect(first.result.current.turn.answer).toBe("half-written"),
+    );
     expect(first.result.current.turn.phase).toBe("streaming");
 
     // Navigate away: unmount aborts the stream and caches the turn.

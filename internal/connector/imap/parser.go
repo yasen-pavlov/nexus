@@ -143,11 +143,23 @@ func consumeMIMEPart(part *mail.Part, plainText, htmlText *string, attachments *
 		if readErr != nil {
 			return
 		}
+		filename := inlineFilename(h)
 		switch {
-		case strings.HasPrefix(contentType, "text/plain"):
+		case filename == "" && strings.HasPrefix(contentType, "text/plain"):
 			appendPlainText(plainText, body)
-		case strings.HasPrefix(contentType, "text/html") && *htmlText == "":
+		case filename == "" && strings.HasPrefix(contentType, "text/html") && *htmlText == "":
 			*htmlText = string(body)
+		default:
+			// Non-text inline parts — Apple Mail/iOS attaches photos and PDFs
+			// with Content-Disposition: inline — or inline parts carrying a
+			// filename are real attachments. go-message classifies ANY inline
+			// part as InlineHeader, so without this they'd be silently dropped
+			// (no attachment doc, not cached, not retrievable via FetchBinary).
+			*attachments = append(*attachments, attachment{
+				Filename:    filename,
+				ContentType: contentType,
+				Data:        body,
+			})
 		}
 	case *mail.AttachmentHeader:
 		filename, _ := h.Filename()
@@ -162,6 +174,25 @@ func consumeMIMEPart(part *mail.Part, plainText, htmlText *string, attachments *
 			Data:        data,
 		})
 	}
+}
+
+// inlineFilename extracts a filename from an inline part's headers. Unlike
+// AttachmentHeader, mail.InlineHeader exposes no Filename() method, so we
+// replicate its logic: the Content-Disposition filename param, falling back to
+// the Content-Type name param. Returns "" for a genuine body part (which
+// carries no filename), so those still route to the text accumulators.
+func inlineFilename(h *mail.InlineHeader) string {
+	if _, params, err := h.ContentDisposition(); err == nil {
+		if fn := params["filename"]; fn != "" {
+			return fn
+		}
+	}
+	if _, params, err := h.ContentType(); err == nil {
+		if name := params["name"]; name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // stripHTML walks the HTML DOM and extracts the user-visible text. It drops

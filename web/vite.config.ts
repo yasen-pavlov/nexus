@@ -30,5 +30,18 @@ export default defineConfig(({ command }) => ({
     proxy: {
       "/api": "http://localhost:8080",
     },
+    // Pre-transform the entry + all route modules when the dev server boots so
+    // the first navigation to each route (in the e2e suite, and for developers)
+    // doesn't pay a cold on-demand compile cost. That cold compile — hit by 8
+    // parallel Playwright workers under coverage load — is the main source of
+    // e2e timeout flakiness. Front-loading it at startup removes the spikes.
+    warmup: {
+      clientFiles: [
+        "./src/main.tsx",
+        "./src/routeTree.gen.ts",
+        "./src/routes/**/*.tsx",
+        "!./src/routes/**/__tests__/**",
+      ],
+    },
   },
 }));
