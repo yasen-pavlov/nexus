@@ -209,16 +209,19 @@ func (c *Client) ensureHybridPipeline(ctx context.Context) error {
 		}]
 	}`, rrfRankConstant)
 
-	// Use raw HTTP PUT — the Go client doesn't have a typed search pipeline API
+	// Use raw HTTP PUT — the Go client doesn't have a typed search pipeline API.
+	// opensearch-go v4.7 removed the BuildRequest helper; build the request
+	// directly (the transport resolves the path against the configured host).
 	path := fmt.Sprintf("/_search/pipeline/%s", hybridPipeline)
-	httpReq, err := opensearch.BuildRequest(http.MethodPut, path, strings.NewReader(pipeline), nil, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, path, strings.NewReader(pipeline))
 	if err != nil {
 		return fmt.Errorf("search: build pipeline request: %w", err)
 	}
-	httpReq = httpReq.WithContext(ctx)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.os.Client.Perform(httpReq)
+	// Stream returns the raw response (we own+close the body); it replaces the
+	// v4.7-deprecated Perform for this fire-and-forget PUT.
+	resp, err := c.os.Client.Stream(httpReq)
 	if err != nil {
 		return fmt.Errorf("search: create hybrid pipeline: %w", err)
 	}
@@ -419,7 +422,8 @@ func (c *Client) CheckMappingCurrent(ctx context.Context) (bool, error) {
 	}
 
 	// The response shape is { "<index>": { "mappings": { "properties": {...} } } }
-	idx, ok := resp.Indices[c.index]
+	// opensearch-go v4.7 unexported the index map; GetIndices() accesses it.
+	idx, ok := resp.GetIndices()[c.index]
 	if !ok {
 		return false, fmt.Errorf("search: index %q not in mapping response", c.index)
 	}
@@ -1278,7 +1282,7 @@ func (c *Client) DeleteIndex(ctx context.Context) error {
 // Refresh forces a refresh of the index (for testing — makes indexed docs searchable immediately).
 func (c *Client) Refresh(ctx context.Context) error {
 	_, err := c.os.Indices.Refresh(ctx, &opensearchapi.IndicesRefreshReq{
-		Indices: []string{c.index},
+		Index: []string{c.index},
 	})
 	return err
 }

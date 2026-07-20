@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           # Single source of truth — track the go directive in go.mod so
           # CI and local toolchains stay in lockstep (no floating minor).

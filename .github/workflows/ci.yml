@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           # Single source of truth — track the go directive in go.mod so
           # CI and local toolchains stay in lockstep (no floating minor).
@@ -79,7 +79,7 @@ jobs:
       # use sqlfluff to enforce Postgres-aware syntax + style checks.
       # Locally runs via `make lint-sql` so verdicts stay identical.
       - name: Set up Python (for sqlfluff)
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
@@ -148,7 +148,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
