@@ -547,7 +547,7 @@ func (h *handler) TriggerReindex(w http.ResponseWriter, r *http.Request) {
 	// embedding dimension) and, worse, its next checkpoint would re-persist a
 	// pre-reindex cursor — resurrecting it and permanently skipping everything
 	// before it. Fail fast; the admin cancels the sync and retries.
-	if n := h.syncJobs.RunningCount(); n > 0 {
+	if h.syncJobs.RunningCount() > 0 {
 		writeError(w, http.StatusConflict, "cannot reindex while syncs are running; cancel them and retry")
 		return
 	}

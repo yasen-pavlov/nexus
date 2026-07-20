@@ -319,8 +319,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	// could set Shared=true — propagateOwnershipChange would then expose all of
 	// their indexed chunks to every user, and the owner would be trapped since
 	// canModifyConnector denies a non-admin any mutation once Shared is true.
-	claims := auth.UserFromContext(r.Context())
-	if req.Shared && !existing.Shared && (claims == nil || claims.Role != "admin") {
+	if !canPromoteToShared(auth.UserFromContext(r.Context()), existing, req.Shared) {
 		writeError(w, http.StatusForbidden, "only admins can share a connector")
 		return
 	}
@@ -520,6 +519,17 @@ func validateConnectorName(name string) error {
 		return errors.New("name must not contain path separators or null bytes")
 	}
 	return nil
+}
+
+// canPromoteToShared reports whether the caller may flip a connector to shared.
+// A no-op (req isn't a promotion, or it's already shared) is always allowed;
+// an actual private→shared promotion is admin-only. Mirrors CreateConnector's
+// share guard.
+func canPromoteToShared(claims *auth.Claims, existing *model.ConnectorConfig, reqShared bool) bool {
+	if !reqShared || existing.Shared {
+		return true
+	}
+	return claims != nil && claims.Role == "admin"
 }
 
 func validateSchedule(schedule string) error {

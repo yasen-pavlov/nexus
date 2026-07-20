@@ -1156,26 +1156,36 @@ func DisplayName(u *tg.User) string {
 // Eager cache population runs inline — the bytes are already in memory
 // from the download, so skipping the Put would mean the first preview
 // request has no way to recover (Telegram file references expire).
+// fetchMediaContent downloads a message's media (unless its advertised size
+// exceeds maxMediaDownloadBytes, in which case it's skipped to avoid buffering
+// a multi-GB file in memory), eagerly caches the bytes, and extracts any text.
+// Returns the resolved size and extracted content. ok=false means the download
+// itself failed and the caller should drop the media doc; an oversized skip
+// still returns ok=true with the advertised size so a metadata-only stub is
+// emitted.
+func (c *Connector) fetchMediaContent(ctx context.Context, dl mediaDownloader, loc tg.InputFileLocationClass, mimeType, sourceID string, advertisedSize int64) (size int64, extracted string, ok bool) {
+	if advertisedSize > maxMediaDownloadBytes {
+		return advertisedSize, "", true
+	}
+	data, err := dl.Download(ctx, loc)
+	if err != nil {
+		return 0, "", false
+	}
+	if c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
+		_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
+	}
+	if c.extractor != nil && c.extractor.CanExtract(mimeType) {
+		if out, err := c.extractor.Extract(ctx, mimeType, data); err == nil {
+			extracted = out
+		}
+	}
+	return int64(len(data)), extracted, true
+}
+
 func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *tg.Message, chatName, chatID string) (model.Document, bool) {
 	loc, mimeType, filename, advertisedSize, ok := mediaLocation(m.Media)
 	if !ok {
 		return model.Document{}, false
-	}
-
-	// Guard on the advertised size BEFORE downloading — the live downloader
-	// buffers the whole file in memory.
-	oversized := advertisedSize > maxMediaDownloadBytes
-	var data []byte
-	size := advertisedSize
-	if !oversized {
-		var err error
-		data, err = dl.Download(ctx, loc)
-		if err != nil {
-			// Best-effort: a single media failure shouldn't derail the sync.
-			// The message's text (if any) still produces a window doc.
-			return model.Document{}, false
-		}
-		size = int64(len(data))
 	}
 
 	// Photos have no filename attribute; synthesize one so the download
@@ -1187,15 +1197,11 @@ func (c *Connector) mediaToDocument(ctx context.Context, dl mediaDownloader, m *
 
 	sourceID := fmt.Sprintf("%s:%d:media", chatID, m.ID)
 
-	if !oversized && c.binaryStore != nil && c.cacheConfig.Mode == "eager" {
-		_ = c.binaryStore.Put(ctx, "telegram", c.name, sourceID, bytes.NewReader(data), int64(len(data)))
-	}
-
-	var extracted string
-	if !oversized && c.extractor != nil && c.extractor.CanExtract(mimeType) {
-		if out, err := c.extractor.Extract(ctx, mimeType, data); err == nil {
-			extracted = out
-		}
+	size, extracted, ok := c.fetchMediaContent(ctx, dl, loc, mimeType, sourceID, advertisedSize)
+	if !ok {
+		// Download failed — best-effort, the message text still produces a
+		// window doc.
+		return model.Document{}, false
 	}
 
 	content := extracted
