@@ -143,6 +143,15 @@ func New(ctx context.Context, url string, log *zap.Logger, languages []lang.Lang
 	return &Client{os: osClient, log: log, index: defaultIndex, languages: languages, minShouldMatch: DefaultMinShouldMatch}, nil
 }
 
+// Ping verifies OpenSearch is reachable. Used by the readiness probe. It
+// reuses the same Info call New makes at startup, so it errors on transport
+// failure (a reachable-but-red cluster still answers, which is the correct
+// readiness semantics — the node is serving requests).
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.os.Info(ctx, nil)
+	return err
+}
+
 // NewWithIndex creates a client with a custom index name (for testing).
 func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger, languages []lang.Language, opts ...Option) (*Client, error) {
 	c, err := New(ctx, url, log, languages, opts...)
@@ -1189,6 +1198,50 @@ func (c *Client) DeleteBySource(ctx context.Context, sourceType, sourceName stri
 	})
 	if err != nil {
 		return fmt.Errorf("search: delete by source: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteByOwner deletes a user's PRIVATE documents (owner_id == ownerID AND
+// shared == false). Used as a defense-in-depth sweep when a user is deleted,
+// catching private chunks orphaned before per-connector cleanup existed.
+// Shared documents the user contributed are deliberately kept — they are
+// community data and stay visible to everyone. An empty ownerID is a no-op so
+// it can never issue an index-wide delete.
+func (c *Client) DeleteByOwner(ctx context.Context, ownerID string) error {
+	if ownerID == "" {
+		return nil
+	}
+
+	// shared is indexed with omitempty, so a false value is absent from the
+	// document — matching "not shared" via must_not {term shared:true} (which
+	// also covers docs missing the field), NOT filter {term shared:false}
+	// (which matches nothing). Same idiom the hidden-doc exclusion uses.
+	query := map[string]any{
+		"query": map[string]any{
+			"bool": map[string]any{
+				"filter": []map[string]any{
+					{"term": map[string]any{"owner_id": ownerID}},
+				},
+				"must_not": []map[string]any{
+					{"term": map[string]any{"shared": true}},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(query)
+	if err != nil {
+		return fmt.Errorf("search: marshal delete query: %w", err)
+	}
+
+	_, err = c.os.Document.DeleteByQuery(ctx, opensearchapi.DocumentDeleteByQueryReq{
+		Indices: []string{c.index},
+		Body:    bytes.NewReader(body),
+	})
+	if err != nil {
+		return fmt.Errorf("search: delete by owner: %w", err)
 	}
 
 	return nil

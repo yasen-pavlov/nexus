@@ -332,6 +332,23 @@ func TestRestoreMaskedFields_NewPassword(t *testing.T) {
 	}
 }
 
+// TestRestoreMaskedFields_MaskedWithNoOriginal covers the degraded-row case:
+// the old config had its unreadable secret stripped, so a resubmitted mask
+// literal has nothing to restore from. It must be DROPPED, never persisted as
+// the real secret (which would let a stale "****abcd" become the credential).
+func TestRestoreMaskedFields_MaskedWithNoOriginal(t *testing.T) {
+	oldConfig := map[string]any{"host": "imap.example.com"} // no password — stripped
+	newConfig := map[string]any{"password": "****abcd", "host": "imap.example.com"}
+
+	result := RestoreMaskedFields("imap", newConfig, oldConfig)
+	if _, ok := result["password"]; ok {
+		t.Errorf("masked password with no original must be dropped, got %v", result["password"])
+	}
+	if result["host"] != "imap.example.com" {
+		t.Errorf("non-sensitive field must survive, got %v", result["host"])
+	}
+}
+
 func TestEncryptDecryptConfig_Roundtrip(t *testing.T) {
 	key := testKey(t)
 	original := map[string]any{

@@ -16,7 +16,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "${NEXUS_DB_PORT:-5432}:5432"
+      # Bound to loopback only: the app container reaches Postgres over the
+      # private compose network (db:5432), so the host port exists just for
+      # local `make dev` / debugging — never exposed to the LAN. The default
+      # credentials (nexus/nexus) would otherwise let any LAN peer read every
+      # chat/hash or INSERT an admin row and take over the app.
+      - "127.0.0.1:${NEXUS_DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nexus"]
       interval: 5s
@@ -48,7 +53,10 @@ services:
       context: .
       dockerfile: Dockerfile.tika
     ports:
-      - "${NEXUS_TIKA_PORT:-9998}:9998"
+      # Loopback only — the app reaches Tika at tika:9998 over the compose
+      # network; the host port is just for local debugging. Tika will fetch
+      # and parse arbitrary content, so keep it off the LAN.
+      - "127.0.0.1:${NEXUS_TIKA_PORT:-9998}:9998"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9998/tika"]
       interval: 10s
@@ -63,7 +71,10 @@ services:
     volumes:
       - ollama-data:/root/.ollama
     ports:
-      - "${NEXUS_OLLAMA_PORT:-11434}:11434"
+      # Loopback only — the app reaches Ollama at ollama:11434 over the compose
+      # network; the host port is just for local debugging. Ollama's API is
+      # unauthenticated, so keep it off the LAN.
+      - "127.0.0.1:${NEXUS_OLLAMA_PORT:-11434}:11434"
     healthcheck:
       test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 10s
@@ -90,6 +101,14 @@ services:
     volumes:
       - ${NEXUS_DATA_PATH:-./testdata}:/data:ro
       - nexus-binaries:/var/lib/nexus/binaries
+    healthcheck:
+      # Liveness — /api/health stays 200 while the server serves. Same
+      # rationale as the Dockerfile HEALTHCHECK (not /ready).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     depends_on:
       db:
         condition: service_healthy

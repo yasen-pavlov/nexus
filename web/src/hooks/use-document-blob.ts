@@ -1,22 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
-import { fetchAuthedBlob } from "@/lib/api-client";
+import { fetchAuthedBlobData } from "@/lib/api-client";
+import { useObjectURL } from "@/hooks/use-object-url";
 
 // useDocumentBlob fetches a document's binary content via the
 // authenticated /documents/:id/content endpoint and returns an object
-// URL suitable for <img src> or <video src>. Mirrors useAvatarBlob —
-// revokes the URL when the query churns so blob memory doesn't leak
-// across message list updates. Returns null when the caller disables
-// the query, the fetch 404s, or id isn't known.
+// URL suitable for <img src> or <video src>. Mirrors useAvatarBlob.
+//
+// The query caches the raw Blob (not the object URL): the URL is minted
+// per-consumer via useObjectURL and revoked on unmount, so the cache can
+// keep the Blob and re-mint a live URL on every remount. Caching the URL
+// string and revoking it on unmount instead produced dead blob: URLs on
+// revisit, since the cache handed back the already-revoked string.
+// Returns null when the caller disables the query, the fetch 404s, or id
+// isn't known.
 export function useDocumentBlob(
   id: string | null | undefined,
   enabled = true,
 ) {
   const canQuery = Boolean(id && enabled);
-  const query = useQuery<string | null>({
+  const query = useQuery<Blob | null>({
     queryKey: ["document-blob", id ?? ""],
     queryFn: () =>
-      fetchAuthedBlob(
+      fetchAuthedBlobData(
         `/api/documents/${encodeURIComponent(id!)}/content`,
       ),
     enabled: canQuery,
@@ -24,11 +29,12 @@ export function useDocumentBlob(
     retry: false,
   });
 
-  useEffect(() => {
-    const url = query.data;
-    if (!url) return;
-    return () => URL.revokeObjectURL(url);
-  }, [query.data]);
-
-  return query;
+  const url = useObjectURL(query.data);
+  return {
+    ...query,
+    data: url,
+    // Stay "loading" until the object URL is minted from the fetched blob so
+    // consumers don't briefly see data=null with isLoading=false.
+    isLoading: query.isLoading || (query.data != null && url == null),
+  };
 }

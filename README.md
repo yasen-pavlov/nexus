@@ -174,7 +174,7 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 
 | Variable                    | Required | Default                                                                   | Purpose                                                               |
 | --------------------------- | :------: | ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `NEXUS_ENCRYPTION_KEY`      | yes      | —                                                                         | 64 hex chars (32 bytes) for AES-256-GCM. Lose it, lose every credential. |
+| `NEXUS_ENCRYPTION_KEY`      | yes      | —                                                                         | 64 hex chars (32 bytes) for AES-256-GCM. See [Rotating the encryption key](#rotating-the-encryption-key). |
 | `NEXUS_JWT_SECRET`          | yes*     | random per boot                                                           | Signs session tokens. Set it, or every restart logs everyone out.     |
 | `NEXUS_DATABASE_URL`        | yes      | —                                                                         | Postgres connection string. Set in compose automatically.             |
 | `NEXUS_OPENSEARCH_URL`      | no       | `http://localhost:9200`                                                   | OpenSearch endpoint.                                                  |
@@ -206,6 +206,35 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 Provider credentials and most of the scoring knobs are also editable live from
 the Settings UI without restarting the container.
 
+### Rotating the encryption key
+
+`NEXUS_ENCRYPTION_KEY` encrypts connector secrets (IMAP/Telegram/Paperless
+credentials, Telegram session blobs) and the LLM/embedding/rerank API keys at
+rest. To rotate it, stop the server and run the built-in maintenance command.
+Both keys are read from the environment — the current key from your `.env`
+(`NEXUS_ENCRYPTION_KEY`) and the new key from `NEXUS_NEW_ENCRYPTION_KEY` —
+never from the command line, so they don't leak via `ps` or shell history:
+
+```sh
+docker compose stop nexus
+
+# Read the new key without echoing it, then forward it into the one-off
+# container. The current key comes from .env via the service's environment.
+read -rs NEXUS_NEW_ENCRYPTION_KEY && export NEXUS_NEW_ENCRYPTION_KEY
+docker compose run --rm -e NEXUS_NEW_ENCRYPTION_KEY nexus rotate-key
+```
+
+It re-encrypts every secret from the old key to the new key in a single
+transaction (all-or-nothing — a wrong old key aborts and changes nothing), then
+prints how many rows it rewrote. On success, set `NEXUS_ENCRYPTION_KEY` to the
+new value in your `.env` and start the server again.
+
+**If the key is lost or changed without rotating:** the server no longer refuses
+to boot. Connectors whose secrets can't be decrypted come up marked
+`credentials_unreadable` (shown inactive in the UI) — open each one and re-enter
+its secret to restore it. A truly lost key is unrecoverable for the existing
+ciphertext; re-entering the secrets is the only path back.
+
 ### OpenSearch authentication
 
 By default OpenSearch runs **without authentication**. The app's own JWT/role
@@ -235,6 +264,94 @@ can reach OpenSearch directly bypasses it. Two layers guard against that:
    certificate instead, point `NEXUS_OPENSEARCH_CA_FILE` at a CA bundle; note the
    demo cert's SANs do not include the `opensearch` hostname, so CA verification
    requires certificates regenerated with a matching SAN.
+
+## Backup & restore
+
+Nexus keeps state in three places that must stay **mutually consistent**:
+Postgres (`pgdata` — connector configs, sync cursors, chats), OpenSearch
+(`osdata` — every indexed document), and the binary cache (`nexus-binaries` —
+Telegram/IMAP attachments). Back them up as **one set taken at the same moment**,
+and restore them as one set. A mismatched restore silently loses data — see the
+warning below.
+
+Only the app writes to these stores, so stopping the `nexus` container freezes
+all three at a consistent point. Volume names below assume the default compose
+project name `nexus` (the repo directory); run `docker volume ls` to confirm and
+adjust the `nexus_` prefix if you set a custom project name.
+
+### Backing up
+
+```sh
+# 1. Freeze all writers.
+docker compose stop nexus
+
+# 2. Postgres — logical dump (MVCC-consistent; the db container can stay up).
+docker compose exec -T db pg_dump -U nexus -Fc nexus > nexus-postgres.dump
+
+# 3. OpenSearch — stop the node first so Lucene segments are quiescent, then
+#    cold-copy the volume. A tar of a *running* cluster can capture torn segments.
+docker compose stop opensearch
+docker run --rm -v nexus_osdata:/data -v "$PWD":/backup alpine \
+  tar czf /backup/nexus-opensearch.tar.gz -C /data .
+
+# 4. Binary cache — cold-copy the volume (nexus is already stopped).
+docker run --rm -v nexus_nexus-binaries:/data -v "$PWD":/backup alpine \
+  tar czf /backup/nexus-binaries.tar.gz -C /data .
+
+# 5. Bring everything back.
+docker compose --profile app up -d
+```
+
+Keep the three artifacts (`nexus-postgres.dump`, `nexus-opensearch.tar.gz`,
+`nexus-binaries.tar.gz`) together — they are one snapshot.
+
+### Restoring
+
+```sh
+docker compose --profile app down        # removes containers; named volumes persist
+
+# Recreate the OpenSearch + binary volumes empty, then load each backup.
+for v in osdata nexus-binaries; do
+  docker volume rm "nexus_$v" && docker volume create "nexus_$v"
+done
+docker run --rm -v nexus_osdata:/data -v "$PWD":/backup alpine \
+  tar xzf /backup/nexus-opensearch.tar.gz -C /data
+docker run --rm -v nexus_nexus-binaries:/data -v "$PWD":/backup alpine \
+  tar xzf /backup/nexus-binaries.tar.gz -C /data
+
+# Postgres — restore over the existing volume; leave nexus down so boot-time
+# migrations don't race the restore.
+docker compose up -d db                  # wait until healthy: docker compose ps
+docker compose exec -T db pg_restore -U nexus -d nexus --clean --if-exists < nexus-postgres.dump
+
+docker compose --profile app up -d
+```
+
+(If you prefer a symmetric volume-level backup you can cold-tar `pgdata` the same
+way as the other two instead of using `pg_dump`/`pg_restore` — but a raw data-dir
+copy locks the restore to the same Postgres major version.)
+
+### A version-skewed restore silently loses documents
+
+Sync cursors in Postgres assert *"every document up to point X is already in the
+OpenSearch index"*, and incremental syncs only fetch what comes **after** the
+cursor. If you restore an OpenSearch backup that is **older** than the Postgres
+dump, the cursors point past documents that are no longer in the index — and
+those documents are **never re-fetched**. The gap is permanent and silent. This
+is why the three artifacts must come from the same freeze.
+
+If you ever restore a mismatched set (or aren't sure), force a full
+reconciliation before trusting search. Both levers are in the admin
+**Maintenance** settings:
+
+- **Reindex everything** (`POST /api/reindex`, admin) recreates the OpenSearch
+  index from scratch, clears every sync cursor, and re-runs a full sync of all
+  connectors — re-fetching everything from the live sources, so they must still
+  be reachable.
+- **Reset all sync cursors** (`DELETE /api/sync/cursors`, admin) drops the
+  cursors without wiping the index; the next sync then re-enumerates each source
+  and back-fills the gap. To reset a single connector, its owner (or an admin)
+  can call `DELETE /api/sync/cursors/{id}`.
 
 ## Development
 

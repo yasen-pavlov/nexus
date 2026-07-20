@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -199,8 +198,7 @@ func (h *handler) GetConnector(w http.ResponseWriter, r *http.Request) {
 //	@Router		/connectors [post]
 func (h *handler) CreateConnector(w http.ResponseWriter, r *http.Request) {
 	var req createConnectorRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -273,8 +271,7 @@ func (h *handler) UpdateConnector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateConnectorRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 

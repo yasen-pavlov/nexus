@@ -111,6 +111,44 @@ func TestSyncJobManager_Start_ConcurrentOnSameConnector(t *testing.T) {
 	}
 }
 
+// TestSyncJobManager_NotifyUnsubscribeRace stresses notify() against
+// concurrent SubscribeAll/unsubscribe churn. Before the fix, notify snapshotted
+// the subscriber channels, released the lock, then sent — so an unsubscribe
+// that closed a channel between the snapshot and the send triggered a
+// send-on-closed-channel panic (a routine crash whenever an SSE client
+// disconnected mid-sync; select/default does NOT guard a closed channel). Run
+// under -race to catch the close/send data race even when it doesn't panic.
+func TestSyncJobManager_NotifyUnsubscribeRace(t *testing.T) {
+	m := newTestSyncJobManager()
+	job, _ := mustStart(t, m, uuid.New(), "race-conn", "filesystem")
+
+	const iters = 3000
+	var wg sync.WaitGroup
+
+	// Notifier: hammer Update → notify.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := range iters {
+			m.Update(job.ID, 100, i, 0, "scope")
+		}
+	}()
+
+	// Subscribers: churn SubscribeAll + unsubscribe, closing channels the
+	// notifier is concurrently trying to send on.
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iters {
+				_, unsub := m.SubscribeAll()
+				unsub()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestSyncJobManager_GetByConnector(t *testing.T) {
 	m := newTestSyncJobManager()
 	connID := uuid.New()

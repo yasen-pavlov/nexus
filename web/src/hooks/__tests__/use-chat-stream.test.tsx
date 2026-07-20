@@ -31,6 +31,33 @@ function scriptedFactory(frames: SSEFrame[], opts: { errorMid?: boolean } = {}) 
   };
 }
 
+// abortableFactory yields `prefix` frames, then hangs until the AbortSignal
+// fires and throws an AbortError — mimicking a real fetch stream that's
+// cancelled mid-answer. Lets a test drive the stop / navigate-away paths.
+function abortableFactory(prefix: SSEFrame[]) {
+  return function (
+    _chatID: string,
+    _body: { content: string; model?: string },
+    signal: AbortSignal,
+  ): AsyncGenerator<SSEFrame, void, void> {
+    return (async function* () {
+      for (const f of prefix) {
+        yield f;
+      }
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) {
+          resolve();
+          return;
+        }
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new DOMException("Aborted", "AbortError");
+    })();
+  };
+}
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
 beforeEach(() => {
   setToken("tok");
 });
@@ -500,6 +527,74 @@ describe("useChatStream", () => {
     // done-frame metadata still lands so the message persists / refresh works.
     expect(result.current.turn.messageID).toBe("m");
     expect(result.current.turn.stopReason).toBe("error");
+  });
+
+  it("cancel() settles a streaming turn to a terminal phase (composer re-enables)", async () => {
+    // Regression: stopping mid-stream used to leave phase stuck at
+    // "streaming" forever — isStreaming stayed true, so the composer was
+    // permanently disabled. The turn must land in a terminal phase with the
+    // partial answer preserved and no messageID (so the done-refetch stays
+    // inert).
+    const { Wrapper } = wrap();
+    const factory = abortableFactory([
+      { event: "retrieving", data: JSON.stringify({ query: "q" }) },
+      { event: "text", data: JSON.stringify({ delta: "partial" }) },
+    ]);
+    const { result } = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+
+    let started: Promise<void> = Promise.resolve();
+    await act(async () => {
+      started = result.current.start({ content: "x" });
+      await tick();
+    });
+    expect(result.current.turn.phase).toBe("streaming");
+    expect(result.current.turn.answer).toBe("partial");
+
+    await act(async () => {
+      result.current.cancel();
+      await started;
+    });
+
+    expect(result.current.turn.phase).toBe("done");
+    expect(result.current.turn.answer).toBe("partial");
+    expect(result.current.turn.messageID).toBeUndefined();
+  });
+
+  it("navigating away mid-stream caches a settled turn, not a frozen streaming one", async () => {
+    // Regression: unmounting mid-stream persisted the in-flight turn as
+    // phase="streaming", so returning to the chat re-hydrated a frozen card
+    // with a disabled composer until a full page reload.
+    const { Wrapper, client } = wrap();
+    const factory = abortableFactory([
+      { event: "text", data: JSON.stringify({ delta: "half-written" }) },
+    ]);
+    const first = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Wrapper,
+    });
+
+    let started: Promise<void> = Promise.resolve();
+    await act(async () => {
+      started = first.result.current.start({ content: "x" });
+      await tick();
+    });
+    expect(first.result.current.turn.phase).toBe("streaming");
+
+    // Navigate away: unmount aborts the stream and caches the turn.
+    first.unmount();
+    await act(async () => {
+      await started;
+    });
+
+    function Rewrap({ children }: Readonly<{ children: ReactNode }>) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    }
+    const second = renderHook(() => useChatStream("c1", { streamFactory: factory }), {
+      wrapper: Rewrap,
+    });
+    await waitFor(() => expect(second.result.current.turn.answer).toBe("half-written"));
+    expect(second.result.current.turn.phase).toBe("done");
   });
 
   it("drops a tool_result without a matching prior tool_start without crashing", async () => {

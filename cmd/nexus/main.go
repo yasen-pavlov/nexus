@@ -47,10 +47,73 @@ import (
 )
 
 func main() {
+	// Maintenance subcommands run and exit before the server boots.
+	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
+		if err := rotateKey(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// rotateKey re-encrypts every at-rest secret from the current encryption key
+// to a new one, then exits. Keys are read from the environment only —
+// NEXUS_ENCRYPTION_KEY (current) and NEXUS_NEW_ENCRYPTION_KEY (new) — never from
+// argv, so they can't leak via `ps`/`/proc/<pid>/cmdline` or shell history. Run
+// it with the server stopped; on success set NEXUS_ENCRYPTION_KEY to the new
+// value and restart. It does NOT run migrations or start the server.
+func rotateKey(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("rotate-key takes no arguments; pass keys via NEXUS_ENCRYPTION_KEY (current) and NEXUS_NEW_ENCRYPTION_KEY (new)")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	oldKeyHex := cfg.EncryptionKey
+	if oldKeyHex == "" {
+		return fmt.Errorf("no current key: set NEXUS_ENCRYPTION_KEY")
+	}
+	newKeyHex := os.Getenv("NEXUS_NEW_ENCRYPTION_KEY")
+	if newKeyHex == "" {
+		return fmt.Errorf("no new key: set NEXUS_NEW_ENCRYPTION_KEY")
+	}
+
+	oldKey, err := crypto.NewKey(oldKeyHex)
+	if err != nil {
+		return fmt.Errorf("old key: %w", err)
+	}
+	newKey, err := crypto.NewKey(newKeyHex)
+	if err != nil {
+		return fmt.Errorf("new key: %w", err)
+	}
+
+	log := newLogger(cfg.LogLevel)
+	defer log.Sync() //nolint:errcheck // best-effort flush
+
+	ctx := context.Background()
+	st, err := store.New(ctx, cfg.DatabaseURL, log)
+	if err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+	defer st.Close()
+
+	report, err := st.RotateEncryptionKey(ctx, oldKey, newKey)
+	if err != nil {
+		return fmt.Errorf("rotate key: %w", err)
+	}
+
+	fmt.Printf("re-encrypted %d connector config(s) and %d setting(s)\n", report.Connectors, report.Settings)
+	fmt.Println("set NEXUS_ENCRYPTION_KEY to the new key and restart the server.")
+	return nil
 }
 
 func run() error {
@@ -279,6 +342,7 @@ func setupSyncStack(ctx context.Context, cfg *config.Config, st *store.Store, em
 	cm := api.NewConnectorManager(st, log)
 	cm.SetExtractor(extractorRegistry)
 	cm.SetBinaryStore(binaryStore)
+	cm.SetSearchClient(searchClient)
 
 	if err := cm.LoadFromDB(ctx); err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("load connectors from db: %w", err)
@@ -351,6 +415,10 @@ func serve(ctx context.Context, port int, router http.Handler, sched *scheduler.
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: router,
+		// Cap request headers at 1 MiB (Go's default, made explicit) to bound
+		// per-connection memory. Request bodies are capped separately by the
+		// maxBytesMiddleware in the router.
+		MaxHeaderBytes: 1 << 20,
 	}
 
 	go func() {

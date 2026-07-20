@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -30,8 +29,7 @@ type discoverRequest struct {
 //	@Router		/connectors/discover [post]
 func (h *handler) DiscoverConnectorResources(w http.ResponseWriter, r *http.Request) {
 	var req discoverRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Type == "" {

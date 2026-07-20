@@ -16,6 +16,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -150,6 +151,54 @@ func TestLogin_RateLimit_SuccessClearsBucket(t *testing.T) {
 			t.Errorf("post-success attempt %d: expected 400, got %d", i+1, w.Code)
 		}
 	}
+}
+
+// TestLogin_RateLimit_PortIgnored asserts the limiter keys on the bare
+// connection IP, not IP:port. An attacker opening a fresh TCP connection
+// per attempt gets a new ephemeral source port each time; if the port
+// leaked into the bucket key, every attempt would land in its own bucket
+// and the lockout would never trip. Regression for the audit finding that
+// r.RemoteAddr (host:port) was passed to the limiter verbatim.
+func TestLogin_RateLimit_PortIgnored(t *testing.T) {
+	limiter := auth.NewLoginRateLimiter(auth.LoginRateLimiterConfig{
+		MaxAttempts: 3,
+		Window:      time.Minute,
+		Lockout:     time.Minute,
+	})
+	router, _ := newHardeningRouter(t, limiter)
+
+	doJSON(t, router, http.MethodPost, "/api/auth/register",
+		`{"username":"alice","password":"password123"}`, "")
+
+	// 3 wrong-password attempts, each from the same IP but a different
+	// ephemeral source port — exactly what a `curl` brute-force loop yields.
+	for i := range 3 {
+		w := doJSONFromAddr(t, router, http.MethodPost, "/api/auth/login",
+			`{"username":"alice","password":"WRONG"}`, "203.0.113.7:"+itoa(40000+i))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("attempt %d: expected 400, got %d", i+1, w.Code)
+		}
+	}
+
+	// A 4th attempt from yet another port must be locked out. Without the
+	// port-stripping fix this returns 400 (fresh bucket) and the test fails.
+	w := doJSONFromAddr(t, router, http.MethodPost, "/api/auth/login",
+		`{"username":"alice","password":"WRONG"}`, "203.0.113.7:55555")
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("port-varying brute force: expected 429 after lockout, got %d", w.Code)
+	}
+}
+
+// doJSONFromAddr is doJSON with control over the connection's RemoteAddr,
+// so a test can simulate requests arriving from specific IP:port pairs.
+func doJSONFromAddr(t *testing.T, router http.Handler, method, path, body, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.RemoteAddr = remoteAddr
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+	return w
 }
 
 // --- first-admin race -------------------------------------------------------
@@ -375,5 +424,21 @@ func TestCreateFirstAdmin_SecondCallReturnsErrFirstAdminExists(t *testing.T) {
 	}
 	if err != store.ErrFirstAdminExists {
 		t.Errorf("expected ErrFirstAdminExists, got %v", err)
+	}
+}
+
+// --- request-body size limit ------------------------------------------------
+
+// TestLogin_BodyTooLarge asserts the global maxBytesMiddleware caps the
+// pre-auth login body end-to-end through the production router: a body over
+// the 1 MiB limit is rejected with 413 before any decode/bcrypt work, closing
+// the unauthenticated-OOM vector on an internet-exposed instance.
+func TestLogin_BodyTooLarge(t *testing.T) {
+	router, _ := newHardeningRouter(t, nil)
+
+	oversize := `{"username":"` + strings.Repeat("a", int(maxRequestBodyBytes)+1) + `","password":"x"}`
+	w := doJSON(t, router, http.MethodPost, "/api/auth/login", oversize, "")
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize login body: expected 413, got %d", w.Code)
 	}
 }

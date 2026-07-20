@@ -25,4 +25,11 @@ type ConnectorConfig struct {
 	LastRun      *time.Time `json:"last_run"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
+	// CredentialsUnreadable is a transient, read-time-only flag (never
+	// persisted): it is set true when this row's encrypted secret fields
+	// could not be decrypted with the active NEXUS_ENCRYPTION_KEY. When true,
+	// the sensitive fields are stripped from Config so no ciphertext leaks,
+	// and the connector loads inactive — the owner can re-enter the secret to
+	// restore it. A single such row no longer bricks boot for every connector.
+	CredentialsUnreadable bool `json:"credentials_unreadable,omitempty"`
 }

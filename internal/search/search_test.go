@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -193,6 +195,99 @@ func TestIndexDocument_Dedup(t *testing.T) {
 	}
 	if result.TotalCount > 0 && result.Documents[0].Title != "Version 2" {
 		t.Errorf("expected 'Version 2', got %q", result.Documents[0].Title)
+	}
+}
+
+func TestClient_Ping(t *testing.T) {
+	c := newTestClient(t)
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("ping on reachable OpenSearch: %v", err)
+	}
+}
+
+// TestClient_Ping_Unreachable covers the failure direction: a client whose
+// backend has gone away must report a non-nil Ping (so the readiness probe
+// reports opensearch=down rather than silently lying). The stub answers the
+// initial Info probe so New() succeeds, then is closed before Ping.
+func TestClient_Ping_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"n","cluster_name":"c","cluster_uuid":"u","version":{"number":"2.11.0","distribution":"opensearch"},"tagline":"The OpenSearch Project"}`))
+	}))
+	ctx := context.Background()
+	c, err := NewWithIndex(ctx, srv.URL, "ping-unreachable", nil, lang.Default())
+	if err != nil {
+		srv.Close()
+		t.Skipf("could not build client against stub: %v", err)
+	}
+	srv.Close() // backend now unreachable
+
+	if err := c.Ping(ctx); err == nil {
+		t.Error("expected Ping to error against a closed backend")
+	}
+}
+
+func TestDeleteByOwner(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	ownerA := uuid.NewString()
+	ownerB := uuid.NewString()
+	chunks := []model.Chunk{
+		{ID: "a:0", ParentID: "a", Title: "A", Content: "owned by A", SourceType: "filesystem", SourceName: "s", SourceID: "a", Visibility: "private", OwnerID: ownerA, CreatedAt: time.Now()},
+		{ID: "b:0", ParentID: "b", Title: "B", Content: "owned by B", SourceType: "filesystem", SourceName: "s", SourceID: "b", Visibility: "private", OwnerID: ownerB, CreatedAt: time.Now()},
+		// A's SHARED chunk must survive — community data is not swept.
+		{ID: "a-shared:0", ParentID: "a-shared", Title: "A shared", Content: "shared by A", SourceType: "filesystem", SourceName: "s", SourceID: "a-shared", Visibility: "private", OwnerID: ownerA, Shared: true, CreatedAt: time.Now()},
+	}
+	if err := c.IndexChunks(ctx, chunks); err != nil {
+		t.Fatalf("index chunks: %v", err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	if err := c.DeleteByOwner(ctx, ownerA); err != nil {
+		t.Fatalf("delete by owner: %v", err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	got, err := c.ListIndexedSourceIDs(ctx, "filesystem", "s")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	survivors := map[string]bool{}
+	for _, id := range got {
+		survivors[id] = true
+	}
+	if survivors["a"] {
+		t.Error("owner A's private doc should have been deleted")
+	}
+	if !survivors["b"] {
+		t.Error("owner B's doc should survive")
+	}
+	if !survivors["a-shared"] {
+		t.Error("owner A's SHARED doc must survive DeleteByOwner (community data)")
+	}
+}
+
+func TestDeleteByOwner_EmptyOwnerIsNoop(t *testing.T) {
+	c := newTestClient(t)
+	ctx := context.Background()
+
+	doc := testDoc("keep.txt", "Keep", "content")
+	c.IndexDocument(ctx, doc) //nolint:errcheck // test
+	c.Refresh(ctx)            //nolint:errcheck // test
+
+	// An empty ownerID must short-circuit — never issue an index-wide delete.
+	if err := c.DeleteByOwner(ctx, ""); err != nil {
+		t.Fatalf("empty owner should be a no-op, got: %v", err)
+	}
+	c.Refresh(ctx) //nolint:errcheck // test
+
+	got, err := c.ListIndexedSourceIDs(ctx, "filesystem", "test")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("empty-owner delete must not remove anything, got %d docs", len(got))
 	}
 }
 

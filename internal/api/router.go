@@ -52,6 +52,10 @@ func NewRouter(
 	// that only trusts XFF from known proxy addresses.
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(10 * time.Minute))
+	// Bound every request body before any handler reads it, so an
+	// unauthenticated client can't stream a huge body toward OOM. Global
+	// registration also covers the pre-auth login/register routes.
+	r.Use(maxBytesMiddleware(maxRequestBodyBytes))
 	if len(corsOrigins) == 0 {
 		corsOrigins = []string{"http://localhost:5173"}
 	}
@@ -112,6 +116,7 @@ func NewRouter(
 	r.Route("/api", func(r chi.Router) {
 		// Public routes (no auth required)
 		r.Get("/health", h.Health)
+		r.Get("/health/ready", h.HealthReady)
 		r.Post("/auth/register", h.Register)
 		r.Post("/auth/login", h.Login)
 
@@ -171,8 +176,18 @@ func NewRouter(
 				r.Post("/code", h.TelegramAuthCode)
 			})
 
-			// Password change (admin or self)
-			r.Put("/users/{id}/password", h.ChangePassword)
+			// Password change (admin or self). Interactive-session only: a
+			// leaked API token must not be able to change its owner's (or any
+			// user's) password — doing so is a direct privilege-escalation
+			// path, since the attacker could then log in interactively and
+			// obtain a full session that CAN mint/revoke tokens, defeating the
+			// token-mint containment above. PATs are also exempt from
+			// token_version revocation, so a stolen PAT would keep working
+			// after the reset.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireInteractiveSession)
+				r.Put("/users/{id}/password", h.ChangePassword)
+			})
 
 			// Admin-only routes
 			r.Group(func(r chi.Router) {
@@ -201,9 +216,15 @@ func NewRouter(
 					r.Put("/ranking", h.UpdateRankingSettings)
 				})
 
-				r.Post("/users", h.CreateUser)
 				r.Get("/users", h.ListUsers)
-				r.Delete("/users/{id}", h.DeleteUser)
+				// User account mutations, like the token routes, require an
+				// interactive session so a leaked admin API token can't create
+				// a backdoor admin or delete users.
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireInteractiveSession)
+					r.Post("/users", h.CreateUser)
+					r.Delete("/users/{id}", h.DeleteUser)
+				})
 			})
 		})
 	})

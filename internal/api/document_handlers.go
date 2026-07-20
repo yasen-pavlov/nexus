@@ -466,23 +466,36 @@ func (h *handler) buildDirectionalResponse(ctx context.Context, sourceType, conv
 		return conversationMessagesResponse{Messages: []*model.Document{}}
 	}
 
+	// GetConversationMessages returns the window ASC (oldest→newest). The
+	// over-fetched window sits adjacent to the cursor: for a forward
+	// (after=X) load it's the OLDEST messages after the cursor; for a
+	// backward/tail load it's the NEWEST messages before the cursor. When
+	// the window is over-full we must keep the `limit` messages CLOSEST to
+	// the cursor — the head for forward, the tail for backward — otherwise
+	// the messages adjacent to the cursor are skipped and, for a tail open,
+	// the newest messages become unreachable (no cursor ever walks to them).
+	forward := !afterTS.IsZero()
+	filtered := filterReadable(chunks, claims)
+	full := len(filtered) >= limit
+	if full {
+		if forward {
+			filtered = filtered[:limit]
+		} else {
+			filtered = filtered[len(filtered)-limit:]
+		}
+	}
+
 	resp := conversationMessagesResponse{Messages: []*model.Document{}}
-	for i := range chunks {
-		if !canReadDocument(claims, chunks[i].OwnerID, chunks[i].Shared) {
-			continue
-		}
-		resp.Messages = append(resp.Messages, chunkToDocument(&chunks[i]))
-		if len(resp.Messages) >= limit {
-			break
-		}
+	for i := range filtered {
+		resp.Messages = append(resp.Messages, chunkToDocument(&filtered[i]))
 	}
 
 	// Single-direction cursor: scrolling forward (after=X) may have
 	// more newer → emit next_after. Scrolling backward or tail-loading
 	// may have more older → emit next_before. Never both here; around
 	// handles the bidirectional case.
-	if len(resp.Messages) >= limit && len(resp.Messages) > 0 {
-		if !afterTS.IsZero() {
+	if full && len(resp.Messages) > 0 {
+		if forward {
 			last := resp.Messages[len(resp.Messages)-1].CreatedAt
 			resp.NextAfter = &last
 		} else {

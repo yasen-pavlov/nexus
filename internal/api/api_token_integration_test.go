@@ -240,6 +240,57 @@ func TestAPIToken_CannotManageTokens(t *testing.T) {
 	}
 }
 
+// TestAPIToken_CannotChangePasswordOrManageUsers ensures a leaked API token
+// can't change a password or create/delete users — those are interactive
+// (JWT) sessions only. A PAT changing a password is a privilege-escalation
+// path (the attacker could then log in interactively and obtain a full session
+// that CAN mint/revoke tokens), and PATs are exempt from token_version
+// revocation, so the stolen PAT would survive the reset. The same operation
+// via the interactive JWT still works, proving the routes aren't broken.
+func TestAPIToken_CannotChangePasswordOrManageUsers(t *testing.T) {
+	st, router := newTokenTestRouter(t)
+	adminID, adminJWT := createTestAdmin(t, st)
+
+	token, _ := mintToken(t, router, adminJWT, "agent", nil)
+
+	pwPath := "/api/users/" + adminID.String() + "/password"
+	pwBody := `{"password":"a-brand-new-password"}`
+
+	putWith := func(bearer string) int {
+		req := httptest.NewRequest(http.MethodPut, pwPath, bytes.NewBufferString(pwBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// PAT → 403 on password change (the escalation vector).
+	if code := putWith(token); code != http.StatusForbidden {
+		t.Errorf("password change with api token: expected 403, got %d", code)
+	}
+
+	// PAT → 403 on user creation and deletion.
+	req := httptest.NewRequest(http.MethodPost, "/api/users",
+		bytes.NewBufferString(`{"username":"backdoor","password":"password123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("create user with api token: expected 403, got %d", w.Code)
+	}
+	if code := statusFor(router, http.MethodDelete, "/api/users/"+uuid.New().String(), token); code != http.StatusForbidden {
+		t.Errorf("delete user with api token: expected 403, got %d", code)
+	}
+
+	// The same password change via the interactive JWT still succeeds
+	// (self-rotation returns 200 with a fresh token).
+	if code := putWith(adminJWT); code != http.StatusOK {
+		t.Errorf("password change with jwt (self-rotate): expected 200, got %d", code)
+	}
+}
+
 // TestAPIToken_ListScopedToOwner ensures list returns only the caller's tokens,
 // newest first, and never the secret.
 func TestAPIToken_ListScopedToOwner(t *testing.T) {

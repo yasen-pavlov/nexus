@@ -29,4 +29,10 @@ FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tini
 COPY --from=backend-builder /nexus /nexus
 EXPOSE 8080
+# Liveness probe: hit /api/health (always 200 while the HTTP server serves).
+# Deliberately NOT /api/health/ready — a container self-restart tied to a
+# downstream dependency (OpenSearch) would kill a healthy app during a blip.
+# busybox wget ships in alpine (no curl); tini reaps the wget child.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+	CMD wget -qO- http://127.0.0.1:8080/api/health || exit 1
 ENTRYPOINT ["/sbin/tini", "--", "/nexus"]

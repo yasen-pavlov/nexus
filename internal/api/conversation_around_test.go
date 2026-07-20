@@ -251,6 +251,72 @@ func TestConversation_TailOpenEmitsNextBeforeOnly(t *testing.T) {
 	}
 }
 
+type convPage struct {
+	Messages   []model.Document `json:"messages"`
+	NextBefore *time.Time       `json:"next_before"`
+	NextAfter  *time.Time       `json:"next_after"`
+}
+
+func getConvPage(t *testing.T, router http.Handler, path, token string) convPage {
+	t.Helper()
+	w := doJSON(t, router, http.MethodGet, path, "", token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s: expected 200, got %d: %s", path, w.Code, w.Body.String())
+	}
+	resp := decodeAPI(t, w.Body)
+	data, _ := json.Marshal(resp.Data)
+	var out convPage
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return out
+}
+
+func assertCreatedAtSeq(t *testing.T, label string, msgs []model.Document, want ...time.Time) {
+	t.Helper()
+	if len(msgs) != len(want) {
+		t.Fatalf("%s: expected %d messages, got %d", label, len(want), len(msgs))
+	}
+	for i := range want {
+		if !msgs[i].CreatedAt.Equal(want[i]) {
+			t.Errorf("%s: message[%d] created_at = %s, want %s", label, i,
+				msgs[i].CreatedAt.Format(time.RFC3339), want[i].Format(time.RFC3339))
+		}
+	}
+}
+
+// TestConversation_TailAndBeforeReturnClosestMessages pins message IDENTITY
+// (not just counts) for the single-direction pagination path. Regression for
+// the audit finding that a tail/before load kept the OLDEST half of the
+// over-fetched window instead of the half adjacent to the cursor — which made
+// the newest messages unreachable and skipped the messages next to each cursor.
+func TestConversation_TailAndBeforeReturnClosestMessages(t *testing.T) {
+	st, sc, _, router := newTestRouter(t)
+	userID, token := createTestUser(t, st)
+
+	base := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	ts := make([]time.Time, 8) // ts[0] oldest … ts[7] newest
+	for i := range ts {
+		ts[i] = base.Add(time.Duration(i) * time.Minute)
+	}
+	seedMessagesAt(t, sc, userID.String(), "conv-tail-id", ts)
+
+	// Tail open (limit=3): must return the 3 NEWEST messages, and the very
+	// newest (ts[7]) must be present. Before the fix this returned ts[2..4].
+	page1 := getConvPage(t, router, "/api/conversations/telegram/conv-tail-id/messages?limit=3", token)
+	assertCreatedAtSeq(t, "tail", page1.Messages, ts[5], ts[6], ts[7])
+	if page1.NextBefore == nil {
+		t.Fatal("tail open with more history must emit next_before")
+	}
+
+	// Page back with next_before: the 3 messages immediately older, no gap
+	// and no overlap with page 1.
+	page2 := getConvPage(t, router,
+		"/api/conversations/telegram/conv-tail-id/messages?before="+
+			page1.NextBefore.Format(time.RFC3339)+"&limit=3", token)
+	assertCreatedAtSeq(t, "before-page", page2.Messages, ts[2], ts[3], ts[4])
+}
+
 func TestConversation_RejectsInvalidBefore(t *testing.T) {
 	st, _, _, router := newTestRouter(t)
 	_, token := createTestUser(t, st)

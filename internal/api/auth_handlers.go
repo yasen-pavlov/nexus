@@ -1,8 +1,10 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,11 +16,26 @@ import (
 	"go.uber.org/zap"
 )
 
+// clientIP extracts the bare connection IP from r.RemoteAddr, which chi
+// leaves in host:port form (the port is the client's ephemeral source
+// port, unique per TCP connection). The login rate limiter keys on this,
+// so the port MUST be stripped — otherwise every attempt lands in a fresh
+// bucket and the per-IP lockout never trips. Falls back to the raw value
+// if there is no port (defensive; RemoteAddr always carries one for TCP).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 const (
 	errInvalidRequestBody = "invalid request body"
 	errRegistrationFailed = "registration failed"
 	errChangePasswordFail = "failed to change password"
 	errNotAuthenticated   = "not authenticated"
+	errFailedDeleteUser   = "failed to delete user"
 )
 
 type registerRequest struct {
@@ -67,8 +84,7 @@ type changePasswordRequest struct {
 //	@Router		/auth/register [post]
 func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -125,8 +141,7 @@ func (h *handler) Register(w http.ResponseWriter, r *http.Request) {
 //	@Router		/auth/login [post]
 func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -134,7 +149,7 @@ func (h *handler) Login(w http.ResponseWriter, r *http.Request) {
 	// so clients (and brute-force bots) get a clear backoff signal. The
 	// limiter call short-circuits before the bcrypt comparison so a tripped
 	// bucket doesn't burn ~200ms of CPU per attempt.
-	clientIP := r.RemoteAddr
+	clientIP := clientIP(r)
 	if h.loginLimiter != nil {
 		if ok, retryAfter := h.loginLimiter.Allow(req.Username, clientIP); !ok {
 			retrySec := max(int(retryAfter.Seconds()), 1)
@@ -235,8 +250,7 @@ func (h *handler) Me(w http.ResponseWriter, r *http.Request) {
 //	@Router		/users [post]
 func (h *handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req createUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -321,17 +335,69 @@ func (h *handler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clean up the user's owned connectors before deleting the row:
+	// connector_configs.user_id is a plain FK with no ON DELETE action, so a
+	// bare DELETE FROM users would fail with an FK violation for any user who
+	// owns a connector.
+	if err := h.purgeUserConnectors(r.Context(), id); err != nil {
+		h.log.Error("purge user connectors for deletion failed", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, errFailedDeleteUser)
+		return
+	}
+
+	// Defense-in-depth: sweep any remaining PRIVATE chunks owned by this user
+	// that weren't tied to a live connector (e.g. orphaned before per-connector
+	// cleanup existed). DeleteByOwner keeps shared chunks. Best-effort — never
+	// fail the delete on it.
+	if h.search != nil {
+		if err := h.search.DeleteByOwner(r.Context(), id.String()); err != nil {
+			h.log.Warn("sweep orphaned documents for deleted user failed",
+				zap.String("user_id", id.String()), zap.Error(err))
+		}
+	}
+
 	if err := h.store.DeleteUser(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
 		h.log.Error("delete user failed", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "failed to delete user")
+		writeError(w, http.StatusInternalServerError, errFailedDeleteUser)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// purgeUserConnectors hard-deletes the user's PRIVATE connectors (their
+// OpenSearch docs, cached binaries, sync cursor, and scheduler jobs go with
+// them via cm.Remove) and orphans their SHARED connectors (user_id = NULL) so
+// community data others search survives with no owner. Splitting on Shared is
+// what keeps deleting a user — especially an admin — from silently wiping
+// shared corpus for everyone else. Returns an error on any hard failure.
+func (h *handler) purgeUserConnectors(ctx context.Context, id uuid.UUID) error {
+	if h.cm == nil {
+		return nil
+	}
+	conns, err := h.store.ListConnectorConfigsByOwner(ctx, id)
+	if err != nil {
+		return fmt.Errorf("list owned connectors: %w", err)
+	}
+	for i := range conns {
+		if conns[i].Shared {
+			continue // kept alive; orphaned below
+		}
+		if err := h.cm.Remove(ctx, conns[i].ID); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return fmt.Errorf("remove connector %q: %w", conns[i].Name, err)
+		}
+	}
+	if _, err := h.store.OrphanSharedConnectorsByOwner(ctx, id); err != nil {
+		return fmt.Errorf("orphan shared connectors: %w", err)
+	}
+	// Refresh the in-memory configs so a future sync of an orphaned shared
+	// connector doesn't tag new chunks with the deleted owner.
+	h.cm.ClearOwner(id)
+	return nil
 }
 
 // ChangePassword godoc
@@ -365,8 +431,7 @@ func (h *handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req changePasswordRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidRequestBody)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if len(req.Password) < 8 {
