@@ -449,40 +449,33 @@ func appendUniqueDocs(dst, src []llm.Document) []llm.Document {
 // double-attach it (wasted provider budget). Media with an empty SourceID
 // always appends, to avoid collapsing distinct payloads.
 func mergeDocMedia(dst *llm.Document, src llm.Document) {
-	if len(src.Images) > 0 {
-		have := make(map[string]struct{}, len(dst.Images))
-		for _, im := range dst.Images {
-			if im.SourceID != "" {
-				have[im.SourceID] = struct{}{}
-			}
-		}
-		for _, im := range src.Images {
-			if im.SourceID != "" {
-				if _, ok := have[im.SourceID]; ok {
-					continue
-				}
-				have[im.SourceID] = struct{}{}
-			}
-			dst.Images = append(dst.Images, im)
+	dst.Images = mergeBySourceID(dst.Images, src.Images, func(im llm.Image) string { return im.SourceID })
+	dst.PDFs = mergeBySourceID(dst.PDFs, src.PDFs, func(p llm.PDF) string { return p.SourceID })
+}
+
+// mergeBySourceID appends items from src onto dst, skipping any whose key
+// (SourceID) is already present in dst or was already appended. An empty key
+// always appends, so distinct keyless payloads aren't collapsed.
+func mergeBySourceID[T any](dst, src []T, key func(T) string) []T {
+	if len(src) == 0 {
+		return dst
+	}
+	have := make(map[string]struct{}, len(dst))
+	for _, it := range dst {
+		if k := key(it); k != "" {
+			have[k] = struct{}{}
 		}
 	}
-	if len(src.PDFs) > 0 {
-		have := make(map[string]struct{}, len(dst.PDFs))
-		for _, p := range dst.PDFs {
-			if p.SourceID != "" {
-				have[p.SourceID] = struct{}{}
+	for _, it := range src {
+		if k := key(it); k != "" {
+			if _, ok := have[k]; ok {
+				continue
 			}
+			have[k] = struct{}{}
 		}
-		for _, p := range src.PDFs {
-			if p.SourceID != "" {
-				if _, ok := have[p.SourceID]; ok {
-					continue
-				}
-				have[p.SourceID] = struct{}{}
-			}
-			dst.PDFs = append(dst.PDFs, p)
-		}
+		dst = append(dst, it)
 	}
+	return dst
 }
 
 // appendUniqueChunks is the ChunkPreview twin of appendUniqueDocs —

@@ -21,6 +21,46 @@ import (
 	"go.uber.org/zap"
 )
 
+// errAuthTimedOut is returned when the caller's request context is canceled
+// while the handler is waiting on the auth flow (blocked channel send or the
+// result wait).
+const errAuthTimedOut = "auth timed out, try again"
+
+// telegramCreds extracts and validates the api_id / api_hash / phone from a
+// telegram connector config. Kept separate so the auth-start handler stays
+// simple (and under the cognitive-complexity limit).
+func telegramCreds(cfg *model.ConnectorConfig) (apiID int, apiHash, phone string, err error) {
+	if cfg.Type != "telegram" {
+		return 0, "", "", fmt.Errorf("connector is not a telegram connector")
+	}
+	switch v := cfg.Config["api_id"].(type) {
+	case float64:
+		apiID = int(v)
+	case string:
+		apiID, _ = strconv.Atoi(v)
+	}
+	apiHash, _ = cfg.Config["api_hash"].(string)
+	phone, _ = cfg.Config["phone"].(string)
+	if apiID == 0 || apiHash == "" || phone == "" {
+		return 0, "", "", fmt.Errorf("connector missing api_id, api_hash, or phone")
+	}
+	return apiID, apiHash, phone, nil
+}
+
+// sendOrRequestTimeout sends v on ch, returning false (and writing a 408) if
+// the request context is canceled first. Guards the buffered code/password
+// channels so a duplicate submit on an already-finished flow can't wedge the
+// handler goroutine on a blocked send.
+func sendOrRequestTimeout(w http.ResponseWriter, r *http.Request, ch chan<- string, v string) bool {
+	select {
+	case ch <- v:
+		return true
+	case <-r.Context().Done():
+		writeError(w, http.StatusRequestTimeout, errAuthTimedOut)
+		return false
+	}
+}
+
 // pendingAuth tracks in-flight Telegram auth flows.
 type pendingAuth struct {
 	mu    sync.Mutex
@@ -121,23 +161,9 @@ func (h *handler) TelegramAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cfg.Type != "telegram" {
-		writeError(w, http.StatusBadRequest, "connector is not a telegram connector")
-		return
-	}
-
-	var apiID int
-	switch v := cfg.Config["api_id"].(type) {
-	case float64:
-		apiID = int(v)
-	case string:
-		apiID, _ = strconv.Atoi(v)
-	}
-	apiHash, _ := cfg.Config["api_hash"].(string)
-	phone, _ := cfg.Config["phone"].(string)
-
-	if apiID == 0 || apiHash == "" || phone == "" {
-		writeError(w, http.StatusBadRequest, "connector missing api_id, api_hash, or phone")
+	apiID, apiHash, phone, err := telegramCreds(cfg)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -274,56 +300,55 @@ func (h *handler) TelegramAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send the code. Select on the request context so a second rapid submit
+	// Send the code. Guard on the request context so a second rapid submit
 	// (codeCh buffer already full, first code unconsumed) doesn't block this
 	// handler goroutine forever — a client disconnect unblocks a plain channel
-	// send only via this select.
-	select {
-	case flow.codeCh <- req.Code:
-	case <-r.Context().Done():
-		writeError(w, http.StatusRequestTimeout, "auth timed out, try again")
+	// send only via the select inside the helper.
+	if !sendOrRequestTimeout(w, r, flow.codeCh, req.Code) {
 		return
 	}
 
 	// If 2FA password is provided, send it too (same non-blocking guard).
 	if req.Password != "" {
-		select {
-		case flow.passCh <- req.Password:
-		case <-r.Context().Done():
-			writeError(w, http.StatusRequestTimeout, "auth timed out, try again")
+		if !sendOrRequestTimeout(w, r, flow.passCh, req.Password) {
 			return
 		}
 	}
 
-	// Wait for result (with timeout from request context)
+	// Wait for the auth flow to finish (or the request to time out).
 	select {
 	case res := <-flow.resultCh:
 		pending.mu.Lock()
 		delete(pending.flows, flowKey)
 		pending.mu.Unlock()
-
-		if res.err != nil {
-			h.log.Error("telegram auth failed", zap.Error(res.err))
-			writeError(w, http.StatusBadRequest, "auth failed: "+res.err.Error())
-			return
-		}
-
-		// Persist the self-identity onto the connector config so the
-		// /api/me/identities endpoint can surface it to the frontend.
-		// Failure is non-fatal — auth still succeeded, identity can be
-		// backfilled by a subsequent sync. Log and move on.
-		if err := persistSelfIdentity(r.Context(), h.cm, cfg, res.selfID, res.selfName); err != nil {
-			h.log.Warn("persist telegram self-identity",
-				zap.String("connector", id.String()),
-				zap.Error(err))
-		}
-
-		h.log.Info("telegram auth successful", zap.String("connector", id.String()))
-		writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
-
+		h.finishTelegramAuth(w, r, cfg, id, res)
 	case <-r.Context().Done():
-		writeError(w, http.StatusRequestTimeout, "auth timed out, try again")
+		writeError(w, http.StatusRequestTimeout, errAuthTimedOut)
 	}
+}
+
+// finishTelegramAuth writes the response for a completed auth flow: an error on
+// failure, otherwise it persists the self-identity (best-effort) and reports
+// success.
+func (h *handler) finishTelegramAuth(w http.ResponseWriter, r *http.Request, cfg *model.ConnectorConfig, id uuid.UUID, res authResult) {
+	if res.err != nil {
+		h.log.Error("telegram auth failed", zap.Error(res.err))
+		writeError(w, http.StatusBadRequest, "auth failed: "+res.err.Error())
+		return
+	}
+
+	// Persist the self-identity onto the connector config so the
+	// /api/me/identities endpoint can surface it to the frontend. Failure is
+	// non-fatal — auth still succeeded, identity can be backfilled by a
+	// subsequent sync. Log and move on.
+	if err := persistSelfIdentity(r.Context(), h.cm, cfg, res.selfID, res.selfName); err != nil {
+		h.log.Warn("persist telegram self-identity",
+			zap.String("connector", id.String()),
+			zap.Error(err))
+	}
+
+	h.log.Info("telegram auth successful", zap.String("connector", id.String()))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "authenticated"})
 }
 
 // interactiveAuth implements auth.UserAuthenticator for the code flow.
