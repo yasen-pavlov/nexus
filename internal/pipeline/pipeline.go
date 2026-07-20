@@ -327,6 +327,19 @@ func (p *Pipeline) consumeStream(ctx context.Context, state *runState, items <-c
 // handleItem dispatches one FetchItem to the appropriate handler based on
 // which field is set. The connector contract guarantees exactly one field
 // is non-nil per item; unknown/empty items are simply ignored.
+// notifyProgress fires the progress callback (if set) with a fresh snapshot of
+// the run counters taken under reportMu. Extracted so handleItem's branches
+// don't each repeat the snapshot-and-nil-check dance, which kept the method's
+// cognitive complexity over the limit.
+func (s *runState) notifyProgress() {
+	s.reportMu.Lock()
+	total, processed, errCount, scope := s.total, s.processed, s.errCount, s.scope
+	s.reportMu.Unlock()
+	if s.progress != nil {
+		s.progress(total, processed, errCount, scope)
+	}
+}
+
 func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.FetchItem) {
 	switch {
 	case item.Doc != nil:
@@ -343,11 +356,8 @@ func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.F
 		if state.hasEstimate && state.processed > state.total {
 			state.total = state.processed
 		}
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 		if len(state.pendingDocs) >= indexBatchSize {
 			p.flushPending(ctx, state)
 			state.lastFlush = time.Now()
@@ -373,19 +383,13 @@ func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.F
 		if *item.EstimatedTotal > int64(state.total) {
 			state.total = int(*item.EstimatedTotal)
 		}
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 	case item.Scope != nil:
 		state.reportMu.Lock()
 		state.scope = *item.Scope
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 	case item.Err != nil:
 		// A non-fatal, per-unit connector failure (e.g. one Telegram
 		// chat's pagination failed). Log it and bump the error count so
@@ -397,11 +401,8 @@ func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.F
 			zap.Error(item.Err))
 		state.reportMu.Lock()
 		state.errCount++
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 	}
 }
 
@@ -449,11 +450,8 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 			// unprocessed — so errCount is left untouched.
 			state.reportMu.Lock()
 			state.processed -= len(batch)
-			total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 			state.reportMu.Unlock()
-			if state.progress != nil {
-				state.progress(total, processed, errCount, scope)
-			}
+			state.notifyProgress()
 			return
 		}
 		defer func() { <-state.flushSem }()
@@ -482,11 +480,8 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 			state.reportMu.Lock()
 			state.processed -= len(batch)
 			state.errCount += len(batch)
-			total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 			state.reportMu.Unlock()
-			if state.progress != nil {
-				state.progress(total, processed, errCount, scope)
-			}
+			state.notifyProgress()
 		}
 	}()
 }
