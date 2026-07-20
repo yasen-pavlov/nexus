@@ -161,7 +161,31 @@ async function mockAuthedAdmin(page: Page) {
       }),
     }),
   );
-  await page.route("**/api/llm/models", (route) =>
+  // Trailing `*` so the `?include_disallowed=true` variant the admin allowlist
+  // editor requests is mocked too — otherwise it falls through to the Vite
+  // proxy and hangs, delaying the settings page render under load.
+  await page.route("**/api/llm/models*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [] }),
+    }),
+  );
+  await page.route("**/api/settings/rag", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          max_tool_rounds: 4,
+          max_images_per_turn: 4,
+          enable_multimodal: true,
+          enable_open_attachment: false,
+        },
+      }),
+    }),
+  );
+  await page.route("**/api/tokens", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
