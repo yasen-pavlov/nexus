@@ -1,12 +1,12 @@
 package rerank
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/muty/nexus/internal/providerhttp"
 )
 
 // Cohere implements Reranker using the Cohere rerank API.
@@ -44,31 +44,10 @@ func (c *Cohere) Rerank(ctx context.Context, query string, documents []string) (
 		Documents: documents,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("cohere: marshal rerank request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v2/rerank", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("cohere: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("cohere: rerank request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // HTTP response body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFromResponse(resp, "cohere")
-	}
-
 	var result cohereRerankResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("cohere: decode rerank response: %w", err)
+	if err := providerhttp.PostJSON(ctx, c.client, c.baseURL+"/v2/rerank", c.apiKey, reqBody, &result,
+		func(resp *http.Response) error { return errorFromResponse(resp, "cohere") }); err != nil {
+		return nil, fmt.Errorf("cohere: rerank: %w", err)
 	}
 
 	return result.Results, nil

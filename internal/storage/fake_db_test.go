@@ -35,6 +35,11 @@ type fakeDB struct {
 	totalSize      int64
 	lruEntries     []model.BinaryStoreEntry
 	expiredEntries []model.BinaryStoreEntry
+	// deleted records the source IDs passed to DeleteBinaryStoreEntry, in
+	// order, so eviction tests can assert exactly which entries were swept
+	// (proving the early-stop break fires and the continue-on-error path keeps
+	// going) rather than only that the pass didn't panic.
+	deleted []string
 }
 
 func (f *fakeDB) UpsertBinaryStoreEntry(context.Context, *model.BinaryStoreEntry) error {
@@ -46,7 +51,10 @@ func (f *fakeDB) TouchBinaryStoreEntry(context.Context, string, string, string) 
 func (f *fakeDB) GetBinaryStoreEntry(context.Context, string, string, string) (*model.BinaryStoreEntry, error) {
 	return nil, f.getErr
 }
-func (f *fakeDB) DeleteBinaryStoreEntry(context.Context, string, string, string) (string, error) {
+func (f *fakeDB) DeleteBinaryStoreEntry(_ context.Context, _, _, sourceID string) (string, error) {
+	// Record the attempt before returning (even on error) so the failure-path
+	// tests can observe the full sweep.
+	f.deleted = append(f.deleted, sourceID)
 	return "", f.deleteErr
 }
 func (f *fakeDB) DeleteBinaryStoreBySource(context.Context, string, string) ([]string, error) {
@@ -200,6 +208,91 @@ func TestEvictOverBudget_DeletePathExercised(t *testing.T) {
 	bs.evictOnce(context.Background(), map[string]CacheConfig{
 		"imap": {Mode: CacheModeLazy, MaxAge: 0, MaxSize: 1},
 	})
+}
+
+// TestEvictExpired_DeleteFailure_LoggedAndContinues drives the per-entry
+// delete-failure branch of evictExpired: ListExpired returns rows, but every
+// Delete fails (the fake DB errors on DeleteBinaryStoreEntry). The pass must
+// log and continue rather than abort, and reclaim nothing.
+func TestEvictExpired_DeleteFailure_LoggedAndContinues(t *testing.T) {
+	db := &fakeDB{
+		expiredEntries: []model.BinaryStoreEntry{
+			{SourceType: "imap", SourceName: "icloud", SourceID: "a", Size: 100},
+			{SourceType: "imap", SourceName: "icloud", SourceID: "b", Size: 100},
+		},
+		deleteErr: errors.New("db down"),
+	}
+	bs := newFakeBS(t, db)
+	// MaxSize 0 keeps evictOverBudget out of it — this exercises evictExpired only.
+	bs.evictOnce(context.Background(), map[string]CacheConfig{
+		"imap": {Mode: CacheModeLazy, MaxAge: 30 * 24 * time.Hour},
+	})
+	// Every expired entry must be attempted even though each delete fails — the
+	// pass logs and continues rather than aborting on the first error.
+	if !equalStrings(db.deleted, []string{"a", "b"}) {
+		t.Errorf("delete attempts = %v, want [a b] (continue-on-error)", db.deleted)
+	}
+}
+
+// TestEvictOverBudget_DeleteFailure_LoggedAndContinues drives the per-entry
+// delete-failure branch of evictOverBudget: the store is over budget and
+// ListLRU returns rows, but every Delete fails. The pass logs and continues.
+func TestEvictOverBudget_DeleteFailure_LoggedAndContinues(t *testing.T) {
+	db := &fakeDB{
+		totalSize: 200,
+		lruEntries: []model.BinaryStoreEntry{
+			{SourceType: "imap", SourceName: "icloud", SourceID: "a", Size: 100},
+			{SourceType: "imap", SourceName: "icloud", SourceID: "b", Size: 100},
+		},
+		deleteErr: errors.New("db down"),
+	}
+	bs := newFakeBS(t, db)
+	bs.evictOnce(context.Background(), map[string]CacheConfig{
+		"imap": {Mode: CacheModeLazy, MaxAge: 0, MaxSize: 1},
+	})
+	// Both over-budget entries are attempted; since every delete fails nothing
+	// is reclaimed, so freed never reaches the budget and the loop can't stop
+	// early — the sweep continues past the first failure.
+	if !equalStrings(db.deleted, []string{"a", "b"}) {
+		t.Errorf("delete attempts = %v, want [a b] (continue-on-error)", db.deleted)
+	}
+}
+
+// TestEvictOverBudget_StopsWhenUnderBudget covers the early break: once enough
+// bytes are reclaimed to fall under the budget, the loop stops before touching
+// the remaining (still-warm) entries. Three 100-byte entries, budget 100 →
+// excess 200 → the first two are evicted and the third is left alone.
+func TestEvictOverBudget_StopsWhenUnderBudget(t *testing.T) {
+	db := &fakeDB{
+		totalSize: 300,
+		lruEntries: []model.BinaryStoreEntry{
+			{SourceType: "imap", SourceName: "icloud", SourceID: "a", Size: 100},
+			{SourceType: "imap", SourceName: "icloud", SourceID: "b", Size: 100},
+			{SourceType: "imap", SourceName: "icloud", SourceID: "c", Size: 100},
+		},
+	}
+	bs := newFakeBS(t, db)
+	bs.evictOnce(context.Background(), map[string]CacheConfig{
+		"imap": {Mode: CacheModeLazy, MaxAge: 0, MaxSize: 100},
+	})
+	// Exactly the two oldest are evicted (200 bytes freed ≥ 200 excess); the
+	// third, still-warm entry must be spared by the early-stop break.
+	if !equalStrings(db.deleted, []string{"a", "b"}) {
+		t.Errorf("delete attempts = %v, want [a b] — the break should spare 'c'", db.deleted)
+	}
+}
+
+// equalStrings reports whether two string slices are element-wise equal.
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestPut_UnwritableBasePath verifies Put surfaces an error when the

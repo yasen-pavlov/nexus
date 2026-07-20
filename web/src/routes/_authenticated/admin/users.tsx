@@ -26,8 +26,6 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -43,6 +41,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ChangePasswordSheet } from "@/components/admin/change-password-sheet";
 import { SettingsSection } from "@/components/admin/settings-section";
 import { TypedConfirmDialog } from "@/components/admin/typed-confirm-dialog";
+import {
+  InitialsTile,
+  RoleBadge,
+  UserActionMenuItems,
+  YouBadge,
+} from "@/components/admin/user-primitives";
 import { UsersMobileList } from "@/components/admin/users-mobile-list";
 
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -312,32 +316,12 @@ function UsersTable({
                   <MoreHorizontal className="size-4" aria-hidden />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
-                  {/* onClick (not onSelect) — base-ui Menu.Item's onSelect
-                      swallows/defers the click in a way that leaves the
-                      follow-up Sheet/Dialog never mounting. Matches the
-                      connector-card pattern that already works. */}
-                  <DropdownMenuItem
-                    onClick={() => onChangePassword(u)}
-                    className="gap-2"
-                  >
-                    <KeyRound className="size-3.5" aria-hidden />
-                    Change password
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    disabled={isSelf}
-                    onClick={() => {
-                      if (isSelf) return;
-                      onDelete(u);
-                    }}
-                    className={cn(
-                      "gap-2 text-destructive focus:text-destructive",
-                      isSelf && "cursor-not-allowed opacity-50",
-                    )}
-                  >
-                    <Trash2 className="size-3.5" aria-hidden />
-                    {isSelf ? "Can't delete yourself" : "Delete account"}
-                  </DropdownMenuItem>
+                  <UserActionMenuItems
+                    user={u}
+                    isSelf={isSelf}
+                    onChangePassword={onChangePassword}
+                    onDelete={onDelete}
+                  />
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -387,53 +371,6 @@ function UsersTable({
 }
 
 // --- Primitives -------------------------------------------------------------
-
-function InitialsTile({ username }: Readonly<{ username: string }>) {
-  const initials = username.slice(0, 2).toUpperCase();
-  return (
-    <span
-      aria-hidden
-      className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary/15 text-[11px] font-semibold text-primary"
-    >
-      {initials}
-    </span>
-  );
-}
-
-function YouBadge() {
-  return (
-    <span className="rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-primary">
-      you
-    </span>
-  );
-}
-
-function RoleBadge({ role }: Readonly<{ role: "admin" | "user" }>) {
-  if (role === "admin") {
-    return (
-      <span
-        className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em]"
-        style={{
-          backgroundColor:
-            "color-mix(in oklch, var(--primary) 14%, transparent)",
-          color: "var(--primary)",
-        }}
-      >
-        <ShieldCheck className="size-3" aria-hidden />
-        admin
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-      <span
-        aria-hidden
-        className="size-1.5 rounded-full bg-muted-foreground/50"
-      />{" "}
-      user
-    </span>
-  );
-}
 
 function EmptyRoster({ onNew }: Readonly<{ onNew: () => void }>) {
   return (

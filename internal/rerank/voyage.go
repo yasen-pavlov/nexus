@@ -1,12 +1,12 @@
 package rerank
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/muty/nexus/internal/providerhttp"
 )
 
 // Voyage implements Reranker using the Voyage AI rerank API.
@@ -44,31 +44,10 @@ func (v *Voyage) Rerank(ctx context.Context, query string, documents []string) (
 		Documents: documents,
 	}
 
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("voyage: marshal rerank request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.baseURL+"/v1/rerank", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("voyage: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+v.apiKey)
-
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("voyage: rerank request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck // HTTP response body
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errorFromResponse(resp, "voyage")
-	}
-
 	var result voyageRerankResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("voyage: decode rerank response: %w", err)
+	if err := providerhttp.PostJSON(ctx, v.client, v.baseURL+"/v1/rerank", v.apiKey, reqBody, &result,
+		func(resp *http.Response) error { return errorFromResponse(resp, "voyage") }); err != nil {
+		return nil, fmt.Errorf("voyage: rerank: %w", err)
 	}
 
 	return result.Data, nil
