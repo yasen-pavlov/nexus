@@ -166,6 +166,13 @@ func collectFetch(t *testing.T, c *Connector, cursor *model.SyncCursor) (docs []
 		case it.SourceID != nil:
 			sourceIDs = append(sourceIDs, *it.SourceID)
 		case it.Checkpoint != nil:
+			// Regression guard: every emitted checkpoint must carry the ETag
+			// manifest. A manifest-less checkpoint (the old mid-run emission)
+			// would overwrite cursor_data wholesale and erase the persisted
+			// manifest, forcing a full re-GET of every resource next run.
+			if _, ok := it.Checkpoint.CursorData["manifest"]; !ok {
+				t.Errorf("checkpoint missing manifest key (would erase ETag state): %v", it.Checkpoint.CursorData)
+			}
 			lastCursor = it.Checkpoint
 		}
 	}

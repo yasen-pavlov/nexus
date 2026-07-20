@@ -67,6 +67,30 @@ describe("ScheduleField", () => {
     expect(screen.getByText(/every 15 minutes/i)).toBeInTheDocument();
   });
 
+  it("rejects a 6-field (seconds-granularity) expression the backend can't parse", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+    await user.click(screen.getByRole("tab", { name: "Custom" }));
+    const input = screen.getByPlaceholderText("0 */4 * * *");
+    // Common 6-field format from other cron tools — cronstrue/cron-parser
+    // accept it, robfig (backend) does not.
+    fireEvent.change(input, { target: { value: "0 0 12 * * 1" } });
+    expect(screen.getByText(/Expected 5 fields/i)).toBeInTheDocument();
+    // Preview must NOT green-light it with a fire time.
+    expect(screen.queryByText(/Next:/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Invalid cron expression/i)).toBeInTheDocument();
+  });
+
+  it("rejects an @descriptor the backend can't parse", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+    await user.click(screen.getByRole("tab", { name: "Custom" }));
+    const input = screen.getByPlaceholderText("0 */4 * * *");
+    fireEvent.change(input, { target: { value: "@daily" } });
+    expect(screen.getByText(/@keywords/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Next:/)).not.toBeInTheDocument();
+  });
+
   it.each([
     ["weekly-shaped", "0 5 * * 1"],
     ["daily-shaped", "0 9 * * *"],

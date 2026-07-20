@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/muty/nexus/internal/cliclient"
@@ -60,10 +61,11 @@ type askOptions struct {
 // runAsk drives the ephemeral create → stream → delete lifecycle. The chat is
 // always torn down — on success, on stream error, and on Ctrl-C.
 func runAsk(ctx context.Context, client *cliclient.Client, out, errOut io.Writer, opts askOptions) error {
-	// Convert SIGINT to a ctx cancellation up front, so the whole flow is
-	// graceful — there's no window where Ctrl-C terminates the process before
-	// the cleanup delete is registered.
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	// Convert SIGINT/SIGTERM to a ctx cancellation up front, so the whole flow
+	// is graceful — there's no window where a signal terminates the process
+	// before the cleanup delete is registered. SIGTERM matters for scripted use
+	// (timeout(1)/kill), which would otherwise leak the ephemeral chat.
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	chat, err := client.CreateChat(ctx)

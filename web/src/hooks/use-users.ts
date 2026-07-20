@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { fetchAPI, setToken } from "@/lib/api-client";
+import { fetchAPI, getToken, handleUnauthorized, setToken } from "@/lib/api-client";
 import type { AuthResponse, User } from "@/lib/api-types";
 import { authKeys, userKeys } from "@/lib/query-keys";
 
@@ -45,21 +45,11 @@ export function useUsers() {
     onError: (err: Error) => toast.error(err.message || "Create failed"),
   });
 
+  // fetchAPI handles the 401 (clear token + redirect) and the 204 no-content
+  // success path for us — no need to hand-roll the token header or error mapping.
   const remove = useMutation({
-    mutationFn: async (id: string) => {
-      const token = localStorage.getItem("nexus_jwt");
-      const res = await fetch(`/api/users/${id}`, {
-        method: "DELETE",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      if (res.status === 401) {
-        throw new Error("Unauthorized");
-      }
-      if (!res.ok && res.status !== 204) {
-        const body = await res.json().catch(() => ({ error: "" }));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-    },
+    mutationFn: (id: string) =>
+      fetchAPI<void>(`/api/users/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: userKeys.list() });
       toast.success("User deleted");
@@ -67,17 +57,34 @@ export function useUsers() {
     onError: (err: Error) => toast.error(err.message || "Delete failed"),
   });
 
-  // Self-rotation contract: when the user changes their own password,
-  // the backend bumps the `token_version` row column and the caller's
-  // existing JWT is now revoked (next request would 401 → /login).
-  // To preserve the "rotate freely, stay signed in" UX, the backend
-  // returns 200 with a freshly minted token. Swap it into localStorage
-  // and update the cached `me` so subsequent requests authenticate.
-  // For admin-changes-someone-else, the response is 204 (no body) —
-  // the target user's sessions are deliberately revoked.
-  const changePassword = useMutation({
+  const changePassword = useChangePassword();
+
+  return { ...query, create, remove, changePassword };
+}
+
+/**
+ * Standalone password-change mutation. Kept separate from useUsers() so
+ * callers that only need to rotate a password (the account page's
+ * ChangePasswordSheet) don't also mount the admin-only /api/users roster
+ * query — which would 403 + retry for a regular user.
+ *
+ * Self-rotation contract: when the user changes their own password, the
+ * backend bumps the `token_version` row column and the caller's existing JWT
+ * is now revoked (next request would 401 → /login). To preserve the "rotate
+ * freely, stay signed in" UX, the backend returns 200 with a freshly minted
+ * token. Swap it into localStorage and update the cached `me` so subsequent
+ * requests authenticate. For admin-changes-someone-else, the response is 204
+ * (no body) — the target user's sessions are deliberately revoked.
+ *
+ * The dual 200-with-body / 204 contract is why this uses a raw fetch rather
+ * than fetchAPI, but it still funnels 401s through handleUnauthorized() so an
+ * expired session clears the token and bounces to /login like every other path.
+ */
+export function useChangePassword() {
+  const qc = useQueryClient();
+  return useMutation({
     mutationFn: async ({ userId, password }: ChangePasswordArgs) => {
-      const token = localStorage.getItem("nexus_jwt");
+      const token = getToken();
       const res = await fetch(`/api/users/${userId}/password`, {
         method: "PUT",
         headers: {
@@ -86,7 +93,10 @@ export function useUsers() {
         },
         body: JSON.stringify({ password }),
       });
-      if (res.status === 401) throw new Error("Unauthorized");
+      if (res.status === 401) {
+        handleUnauthorized();
+        throw new Error("Unauthorized");
+      }
       if (res.status === 200) {
         const body = (await res.json()) as { data: AuthResponse };
         if (body.data?.token) {
@@ -103,6 +113,4 @@ export function useUsers() {
     onSuccess: () => toast.success("Password updated"),
     onError: (err: Error) => toast.error(err.message || "Change password failed"),
   });
-
-  return { ...query, create, remove, changePassword };
 }

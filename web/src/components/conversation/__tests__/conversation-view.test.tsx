@@ -120,6 +120,52 @@ describe("ConversationView older-prepend scroll compensation", () => {
     await waitFor(() => expect(stubTop).toBe(1600));
   });
 
+  it("auto-fetches the older page when the window filters down to zero rows", async () => {
+    // An all-stickers/polls Telegram page filters to no visible rows. The
+    // observers never arm (positioning bails on rows.length === 0), so the
+    // view must pull the adjacent page itself to avoid dead-ending.
+    const onOlder = vi.fn();
+    render(
+      <ConversationView
+        {...baseProps}
+        rows={[]}
+        hasOlder
+        hasNewer={false}
+        onOlderIntersect={onOlder}
+      />,
+    );
+    await waitFor(() => expect(onOlder).toHaveBeenCalled());
+  });
+
+  it("auto-fetches the newer page when zero rows and only newer remains", async () => {
+    const onNewer = vi.fn();
+    render(
+      <ConversationView
+        {...baseProps}
+        rows={[]}
+        hasOlder={false}
+        hasNewer
+        onNewerIntersect={onNewer}
+      />,
+    );
+    await waitFor(() => expect(onNewer).toHaveBeenCalled());
+  });
+
+  it("does NOT auto-fetch while a page is already in flight", () => {
+    const onOlder = vi.fn();
+    render(
+      <ConversationView
+        {...baseProps}
+        rows={[]}
+        hasOlder
+        hasNewer={false}
+        isFetchingOlder
+        onOlderIntersect={onOlder}
+      />,
+    );
+    expect(onOlder).not.toHaveBeenCalled();
+  });
+
   it("does NOT move scrollTop on a newer append (rows[0] unchanged)", async () => {
     render(
       <Harness

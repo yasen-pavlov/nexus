@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/muty/nexus/internal/cliclient"
 )
 
 func TestChatNewSession(t *testing.T) {
@@ -37,6 +41,38 @@ func TestChatEmptySessionDiscarded(t *testing.T) {
 	}
 	if f.created != 1 || f.deleted != 1 {
 		t.Fatalf("empty chat must be discarded: created=%d deleted=%d", f.created, f.deleted)
+	}
+}
+
+// TestChatInterruptedFirstTurnKeepsChat guards the fix for the silent-delete
+// bug: pressing Ctrl-C partway through the first answer of a NEW chat must NOT
+// discard it — the server has already persisted the submitted question. The
+// deferred cleanup skips the delete when a question was submitted, and endChat
+// still prints the "Conversation saved" hint so the user can recover it.
+func TestChatInterruptedFirstTurnKeepsChat(t *testing.T) {
+	isolateConfig(t)
+	f := newFakePR2(t)
+
+	client := cliclient.New(f.URL, "nexus_pat_x")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel (as Ctrl-C/SIGTERM would) once the stream is mid-answer.
+	go func() {
+		<-f.hang
+		cancel()
+	}()
+
+	var out, errOut bytes.Buffer
+	// Content contains "hang" so the fake server blocks mid-answer.
+	err := runChat(ctx, client, strings.NewReader("hang on my real question\n"), &out, &errOut, chatOptions{})
+	if err != nil {
+		t.Fatalf("an interrupted turn is a graceful stop, not an error: %v", err)
+	}
+	if f.created != 1 || f.deleted != 0 {
+		t.Fatalf("interrupted first turn must keep the chat: created=%d deleted=%d", f.created, f.deleted)
+	}
+	if !strings.Contains(errOut.String(), "Conversation saved") {
+		t.Fatalf("a kept chat should print the save/resume hint: %q", errOut.String())
 	}
 }
 
@@ -120,12 +156,17 @@ func TestChatAllErrorsExitNonZero(t *testing.T) {
 	seedAuth(t, f.URL)
 
 	// A session where no turn ever succeeds must exit non-zero so a piped caller
-	// can detect failure (the empty chat is also discarded).
+	// can detect failure. The chat is still KEPT, though: the question was
+	// submitted and the server persisted the user message, so discarding it would
+	// throw away real content (same rationale as the interrupted-turn case).
 	out, err := run(t, "boom\n/exit\n", "chat")
 	if err == nil || !strings.Contains(err.Error(), "model exploded") {
 		t.Fatalf("an all-error session should exit non-zero: %v\n%s", err, out)
 	}
-	if f.deleted != 1 {
-		t.Fatalf("the empty (no successful turn) chat should be discarded: deleted=%d", f.deleted)
+	if f.deleted != 0 {
+		t.Fatalf("a chat with a submitted question must be kept, not discarded: deleted=%d", f.deleted)
+	}
+	if !strings.Contains(out, "Conversation saved") {
+		t.Fatalf("a kept chat should print the save hint: %s", out)
 	}
 }

@@ -339,7 +339,7 @@ describe("AskComposer", () => {
         onSubmit={onSubmit}
       />,
     );
-    const textarea = screen.getByPlaceholderText(/Ask anything/);
+    const textarea = screen.getByRole("textbox");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     await user.type(textarea, "Hello");
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
@@ -357,7 +357,7 @@ describe("AskComposer", () => {
         onSubmit={onSubmit}
       />,
     );
-    const textarea = screen.getByPlaceholderText(/Ask anything/);
+    const textarea = screen.getByRole("textbox");
     await user.type(textarea, "x");
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSubmit).not.toHaveBeenCalled();

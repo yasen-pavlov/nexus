@@ -25,13 +25,13 @@ type Registry struct {
 // falls back to empty content on error, so a Tika-down state yields the same
 // output as before — but the moment Tika recovers, the next document extracts
 // correctly with no nexus restart required.
-func NewRegistry(tikaURL string, languages []lang.Language) *Registry {
+func NewRegistry(tikaURL string, languages []lang.Language, opts ...TikaOption) *Registry {
 	r := &Registry{
 		extractors: []Extractor{&PlainText{}},
 	}
 
 	if tikaURL != "" {
-		r.extractors = append(r.extractors, NewTika(tikaURL, languages))
+		r.extractors = append(r.extractors, NewTika(tikaURL, languages, opts...))
 	}
 
 	return r

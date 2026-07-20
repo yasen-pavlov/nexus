@@ -8,12 +8,13 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ResponsiveToaster } from "@/components/responsive-toaster";
 import { queryClient } from "@/lib/query-client";
 import { setUnauthorizedHandler } from "@/lib/api-client";
+import { authKeys } from "@/lib/query-keys";
 import { router } from "./router";
 import "./index.css";
 
 // On 401, drop cached user data and bounce to the login page.
 setUnauthorizedHandler(() => {
-  queryClient.setQueryData(["auth", "me"], null);
+  queryClient.setQueryData(authKeys.me(), null);
   router.navigate({ to: "/login" });
 });
 

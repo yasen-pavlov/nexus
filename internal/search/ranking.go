@@ -88,7 +88,14 @@ const (
 	//             documents that only contain "ID")
 	//   4 terms → 3 required (allows 1 miss for longer queries)
 	//
+	// The "2<75%" spec makes every term mandatory for queries of up to 2
+	// terms, then switches to the 75% floor above that. Plain "75%" would
+	// round DOWN (75% of 2 = 1.5 → 1 required), so two-term queries would
+	// still match single-term documents — defeating the AND-for-two-terms
+	// intent. Lucene evaluates the "n<pct" conditional per-query on the
+	// actual term count.
+	//
 	// Cross-language matches (e.g. "ID card" → "Personalausweis") still
 	// come through kNN and are unaffected by this BM25 threshold.
-	DefaultMinShouldMatch = "75%"
+	DefaultMinShouldMatch = "2<75%"
 )

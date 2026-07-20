@@ -17,11 +17,12 @@ type fakePR2 struct {
 	*httptest.Server
 	created int
 	deleted int
+	hang    chan struct{} // closed once the "hang" stream handler starts blocking
 }
 
 func newFakePR2(t *testing.T) *fakePR2 {
 	t.Helper()
-	f := &fakePR2{}
+	f := &fakePR2{hang: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -98,6 +99,17 @@ func (f *fakePR2) streamAnswer(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(body.Content, "boom") {
 		_, _ = io.WriteString(w, "event: error\ndata: {\"message\":\"model exploded\"}\n\n")
 		_, _ = io.WriteString(w, "event: done\ndata: {\"stop_reason\":\"error\"}\n\n")
+		return
+	}
+	// "hang" streams a partial answer then blocks until the client cancels the
+	// request context — simulates Ctrl-C/SIGTERM partway through a long answer.
+	if strings.Contains(body.Content, "hang") {
+		_, _ = io.WriteString(w, "event: text\ndata: {\"delta\":\"partial answer\"}\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		close(f.hang)
+		<-r.Context().Done()
 		return
 	}
 	_, _ = io.WriteString(w, "event: evidence\ndata: {\"chunks\":[{\"id\":\"d1\",\"title\":\"Doc One\",\"source\":\"paperless\",\"source_name\":\"Paperless\",\"date\":\"2021-09-22\"}]}\n\n")

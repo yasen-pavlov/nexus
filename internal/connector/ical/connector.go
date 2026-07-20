@@ -41,10 +41,6 @@ import (
 // current-user-principal) redirects from here to the partition host.
 const defaultEndpoint = "https://caldav.icloud.com"
 
-// checkpointEvery bounds how many events a crash replays — emit a cursor
-// checkpoint after this many documents.
-const checkpointEvery = 200
-
 func init() {
 	connector.Register("ical", func() connector.Connector {
 		// SSRF guard: the endpoint defaults to iCloud but can be overridden, so
@@ -324,7 +320,6 @@ func (c *Connector) syncSelectedCalendars(ctx context.Context, prev manifest, it
 
 	next := manifest{}
 	var allSourceIDs []string
-	emitted := 0
 
 	for _, calPath := range c.calendars {
 		if ctx.Err() != nil {
@@ -337,7 +332,7 @@ func (c *Connector) syncSelectedCalendars(ctx context.Context, prev manifest, it
 		if !emitItem(ctx, items, model.FetchItem{Scope: strPtr(calName)}) {
 			return nil, nil, ctx.Err()
 		}
-		calState, sids, err := c.syncCalendar(ctx, calPath, calName, prev[calPath], items, &emitted)
+		calState, sids, err := c.syncCalendar(ctx, calPath, calName, prev[calPath], items)
 		if err != nil {
 			return nil, nil, fmt.Errorf("ical: sync calendar %s: %w", calName, err)
 		}
@@ -397,7 +392,7 @@ func suspiciousShrink(prev manifest, current []string) bool {
 // objects, and the library treats that 404 as fatal. An etag-only
 // calendar-query is universally iCloud-compatible; a plain GET fetches the
 // raw .ics with no XML negotiation.
-func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, prev map[string]string, items chan<- model.FetchItem, emitted *int) (map[string]string, []string, error) {
+func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, prev map[string]string, items chan<- model.FetchItem) (map[string]string, []string, error) {
 	etags, err := c.listCalendarETags(ctx, calPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list calendar: %w", err)
@@ -413,7 +408,7 @@ func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, p
 			state[href] = etag
 			continue
 		}
-		fetched, err := c.fetchResource(ctx, href, calPath, calName, items, emitted)
+		fetched, err := c.fetchResource(ctx, href, calPath, calName, items)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -430,7 +425,15 @@ func (c *Connector) syncCalendar(ctx context.Context, calPath, calName string, p
 // fetchResource GETs one calendar resource and streams its documents. It returns
 // fetched=false when the resource listed but couldn't be fetched this round (a
 // 4xx skip), so the caller leaves its ETag unrecorded and retries next sync.
-func (c *Connector) fetchResource(ctx context.Context, href, calPath, calName string, items chan<- model.FetchItem, emitted *int) (bool, error) {
+//
+// No mid-run checkpoints are emitted: the ical cursor carries no incremental
+// position (only sync_since + the ETag manifest), so a partial checkpoint would
+// have to rebuild the manifest to be useful. A manifest-less newCursor(nil)
+// checkpoint would instead overwrite the previous run's manifest wholesale
+// (UpsertSyncCursor replaces cursor_data), forcing the next run to re-GET every
+// resource — for zero resume value. The manifest is committed once, at the end
+// of a fully-successful run (see syncSelectedCalendars' caller).
+func (c *Connector) fetchResource(ctx context.Context, href, calPath, calName string, items chan<- model.FetchItem) (bool, error) {
 	cal, err := c.getCalendarData(ctx, href)
 	if err != nil {
 		return false, fmt.Errorf("get %s: %w", href, err)
@@ -442,10 +445,6 @@ func (c *Connector) fetchResource(ctx context.Context, href, calPath, calName st
 		d := doc
 		if !emitItem(ctx, items, model.FetchItem{Doc: &d}) {
 			return false, ctx.Err()
-		}
-		*emitted++
-		if *emitted%checkpointEvery == 0 {
-			_ = emitItem(ctx, items, model.FetchItem{Checkpoint: c.newCursor(nil)})
 		}
 	}
 	return true, nil

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/muty/nexus/internal/connector"
 	"github.com/muty/nexus/internal/model"
+	"github.com/muty/nexus/internal/netguard"
 	"github.com/muty/nexus/internal/pipeline/extractor"
 )
 
@@ -136,12 +138,44 @@ func (r *realMailboxClient) FetchMessages(uids []imap.UID, opts *imap.FetchOptio
 // dialFunc allows overriding the IMAP connection for testing.
 type dialFunc func(address string, options *imapclient.Options) (*imapclient.Client, error)
 
+// imapDialTimeout bounds the netguard-guarded TCP connect for the IMAP dial.
+const imapDialTimeout = 30 * time.Second
+
+// dialOptions builds the imapclient options, routing the TLS connect through a
+// netguard-guarded dialer. Its Control hook rejects loopback/link-local/
+// unspecified peers on the concrete resolved IP — defense in depth against DNS
+// rebinding on top of the pre-resolve CheckHost in guardedDialTLS.
+func (c *Connector) dialOptions() *imapclient.Options {
+	return &imapclient.Options{
+		TLSConfig: &tls.Config{ServerName: c.server},
+		Dialer:    netguard.NewDialer(imapDialTimeout),
+	}
+}
+
+// guardedDialTLS is the production dial. It applies the netguard SSRF policy —
+// rejecting a user-configured server that resolves to a loopback/link-local/
+// unspecified address — before opening the implicit-TLS IMAP connection, so a
+// low-privileged user can't turn a connector into an internal port scanner.
+// This mirrors how the HTTP-based connectors (paperless, ical) route through
+// netguard.NewClient; tests inject a plain dial to reach loopback test servers,
+// bypassing the guard exactly as those connectors inject an unguarded client.
+func guardedDialTLS(address string, options *imapclient.Options) (*imapclient.Client, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("imap: bad dial address %q: %w", address, err)
+	}
+	if err := netguard.CheckHost(context.Background(), host); err != nil {
+		return nil, err
+	}
+	return imapclient.DialTLS(address, options)
+}
+
 func init() {
 	connector.Register("imap", func() connector.Connector {
 		return &Connector{
 			port:    993,
 			folders: []string{"INBOX"},
-			dial:    imapclient.DialTLS,
+			dial:    guardedDialTLS,
 		}
 	})
 }
@@ -231,9 +265,7 @@ func (c *Connector) Validate() error {
 	}
 
 	addr := fmt.Sprintf("%s:%d", c.server, c.port)
-	client, err := c.dial(addr, &imapclient.Options{
-		TLSConfig: &tls.Config{ServerName: c.server},
-	})
+	client, err := c.dial(addr, c.dialOptions())
 	if err != nil {
 		return fmt.Errorf("imap: cannot connect to %s: %w", addr, err)
 	}
@@ -277,9 +309,7 @@ func (c *Connector) Fetch(ctx context.Context, cursor *model.SyncCursor) (<-chan
 // lifecycle and dispatches to streamFetchWithClient.
 func (c *Connector) streamFetch(ctx context.Context, cursor *model.SyncCursor, items chan<- model.FetchItem) error {
 	addr := fmt.Sprintf("%s:%d", c.server, c.port)
-	client, err := c.dial(addr, &imapclient.Options{
-		TLSConfig: &tls.Config{ServerName: c.server},
-	})
+	client, err := c.dial(addr, c.dialOptions())
 	if err != nil {
 		return fmt.Errorf("imap: connect: %w", err)
 	}
@@ -385,15 +415,16 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 
 	st := resolveCondStoreState(cursor, folder, sel)
 
-	if err := c.emitFolderEnumeration(ctx, mbc, folder, items); err != nil {
-		return 0, err
-	}
-
 	// CONDSTORE fast-skip on the body-fetch path: if HighestModSeq
 	// hasn't advanced since last sync, there's nothing new to fetch.
-	// Persist the cursor to keep carrying the value forward and
-	// move on without running the delta SEARCH or any body FETCH.
+	// Still emit the full enumeration (no delta to union in) so the
+	// merge-diff sees this folder's keep-set, then persist the cursor
+	// to carry the value forward and move on without a delta SEARCH or
+	// any body FETCH.
 	if st.unchanged() {
+		if err := c.emitFolderEnumeration(ctx, mbc, folder, nil, items); err != nil {
+			return 0, err
+		}
 		writeFolderCursor(cursorData, folder, st, st.cachedUID)
 		if !emitItem(ctx, items, model.FetchItem{Checkpoint: buildCursor(cursorData, startedAt)}) {
 			return 0, ctx.Err()
@@ -401,10 +432,21 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 		return 0, nil
 	}
 
+	// Run the delta SEARCH FIRST, then union its UIDs into the enumeration
+	// keep-set below. If SEARCH ALL ran first, a message arriving between it
+	// and the delta SEARCH would be delta-fetched and indexed yet absent from
+	// the enumerated keep-set, so end-of-run reconciliation would delete it —
+	// and on non-CONDSTORE servers (UID-heuristic cursor) the next run's
+	// UID>maxUID delta would never re-fetch it, silently losing the message.
+	// Delta-first + union guarantees every fetched UID is kept.
 	criteria, fetchOpts := c.buildDeltaCriteria(st)
 	uids, err := mbc.SearchUIDs(criteria)
 	if err != nil {
 		return 0, fmt.Errorf("search: %w", err)
+	}
+
+	if err := c.emitFolderEnumeration(ctx, mbc, folder, uids, items); err != nil {
+		return 0, err
 	}
 
 	if len(uids) > 0 {
@@ -432,14 +474,32 @@ func (c *Connector) streamFolder(ctx context.Context, mbc mailboxClient, folder 
 // compares a globally-sorted stream against OpenSearch. Omitting one
 // folder's IDs would make every indexed doc from that folder look
 // stale the moment any OTHER folder emits SourceIDs.
-func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient, folder string, items chan<- model.FetchItem) error {
+//
+// deltaUIDs (the UIDs this run will body-fetch) are unioned into the
+// keep-set to close the enumeration-before-delta race: a message that
+// arrives between the delta SEARCH and this SEARCH ALL would otherwise be
+// fetched+indexed yet missing from the enumeration, so reconciliation would
+// delete it. Pass nil on the fast-skip path where there's no delta.
+func (c *Connector) emitFolderEnumeration(ctx context.Context, mbc mailboxClient, folder string, deltaUIDs []imap.UID, items chan<- model.FetchItem) error {
 	allUIDs, err := mbc.SearchUIDs(&imap.SearchCriteria{})
 	if err != nil {
 		return fmt.Errorf("search all: %w", err)
 	}
-	sourceIDs := make([]string, len(allUIDs))
-	for i, uid := range allUIDs {
-		sourceIDs[i] = fmt.Sprintf("%s%s%d", folder, imapIDSeparator, uid)
+	seen := make(map[imap.UID]struct{}, len(allUIDs)+len(deltaUIDs))
+	sourceIDs := make([]string, 0, len(allUIDs)+len(deltaUIDs))
+	for _, uid := range allUIDs {
+		if _, dup := seen[uid]; dup {
+			continue
+		}
+		seen[uid] = struct{}{}
+		sourceIDs = append(sourceIDs, fmt.Sprintf("%s%s%d", folder, imapIDSeparator, uid))
+	}
+	for _, uid := range deltaUIDs {
+		if _, dup := seen[uid]; dup {
+			continue
+		}
+		seen[uid] = struct{}{}
+		sourceIDs = append(sourceIDs, fmt.Sprintf("%s%s%d", folder, imapIDSeparator, uid))
 	}
 	sort.Strings(sourceIDs)
 	for i := range sourceIDs {

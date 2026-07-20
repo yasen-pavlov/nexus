@@ -44,9 +44,10 @@ type CacheConfig struct {
 	MaxSize int64         // max total bytes for this connector type; 0 = unlimited
 }
 
-// DefaultCacheConfig returns the baseline per-source-type policy.
-// Individual connector instances can override via the cache_mode /
-// cache_max_age_days / cache_max_size_bytes keys in their config blob.
+// DefaultCacheConfig returns the baseline per-source-type policy. The
+// MaxAge / MaxSize fields drive the eviction sweeper (see eviction.go);
+// individual connector instances can override the cache mode via the
+// cache_mode key in their config blob.
 var DefaultCacheConfig = map[string]CacheConfig{
 	"filesystem": {Mode: CacheModeNone},
 	"paperless":  {Mode: CacheModeNone},
@@ -57,16 +58,16 @@ var DefaultCacheConfig = map[string]CacheConfig{
 }
 
 // ResolveCacheConfig returns the effective cache policy for a connector
-// instance. It starts from the source-type default and applies any
-// overrides present in the connector's JSONB config blob:
+// instance. It starts from the source-type default and applies the
+// cache_mode override present in the connector's JSONB config blob:
 //
-//	cache_mode              string   (none, lazy, eager)
-//	cache_max_age_days      int      (0 = never evict)
-//	cache_max_size_bytes    int64    (0 = unlimited)
+//	cache_mode   string   (none, lazy, eager)
 //
-// Unknown mode strings and negative numeric values are ignored with a
-// silent fallback to the default — validation at the API level is left
-// to the Settings UI when it lands.
+// Unknown mode strings are ignored with a silent fallback to the default —
+// validation at the API level is left to the Settings UI when it lands. The
+// MaxAge / MaxSize eviction thresholds come from the source-type default only;
+// they are not overridable per connector (the eviction sweeper consults the
+// static DefaultCacheConfig map — see cmd/nexus/main.go).
 func ResolveCacheConfig(sourceType string, cfg map[string]any) CacheConfig {
 	out := DefaultCacheConfig[sourceType]
 	// Unknown source type with no default — treat as no caching.
@@ -82,36 +83,7 @@ func ResolveCacheConfig(sourceType string, cfg map[string]any) CacheConfig {
 		}
 	}
 
-	if days, ok := nonNegativeInt64(cfg["cache_max_age_days"]); ok {
-		out.MaxAge = time.Duration(days) * 24 * time.Hour
-	}
-	if size, ok := nonNegativeInt64(cfg["cache_max_size_bytes"]); ok {
-		out.MaxSize = size
-	}
-
 	return out
-}
-
-// nonNegativeInt64 accepts the numeric JSON shapes (float64 / int / int64)
-// that can appear in a decoded JSONB config blob and returns the value as
-// int64 only when it is ≥ 0. Returns false for unknown types or negatives so
-// the caller keeps its default.
-func nonNegativeInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		if n >= 0 {
-			return int64(n), true
-		}
-	case int:
-		if n >= 0 {
-			return int64(n), true
-		}
-	case int64:
-		if n >= 0 {
-			return n, true
-		}
-	}
-	return 0, false
 }
 
 // StoreDB is the subset of internal/store methods the BinaryStore needs.

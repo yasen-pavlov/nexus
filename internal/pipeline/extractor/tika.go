@@ -12,11 +12,37 @@ import (
 	"github.com/muty/nexus/internal/lang"
 )
 
+// defaultTikaTimeout is the extract-path HTTP client timeout. It is generous
+// because Tesseract OCR through Tika runs several seconds per page, so a
+// multi-page scanned PDF — exactly the document the Tika+OCR path exists for —
+// routinely exceeds a short timeout, returns an error, and gets indexed with no
+// content (the sync cursor advances, so the failure never self-heals).
+// Override per-deployment via NEXUS_TIKA_TIMEOUT.
+const defaultTikaTimeout = 5 * time.Minute
+
+// availTimeout is the (short) timeout for the Available() health probe — it
+// must fail fast, unlike the extract path.
+const availTimeout = 10 * time.Second
+
 // Tika extracts text content from binary files using an Apache Tika server.
 type Tika struct {
 	url         string
 	client      *http.Client
+	availClient *http.Client
 	ocrLanguage string // value for X-Tika-OCRLanguage header, e.g. "eng+deu+bul"
+}
+
+// TikaOption customizes a Tika extractor.
+type TikaOption func(*Tika)
+
+// WithTimeout overrides the extract-path HTTP client timeout. A value <= 0
+// leaves the default in place.
+func WithTimeout(d time.Duration) TikaOption {
+	return func(t *Tika) {
+		if d > 0 {
+			t.client.Timeout = d
+		}
+	}
 }
 
 // NewTika creates a Tika extractor pointing at the given Tika server URL.
@@ -24,12 +50,17 @@ type Tika struct {
 // extract request so Tesseract uses the right language packs when OCR'ing
 // scanned PDFs and images. An empty list omits the header entirely,
 // leaving Tika to fall back to its default (English only).
-func NewTika(url string, languages []lang.Language) *Tika {
-	return &Tika{
+func NewTika(url string, languages []lang.Language, opts ...TikaOption) *Tika {
+	t := &Tika{
 		url:         strings.TrimRight(url, "/"),
-		client:      &http.Client{Timeout: 60 * time.Second},
+		client:      &http.Client{Timeout: defaultTikaTimeout},
+		availClient: &http.Client{Timeout: availTimeout},
 		ocrLanguage: lang.TesseractHeader(languages),
 	}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
 }
 
 func (t *Tika) CanExtract(contentType string) bool {
@@ -80,7 +111,7 @@ func (t *Tika) Available(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	resp, err := t.client.Do(req)
+	resp, err := t.availClient.Do(req)
 	if err != nil {
 		return false
 	}

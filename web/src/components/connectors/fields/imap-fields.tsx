@@ -29,6 +29,7 @@ export function ImapFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
         <div className="space-y-1.5">
           <Label htmlFor="imap-port">Port</Label>
           <Input id="imap-port" type="number" {...register("config.port", { valueAsNumber: true })} />
+          <FieldError message={errors?.port?.message as string | undefined} />
         </div>
       </div>
       <div className="space-y-1.5">

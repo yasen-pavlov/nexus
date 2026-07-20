@@ -237,7 +237,13 @@ func docID(doc *model.Document) string {
 	return doc.SourceType + ":" + doc.SourceName + ":" + doc.SourceID
 }
 
-// IndexDocument indexes a single document (BM25-only mode, no chunking).
+// IndexDocument indexes a single document (BM25-only mode, no chunking). It is
+// a test-only seeding helper — production ingestion always goes through the
+// pipeline + IndexChunks. To keep test-seeded docs shaped like pipeline-indexed
+// ones (so doc_id-keyed paths — GetChunkByDocID, /related, downloads — and
+// owner-scoped search behave the same), it populates DocID (the deterministic
+// document UUID the pipeline uses) and marks the chunk Shared so an
+// owner-scoped search can find it even though a bare Document carries no owner.
 func (c *Client) IndexDocument(ctx context.Context, doc *model.Document) error {
 	if doc.ID == uuid.Nil {
 		doc.ID = uuid.New()
@@ -247,6 +253,7 @@ func (c *Client) IndexDocument(ctx context.Context, doc *model.Document) error {
 	chunk := model.Chunk{
 		ID:          docID(doc) + ":0",
 		ParentID:    docID(doc),
+		DocID:       model.DocumentID(doc.SourceType, doc.SourceName, doc.SourceID).String(),
 		ChunkIndex:  0,
 		Title:       doc.Title,
 		Content:     doc.Content,
@@ -257,6 +264,7 @@ func (c *Client) IndexDocument(ctx context.Context, doc *model.Document) error {
 		Metadata:    doc.Metadata,
 		URL:         doc.URL,
 		Visibility:  doc.Visibility,
+		Shared:      true,
 		CreatedAt:   doc.CreatedAt,
 		IndexedAt:   doc.IndexedAt,
 	}

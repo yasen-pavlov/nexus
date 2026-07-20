@@ -34,7 +34,7 @@ When you need information that is not in the provided documents, you may call th
 	`new search results, treat them as additional documents you may cite by index just like the ` +
 	`originals.
 
-The user's data spans multiple channels: email, Telegram, Paperless documents, and files. When the ` +
+The user's data spans multiple channels: email, Telegram, Paperless documents, calendar events (iCal), and files. When the ` +
 	`user asks broadly about their "communications" or "messages" without naming a channel, search ACROSS ` +
 	`channels — never restrict to a single source. If the evidence you have is dominated by one channel ` +
 	`(e.g. all email), run an additional nexus_search for the others (e.g. sources: ["telegram"]) before ` +

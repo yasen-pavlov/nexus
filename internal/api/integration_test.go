@@ -34,6 +34,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// wireSearchService populates h.searchService from the handler's already-set
+// deps, mirroring what NewRouter does in production. Tests that build &handler{}
+// directly and exercise the search path (Search / GetRerankSettings) must call
+// this — production always wires it, so there is no nil fallback.
+func wireSearchService(h *handler) *handler {
+	h.searchService = NewSearchService(h.search, h.em, h.rm, h.ranking, h.log)
+	return h
+}
+
 type mockEmbedder struct{ dim int }
 
 func (m *mockEmbedder) Embed(_ context.Context, texts []string, _ string) ([][]float32, error) {
@@ -154,6 +163,7 @@ func TestSearchHandler_HybridFallback(t *testing.T) {
 	em.Set(&mockEmbedder{dim: 3})
 
 	h := &handler{search: sc, cm: cm, em: em, rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 
 	// This will try hybrid search (embed query → k-NN), but k-NN will fail
 	// because the index has no embedding field. Falls back to BM25.
@@ -184,6 +194,7 @@ func TestSearchHandler_Integration(t *testing.T) {
 	sc.Refresh(ctx) //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchable", nil)
 	w := httptest.NewRecorder()
@@ -219,6 +230,7 @@ func TestSearchHandler_ScoreDetails(t *testing.T) {
 	sc.Refresh(ctx) //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=explain+test&score_details=true", nil)
 	w := httptest.NewRecorder()
@@ -268,6 +280,7 @@ func TestSearchHandler_NoScoreDetailsWithoutFlag(t *testing.T) {
 	sc.Refresh(ctx)                           //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=explain", nil)
 	w := httptest.NewRecorder()
@@ -308,6 +321,7 @@ func TestSearchHandler_WithParams(t *testing.T) {
 	sc.Refresh(ctx)             //nolint:errcheck // test
 
 	h := &handler{search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=searchterm&limit=2", nil)
 	w := httptest.NewRecorder()
@@ -391,6 +405,7 @@ func TestSearchHandler_RerankFloor_Integration(t *testing.T) {
 		rm:  rm,
 		log: zap.NewNop(),
 	}
+	wireSearchService(h)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=rerankfloor", nil)
 	w := httptest.NewRecorder()
@@ -870,6 +885,7 @@ func TestSearchHandler_SearchError(t *testing.T) {
 	sc.DeleteIndex(context.Background()) //nolint:errcheck // test
 
 	h := &handler{store: st, search: sc, cm: cm, em: NewEmbeddingManager(st, zap.NewNop()), rm: NewRerankManager(st, zap.NewNop()), log: zap.NewNop()}
+	wireSearchService(h)
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=test", nil)
 	w := httptest.NewRecorder()
 	h.Search(w, req)
@@ -2159,6 +2175,7 @@ func TestGetRerankSettings_StoreError(t *testing.T) {
 	em := NewEmbeddingManager(st, zap.NewNop())
 	rm := NewRerankManager(st, zap.NewNop())
 	h := &handler{store: st, search: sc, em: em, rm: rm, log: zap.NewNop()}
+	wireSearchService(h)
 
 	r := chi.NewRouter()
 	r.Get("/api/settings/rerank", h.GetRerankSettings)

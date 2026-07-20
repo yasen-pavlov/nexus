@@ -42,6 +42,15 @@ const minEmbeddingContentLen = 0
 // below this threshold and get skipped.
 const minEmbeddingAlphabeticTokens = 10
 
+// minEmbeddingUnsegmentedLetters is the letter-count threshold for the
+// rune-count fallback used on scripts written without inter-word spaces
+// (Thai, CJK, Lao, Khmer, Myanmar). Whitespace tokenization degenerates for
+// these — a whole sentence collapses into 1-2 huge "tokens" — so the
+// token-based gate would permanently exclude every such chunk from embedding.
+// When a chunk's letters are predominantly unsegmented-script, we count
+// Unicode letters directly and gate on this threshold instead.
+const minEmbeddingUnsegmentedLetters = 20
+
 // indexBatchSize controls bulk-index flushing and coincides with the
 // checkpoint cadence. A checkpoint emission in the stream flushes any
 // buffered docs first, so cursor advancement always follows durable
@@ -318,6 +327,19 @@ func (p *Pipeline) consumeStream(ctx context.Context, state *runState, items <-c
 // handleItem dispatches one FetchItem to the appropriate handler based on
 // which field is set. The connector contract guarantees exactly one field
 // is non-nil per item; unknown/empty items are simply ignored.
+// notifyProgress fires the progress callback (if set) with a fresh snapshot of
+// the run counters taken under reportMu. Extracted so handleItem's branches
+// don't each repeat the snapshot-and-nil-check dance, which kept the method's
+// cognitive complexity over the limit.
+func (s *runState) notifyProgress() {
+	s.reportMu.Lock()
+	total, processed, errCount, scope := s.total, s.processed, s.errCount, s.scope
+	s.reportMu.Unlock()
+	if s.progress != nil {
+		s.progress(total, processed, errCount, scope)
+	}
+}
+
 func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.FetchItem) {
 	switch {
 	case item.Doc != nil:
@@ -334,11 +356,8 @@ func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.F
 		if state.hasEstimate && state.processed > state.total {
 			state.total = state.processed
 		}
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 		if len(state.pendingDocs) >= indexBatchSize {
 			p.flushPending(ctx, state)
 			state.lastFlush = time.Now()
@@ -364,19 +383,26 @@ func (p *Pipeline) handleItem(ctx context.Context, state *runState, item model.F
 		if *item.EstimatedTotal > int64(state.total) {
 			state.total = int(*item.EstimatedTotal)
 		}
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
 	case item.Scope != nil:
 		state.reportMu.Lock()
 		state.scope = *item.Scope
-		total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 		state.reportMu.Unlock()
-		if state.progress != nil {
-			state.progress(total, processed, errCount, scope)
-		}
+		state.notifyProgress()
+	case item.Err != nil:
+		// A non-fatal, per-unit connector failure (e.g. one Telegram
+		// chat's pagination failed). Log it and bump the error count so
+		// the SyncReport reflects it — a run with silently-failed
+		// sub-units must not report as a clean success.
+		p.log.Warn("connector reported a non-fatal sync error",
+			zap.String("connector", state.connName),
+			zap.String("type", state.connType),
+			zap.Error(item.Err))
+		state.reportMu.Lock()
+		state.errCount++
+		state.reportMu.Unlock()
+		state.notifyProgress()
 	}
 }
 
@@ -417,6 +443,15 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 		select {
 		case state.flushSem <- struct{}{}:
 		case <-ctx.Done():
+			// Cancelled before this batch was indexed. Roll back the
+			// optimistic per-doc bumps so DocsProcessed doesn't count
+			// docs that never reached OpenSearch. Unlike the
+			// IndexChunks-failure path these aren't errors — just
+			// unprocessed — so errCount is left untouched.
+			state.reportMu.Lock()
+			state.processed -= len(batch)
+			state.reportMu.Unlock()
+			state.notifyProgress()
 			return
 		}
 		defer func() { <-state.flushSem }()
@@ -445,11 +480,8 @@ func (p *Pipeline) flushPending(ctx context.Context, state *runState) {
 			state.reportMu.Lock()
 			state.processed -= len(batch)
 			state.errCount += len(batch)
-			total, processed, errCount, scope := state.total, state.processed, state.errCount, state.scope
 			state.reportMu.Unlock()
-			if state.progress != nil {
-				state.progress(total, processed, errCount, scope)
-			}
+			state.notifyProgress()
 		}
 	}()
 }
@@ -537,7 +569,7 @@ func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Docum
 	var embedTexts []string
 	var embedIndices []int
 	for j, c := range chunks {
-		if countAlphabeticTokens(c.Content) >= minEmbeddingAlphabeticTokens {
+		if passesNoiseGate(c.Content) {
 			embedTexts = append(embedTexts, c.Content)
 			embedIndices = append(embedIndices, j)
 		}
@@ -569,6 +601,15 @@ func (p *Pipeline) populateChunkEmbeddings(ctx context.Context, doc *model.Docum
 			continue
 		}
 		if len(batchEmb) != len(window) {
+			// A provider returning a short/long array (partial Ollama
+			// response, malformed-but-200 body) would silently drop this
+			// window's vectors. Log loudly so degraded hybrid quality is
+			// diagnosable, mirroring the dimension-mismatch guard below.
+			p.log.Error("embedding count mismatch, indexing batch without vectors",
+				zap.String("source_id", doc.SourceID),
+				zap.Int("want", len(window)),
+				zap.Int("got", len(batchEmb)),
+			)
 			continue
 		}
 		// Dimension guard, scoped to this window — a mismatch (e.g. a custom
@@ -796,6 +837,44 @@ func countAlphabeticTokens(text string) int {
 		}
 	}
 	return count
+}
+
+// unsegmentedScripts are letter scripts written without inter-word spaces, so
+// whitespace tokenization (and word-based chunking) degenerates for them.
+var unsegmentedScripts = []*unicode.RangeTable{
+	unicode.Han, unicode.Hiragana, unicode.Katakana,
+	unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar,
+}
+
+// passesNoiseGate reports whether a chunk carries enough real content to be
+// worth embedding. It first applies the whitespace-token heuristic
+// (countAlphabeticTokens ≥ minEmbeddingAlphabeticTokens). That heuristic
+// structurally undercounts unsegmented scripts (a whole Thai/CJK sentence is
+// 1-2 tokens), so when the token gate fails we fall back to counting Unicode
+// letters directly — but only when unsegmented-script letters dominate, so a
+// short English chunk can't sneak through on raw letter count.
+func passesNoiseGate(text string) bool {
+	if countAlphabeticTokens(text) >= minEmbeddingAlphabeticTokens {
+		return true
+	}
+	total, unsegmented := countLetters(text)
+	return unsegmented*2 >= total && unsegmented >= minEmbeddingUnsegmentedLetters
+}
+
+// countLetters returns the total number of Unicode letters in text (after URL
+// stripping) and how many of those belong to an unsegmented script.
+func countLetters(text string) (total, unsegmented int) {
+	text = urlStripRe.ReplaceAllString(text, " ")
+	for _, r := range text {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		total++
+		if unicode.IsOneOf(unsegmentedScripts, r) {
+			unsegmented++
+		}
+	}
+	return total, unsegmented
 }
 
 // ErrStreamClosed is returned when the pipeline attempts to read from a

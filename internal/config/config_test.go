@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoad_Defaults(t *testing.T) {
@@ -25,6 +26,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DatabaseURL != "postgres://test:test@localhost/test" {
 		t.Errorf("unexpected database URL: %q", cfg.DatabaseURL)
 	}
+	if cfg.TikaTimeout != 5*time.Minute {
+		t.Errorf("expected default Tika timeout 5m, got %v", cfg.TikaTimeout)
+	}
 }
 
 func TestLoad_CustomValues(t *testing.T) {
@@ -33,12 +37,16 @@ func TestLoad_CustomValues(t *testing.T) {
 	t.Setenv("NEXUS_LOG_LEVEL", "debug")
 	t.Setenv("NEXUS_FS_ROOT_PATH", "/data/files")
 	t.Setenv("NEXUS_FS_PATTERNS", "*.txt,*.md,*.log")
+	t.Setenv("NEXUS_TIKA_TIMEOUT", "10m")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	if cfg.TikaTimeout != 10*time.Minute {
+		t.Errorf("expected Tika timeout 10m, got %v", cfg.TikaTimeout)
+	}
 	if cfg.Port != 9090 {
 		t.Errorf("expected port 9090, got %d", cfg.Port)
 	}

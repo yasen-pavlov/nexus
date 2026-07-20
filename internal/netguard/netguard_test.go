@@ -1,7 +1,9 @@
 package netguard
 
 import (
+	"context"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +58,45 @@ func TestControl_ErrorPaths(t *testing.T) {
 func TestNewClient_NotNil(t *testing.T) {
 	if NewClient(0) == nil {
 		t.Fatal("NewClient returned nil")
+	}
+}
+
+func TestNewDialer_HasControlHook(t *testing.T) {
+	d := NewDialer(0)
+	if d == nil {
+		t.Fatal("NewDialer returned nil")
+	}
+	if d.Control == nil {
+		t.Fatal("NewDialer must install the SSRF Control hook")
+	}
+	// The hook enforces the same policy as control().
+	if err := d.Control("tcp", "127.0.0.1:993", nil); err == nil {
+		t.Error("dialer Control should reject loopback")
+	}
+}
+
+func TestCheckHost(t *testing.T) {
+	ctx := context.Background()
+	// IP literals resolve without touching the network, so these are hermetic.
+	blockedHosts := []string{"127.0.0.1", "::1", "169.254.169.254", "0.0.0.0"}
+	for _, h := range blockedHosts {
+		if err := CheckHost(ctx, h); err == nil {
+			t.Errorf("CheckHost(%q) = nil, want rejection", h)
+		}
+	}
+	allowedHosts := []string{"192.168.1.10", "10.0.0.5", "8.8.8.8"}
+	for _, h := range allowedHosts {
+		if err := CheckHost(ctx, h); err != nil {
+			t.Errorf("CheckHost(%q) = %v, want allow", h, err)
+		}
+	}
+}
+
+func TestCheckHost_ResolveError(t *testing.T) {
+	// An unresolvable host surfaces a resolve error rather than silently
+	// allowing the dial.
+	err := CheckHost(context.Background(), "no-such-host.invalid")
+	if err == nil || !strings.Contains(err.Error(), "resolve") {
+		t.Errorf("CheckHost(bad) = %v, want a resolve error", err)
 	}
 }

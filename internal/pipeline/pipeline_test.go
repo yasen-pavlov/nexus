@@ -733,6 +733,32 @@ func TestCountAlphabeticTokens(t *testing.T) {
 	}
 }
 
+func TestPassesNoiseGate(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		// English: token gate still governs — needs ≥10 alphabetic tokens.
+		{"english short fails", "the quick brown fox", false},
+		{"english long passes", "the quick brown fox jumps over the lazy sleeping guard dog today", true},
+		// Unsegmented scripts: a whole sentence is 1-2 whitespace tokens, so the
+		// token gate fails, but the rune-count fallback lets a content-rich
+		// chunk through once it has ≥20 unsegmented-script letters.
+		{"thai passes on letter count", "สวัสดีครับผมชอบกินอาหารไทยมากที่สุดในโลกนี้เลยจริงๆนะ", true},
+		{"cjk passes on letter count", "今天天气非常好我想去公园散步然后吃点东西再回家休息一下", true},
+		// Short unsegmented chunk (below the ~20-letter fallback) still gated out.
+		{"thai too short fails", "สวัสดี", false},
+		// A URL-only chunk stays gated out regardless.
+		{"url only fails", "http://example.com/a/very/long/path?q=1", false},
+	}
+	for _, tt := range tests {
+		if got := passesNoiseGate(tt.text); got != tt.want {
+			t.Errorf("%s: passesNoiseGate(%q) = %v, want %v", tt.name, tt.text, got, tt.want)
+		}
+	}
+}
+
 func TestPipelineRun_LowInfoChunkSkipsEmbedding(t *testing.T) {
 	st, sc := newTestDeps(t)
 	ctx := context.Background()
@@ -849,17 +875,18 @@ func TestPipelineRun_CancelMidLoop_ReturnsPartialReport(t *testing.T) {
 	if report == nil {
 		t.Fatal("expected partial report, got nil")
 	}
-	// Async flushes mean cancellation can interrupt a flush
-	// mid-bulk-index, which rolls the optimistic per-doc bumps
-	// back into `Errors` rather than `DocsProcessed`. Either
-	// outcome is acceptable — what matters is that the sync saw
-	// *some* activity before stopping and didn't process every
-	// doc.
-	if report.DocsProcessed+report.Errors == 0 {
-		t.Errorf("expected processed+errors > 0 after cancel, got processed=%d errors=%d", report.DocsProcessed, report.Errors)
-	}
+	// DocsProcessed counts only docs that durably landed in OpenSearch.
+	// A flush interrupted at the semaphore's ctx.Done() branch rolls its
+	// optimistic per-doc bumps back out of DocsProcessed (without counting
+	// them as errors — they weren't errors, just unprocessed), and a flush
+	// that fails IndexChunks reclassifies its batch into Errors. So after an
+	// early cancel both counters can legitimately be 0. What must hold is
+	// that the sync stopped early — it did not process the whole stream.
 	if report.DocsProcessed >= total {
 		t.Errorf("DocsProcessed = %d, want < %d (cancel should have stopped early)", report.DocsProcessed, total)
+	}
+	if report.DocsProcessed < 0 {
+		t.Errorf("DocsProcessed = %d, want >= 0 (rollback must not overshoot)", report.DocsProcessed)
 	}
 	if report.ConnectorName != "cancel-test" {
 		t.Errorf("ConnectorName = %q, want cancel-test", report.ConnectorName)

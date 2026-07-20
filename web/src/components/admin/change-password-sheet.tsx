@@ -15,7 +15,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 
-import { useUsers } from "@/hooks/use-users";
+import { useChangePassword } from "@/hooks/use-users";
 
 export interface ChangePasswordSheetProps {
   open: boolean;
@@ -37,7 +37,7 @@ export function ChangePasswordSheet({
   label,
   onDone,
 }: Readonly<ChangePasswordSheetProps>) {
-  const { changePassword } = useUsers();
+  const changePassword = useChangePassword();
   const [showPassword, setShowPassword] = useState(false);
   const form = useForm<Values>({
     resolver: zodResolver(schema),

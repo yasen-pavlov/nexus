@@ -358,8 +358,11 @@ func (c *Connector) streamGroupChats(ctx context.Context, api telegramAPI, dl me
 		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, 0, sinceDate, totalEstimate, items); err != nil {
 			// Best-effort: one chat's pagination failing shouldn't halt
 			// the whole sync, but it must block the cursor from advancing
-			// so this chat's delta is retried next run.
+			// so this chat's delta is retried next run. Surface the error
+			// through the stream so it's logged and counted in the
+			// SyncReport instead of vanishing into a clean-success run.
 			*failed = true
+			emitItem(ctx, items, model.FetchItem{Err: fmt.Errorf("telegram: chat %q (%s): %w", chatName, chatID, err)})
 			continue
 		}
 	}
@@ -393,8 +396,11 @@ func (c *Connector) streamPrivateChats(ctx context.Context, api telegramAPI, dl 
 		}
 		if err := c.streamChat(ctx, api, dl, inputPeer, chatName, chatID, userMap, selfID, u.ID, sinceDate, totalEstimate, items); err != nil {
 			// Best-effort per chat; block the cursor so this DM's delta
-			// is retried next run (see streamWithAPI).
+			// is retried next run (see streamWithAPI). Surface the error
+			// through the stream so it's logged and counted in the
+			// SyncReport instead of a silent clean-success run.
 			*failed = true
+			emitItem(ctx, items, model.FetchItem{Err: fmt.Errorf("telegram: chat %q (%s): %w", chatName, chatID, err)})
 			continue
 		}
 	}
