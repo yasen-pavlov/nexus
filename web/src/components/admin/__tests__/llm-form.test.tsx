@@ -292,4 +292,39 @@ describe("LLMForm", () => {
     const body = captured as unknown as Record<string, unknown>;
     expect(body.allowlist).toEqual(["anthropic:claude-sonnet-4-6"]);
   });
+
+  it("refuses to untick the last allowlisted model and explains why", async () => {
+    // Seed a concrete single-entry allowlist so unticking it would empty the
+    // list — which the backend reads as "expose everything" (the opposite of
+    // intent). The guard must block the untick and keep the box checked.
+    server.use(
+      http.get("*/api/settings/llm", () =>
+        HttpResponse.json({
+          data: { ...seedSettings, allowlist: ["anthropic:claude-haiku-4-5"] },
+        }),
+      ),
+    );
+
+    mount();
+    const haiku = (await waitFor(() =>
+      screen.getByRole("checkbox", { name: "Claude Haiku 4.5" }),
+    )) as HTMLInputElement;
+    const sonnet = screen.getByRole("checkbox", {
+      name: "Claude Sonnet 4.6",
+    }) as HTMLInputElement;
+
+    // Only Haiku is allowed in this seed.
+    expect(haiku.checked).toBe(true);
+    expect(sonnet.checked).toBe(false);
+
+    await userEvent.click(haiku);
+
+    // Untick refused: Haiku stays checked, no re-tick cascade on Sonnet, and
+    // the hint appears.
+    expect(haiku.checked).toBe(true);
+    expect(sonnet.checked).toBe(false);
+    expect(
+      screen.getByText(/at least one model must stay allowed/i),
+    ).toBeInTheDocument();
+  });
 });

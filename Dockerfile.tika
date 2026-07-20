@@ -1,11 +1,11 @@
 # Custom Tika image that adds Bulgarian Tesseract language data on top of
-# the upstream apache/tika:latest-full. Upstream ships only eng/deu/fra/ita
+# the upstream apache/tika full image (pinned below). Upstream ships only eng/deu/fra/ita
 # /jpn/spa tessdata, so scanned Bulgarian PDFs fall back to English OCR
 # (producing garbage) without this layer.
 #
 # See internal/lang/lang.go for the canonical language list that drives the
 # X-Tika-OCRLanguage header.
-FROM apache/tika:latest-full
+FROM apache/tika:3.3.1.0-full
 
 # The upstream image runs as numeric uid 35002 with no matching passwd
 # entry, so we switch to root for apt-get and restore the original uid

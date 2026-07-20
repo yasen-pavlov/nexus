@@ -62,6 +62,14 @@ type mockMailboxClient struct {
 	// deletion sync" behavior in isolation.
 	failOnAllSearch bool
 	searchCallCount int
+
+	// deltaUIDs, when deltaSet is true, is returned for the criteria-filtered
+	// (delta) SearchUIDs call while the no-criteria SEARCH ALL keeps returning
+	// uids. Lets tests exercise the delta-first + union-into-keep-set behavior
+	// with a delta UID that SEARCH ALL doesn't report (a message that arrived
+	// after the enumeration snapshot).
+	deltaUIDs []imap.UID
+	deltaSet  bool
 }
 
 func (m *mockMailboxClient) SelectFolder(_ string, _ bool) (*imap.SelectData, error) {
@@ -74,8 +82,12 @@ func (m *mockMailboxClient) SelectFolder(_ string, _ bool) (*imap.SelectData, er
 
 func (m *mockMailboxClient) SearchUIDs(criteria *imap.SearchCriteria) ([]imap.UID, error) {
 	m.searchCallCount++
-	if m.failOnAllSearch && criteria != nil && len(criteria.UID) == 0 && criteria.Since.IsZero() && criteria.ModSeq == nil {
+	isSearchAll := criteria != nil && len(criteria.UID) == 0 && criteria.Since.IsZero() && criteria.ModSeq == nil
+	if m.failOnAllSearch && isSearchAll {
 		return nil, fmt.Errorf("simulated SEARCH ALL failure")
+	}
+	if !isSearchAll && m.deltaSet {
+		return m.deltaUIDs, m.searchErr
 	}
 	return m.uids, m.searchErr
 }
@@ -317,6 +329,48 @@ func TestStreamFetch_PrefixNestedFolders_GlobalSourceIDOrder(t *testing.T) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("emitted SourceID stream is not globally byte-ascending:\n got  %v\n want %v", got, want)
+	}
+}
+
+// TestStreamFetch_DeltaUIDsUnionedIntoKeepSet pins the enumeration-before-delta
+// race fix: the delta SEARCH runs first and its UIDs are unioned into the
+// enumerated keep-set, so a message that arrived after the SEARCH ALL snapshot
+// (present in the delta, absent from SEARCH ALL) is NOT reconciled away.
+func TestStreamFetch_DeltaUIDsUnionedIntoKeepSet(t *testing.T) {
+	c := &Connector{name: "test-mail", folders: []string{"INBOX"}}
+	mock := &mockMailboxClient{
+		uids:      []imap.UID{1, 2}, // SEARCH ALL snapshot
+		deltaUIDs: []imap.UID{2, 9}, // delta reports UID 9 that SEARCH ALL missed
+		deltaSet:  true,
+		msgs:      []*imapclient.FetchMessageBuffer{},
+	}
+	// A prior cursor makes the delta a UID-range SEARCH (UID > 1), distinct
+	// from the no-criteria SEARCH ALL — otherwise a fresh connector's delta is
+	// "everything" and indistinguishable from the enumeration.
+	cursor := &model.SyncCursor{CursorData: map[string]any{"uid:INBOX": float64(1)}}
+	result := runStreamFetch(t, c, mock, cursor)
+	if result.Err != nil {
+		t.Fatalf("unexpected error: %v", result.Err)
+	}
+	got := append([]string{}, result.SourceIDs...)
+	sort.Strings(got)
+	want := []string{"INBOX:1", "INBOX:2", "INBOX:9"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("keep-set = %v, want %v (delta UID 9 must be unioned in)", got, want)
+	}
+}
+
+func TestGuardedDialTLS_RejectsLoopback(t *testing.T) {
+	// The production dial rejects a server resolving to loopback before any
+	// TCP connect, so a low-privileged user can't turn IMAP into a port scanner.
+	c := &Connector{
+		server: "127.0.0.1", port: 1993,
+		username: "user@example.com", password: "pass",
+		dial: guardedDialTLS,
+	}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "refusing to connect") {
+		t.Errorf("Validate() = %v, want an SSRF rejection", err)
 	}
 }
 

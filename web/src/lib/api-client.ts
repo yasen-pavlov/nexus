@@ -18,6 +18,15 @@ export function setUnauthorizedHandler(handler: () => void): void {
   unauthorizedHandler = handler;
 }
 
+// Clears the stored token and runs the registered 401 handler (drop the cached
+// user + bounce to /login). Every 401 path funnels through here so session
+// expiry is handled identically whether the caller uses fetchAPI or hand-rolls
+// its own fetch (e.g. the dual 200-body/204 password-change contract).
+export function handleUnauthorized(): void {
+  clearToken();
+  unauthorizedHandler?.();
+}
+
 interface APIResponse<T> {
   data?: T;
   error?: string;
@@ -33,8 +42,7 @@ export async function fetchAPI<T>(
   const res = await fetch(url, { ...options, headers });
   // 401 means "session expired" — backend returns 400 for bad credentials.
   if (res.status === 401) {
-    clearToken();
-    unauthorizedHandler?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   // 204 No Content is a real success path (DELETE flows). Any caller
@@ -140,8 +148,7 @@ async function openStreamBody(
   });
 
   if (res.status === 401) {
-    clearToken();
-    unauthorizedHandler?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (!res.ok) {
@@ -243,8 +250,7 @@ export async function fetchAuthedBlobData(url: string): Promise<Blob | null> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(url, { headers });
   if (res.status === 401) {
-    clearToken();
-    unauthorizedHandler?.();
+    handleUnauthorized();
     throw new Error("Unauthorized");
   }
   if (res.status === 404) return null;

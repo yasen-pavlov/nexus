@@ -141,6 +141,34 @@ func TestRunSuite_TurnErrorRecorded(t *testing.T) {
 	}
 }
 
+// A transient relevance-judge error (429/timeout) must leave Relevance nil
+// (unscored) rather than setting res.Error — otherwise Passed() flips a
+// genuinely-passing case to failed, matching the faithfulness/abstain judges'
+// swallow-error contract documented on RunSuite.
+func TestRunSuite_RelevanceJudgeError_LeavesCasePassing(t *testing.T) {
+	cases := []GoldenCase{{Name: "x", Query: "q"}}
+	runner := func(_ context.Context, _ string) (TurnOutput, error) {
+		return TurnOutput{Answer: "an answer", Evidence: []string{"ctx"}}, nil
+	}
+	judge := func(_ context.Context, _, user string) (string, error) {
+		if strings.Contains(user, "address the question") { // relevance prompt
+			return "", errors.New("429 rate limited")
+		}
+		return "yes", nil // faithfulness → not hallucinated
+	}
+	rep := RunSuite(context.Background(), cases, runner, judge, "m", "j")
+	r := rep.Results[0]
+	if r.Error != "" {
+		t.Errorf("relevance judge error must not set res.Error, got %q", r.Error)
+	}
+	if r.Relevance != nil {
+		t.Errorf("relevance should stay nil (unscored), got %q", *r.Relevance)
+	}
+	if !r.Passed() {
+		t.Errorf("a transient relevance-judge error must not fail the case: %+v", r)
+	}
+}
+
 func TestRenderMarkdown_FlagsRegression(t *testing.T) {
 	rep := Report{
 		Model: "m", JudgeModel: "j",

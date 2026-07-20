@@ -6,7 +6,7 @@ import { type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { server } from "@/test/mocks/server";
-import { useUsers } from "../use-users";
+import { useUsers, useChangePassword } from "../use-users";
 import { setToken, getToken } from "@/lib/api-client";
 import { authKeys } from "@/lib/query-keys";
 
@@ -228,6 +228,47 @@ describe("useUsers", () => {
       ).rejects.toThrow(/unauthorized/i);
     });
     expect(toast.error).toHaveBeenCalledWith("Unauthorized");
+  });
+
+  it("useChangePassword rotates without mounting the admin-only roster query", async () => {
+    // The account page's ChangePasswordSheet must not fire GET /api/users
+    // (admin-only → 403 + retries for a regular user). The standalone hook
+    // owns only the mutation.
+    let rosterHits = 0;
+    server.use(
+      http.get("*/api/users", () => {
+        rosterHits += 1;
+        return HttpResponse.json({ data: seeded });
+      }),
+      http.put("*/api/users/u1/password", () =>
+        HttpResponse.json({
+          data: {
+            token: "rotated-tok",
+            user: {
+              id: "u1",
+              username: "admin",
+              role: "admin",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          },
+        }),
+      ),
+    );
+    const { Wrapper } = wrap();
+    const { result } = renderHook(() => useChangePassword(), {
+      wrapper: Wrapper,
+    });
+    await act(async () => {
+      await result.current.mutateAsync({
+        userId: "u1",
+        password: "new-password-here",
+      });
+    });
+    expect(getToken()).toBe("rotated-tok");
+    expect(toast.success).toHaveBeenCalledWith("Password updated");
+    // Give any stray roster query a tick to fire — it must not.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rosterHits).toBe(0);
   });
 
   it("changePassword surfaces BE errors via toast.error", async () => {

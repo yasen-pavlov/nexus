@@ -428,11 +428,15 @@ function AllowlistField({
   onChange: (next: string[]) => void;
 }>) {
   const models = useLLMCatalog();
+  // Set when the admin tries to untick the final allowlisted model — see the
+  // guard in toggle(). Explains why the click was refused.
+  const [lastGuardHit, setLastGuardHit] = useState(false);
 
   const isAllowed = (id: string) =>
     allowlist.length === 0 || allowlist.includes(id);
 
   const toggle = (id: string) => {
+    setLastGuardHit(false);
     if (allowlist.length === 0) {
       // Switching from "expose all" to a concrete allowlist — start with
       // every model except the one being toggled off.
@@ -443,6 +447,13 @@ function AllowlistField({
       return;
     }
     if (allowlist.includes(id)) {
+      // Unticking the last remaining entry would empty the allowlist, which
+      // the backend reads as "expose EVERY model" — the opposite of intent
+      // (and every checkbox instantly re-ticks). Refuse it and explain.
+      if (allowlist.length === 1) {
+        setLastGuardHit(true);
+        return;
+      }
       onChange(allowlist.filter((mid) => mid !== id));
     } else {
       onChange([...allowlist, id]);
@@ -489,6 +500,12 @@ function AllowlistField({
             </li>
           ))}
         </ul>
+      )}
+      {lastGuardHit && (
+        <p role="alert" className="text-[12px] leading-[1.5] text-destructive">
+          At least one model must stay allowed — or leave every row checked to
+          expose every model.
+        </p>
       )}
     </Field>
   );

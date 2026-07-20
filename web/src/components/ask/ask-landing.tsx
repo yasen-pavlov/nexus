@@ -207,7 +207,7 @@ export function AskLanding({ initialQuery }: Readonly<AskLandingProps>) {
             models={models}
             onSubmit={onSubmit}
             initialContent={prefill}
-            isFirstTurn={false}
+            isFirstTurn
           />
         </div>
       </section>

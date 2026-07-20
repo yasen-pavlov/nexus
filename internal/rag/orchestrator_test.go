@@ -273,6 +273,44 @@ func TestRun_Cancellation_PersistsPartialMessage(t *testing.T) {
 	}
 }
 
+// When the adapter WINS the cancel race and emits EventDone{StopCancelled}
+// (rather than ctx.Done firing first in the drain select), run() must route it
+// through the cancelled persist path — NOT finalizeAnswer, which would write
+// the misleading "I wasn't able to produce an answer" placeholder for a turn
+// the user deliberately cancelled.
+func TestRun_ProviderCancelledStop_PersistsNoPlaceholder(t *testing.T) {
+	gen := &fakeGenerator{
+		events: []llm.Event{
+			{Kind: llm.EventDone, StopReason: llm.StopCancelled},
+		},
+	}
+	info := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", SupportsCitations: true}
+	search := &fakeSearch{}
+	o, chats := newOrchTest(t, gen, info, search)
+	chat := makeChat(t, chats, "anthropic:claude-sonnet-4-6")
+
+	events := runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
+
+	last := events[len(events)-1]
+	if last.Kind != EvDone || last.StopReason != "cancelled" {
+		t.Fatalf("last=%+v want EvDone cancelled", last)
+	}
+	for _, ev := range events {
+		if ev.Kind == EvText {
+			t.Errorf("cancelled turn emitted text %q; want no placeholder", ev.TextDelta)
+		}
+	}
+
+	msgs, _ := chats.ListMessages(context.Background(), chat.ID)
+	asst := msgs[len(msgs)-1]
+	if asst.StopReason != "cancelled" {
+		t.Errorf("persisted stop=%q want cancelled", asst.StopReason)
+	}
+	if strings.TrimSpace(asst.Content) != "" {
+		t.Errorf("persisted content=%q want empty (no placeholder)", asst.Content)
+	}
+}
+
 func TestRun_SearchFailure_PersistsErrorMessage(t *testing.T) {
 	gen := &fakeGenerator{}
 	info := llm.ModelInfo{ID: "anthropic:claude-sonnet-4-6", SupportsCitations: true}
@@ -687,10 +725,15 @@ func TestContextNearLimit(t *testing.T) {
 		want   bool
 	}{
 		{"unknown window → ample", 0, big, nil, nil, false},
-		{"budget non-positive → false", 5000, big, nil, nil, false}, // 5000-1000-8000 < 0
+		{"budget non-positive → backpressure", 5000, big, nil, nil, true}, // 5000-1000-8000 <= 0 → always at-limit
 		{"well under budget", 1_000_000, "tiny", nil, nil, false},
 		{"over budget via system prompt", 10_000, big, nil, nil, true}, // budget 1000 tok; 1250 ≥
 		{"over budget via docs+messages", 10_000, "", []llm.Document{{Content: big}}, []llm.Message{{Content: big}}, true},
+		// Images/PDFs the char count ignores must still trip the check. Budget
+		// for window 20k, maxTokens 1k = 20000-1000-8000 = 11000 tokens.
+		{"images push over budget", 20_000, "tiny", []llm.Document{{Images: make([]llm.Image, 8)}}, nil, true}, // 8×1500 = 12000 ≥ 11000
+		{"few images stay under budget", 20_000, "tiny", []llm.Document{{Images: make([]llm.Image, 2)}}, nil, false},
+		{"pdf pages push over budget", 20_000, "tiny", []llm.Document{{PDFs: []llm.PDF{{Data: make([]byte, 8*pdfBytesPerPage)}}}}, nil, true}, // 8 pages × 1500 = 12000
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -45,7 +45,7 @@ var nexusSearchTool = llm.Tool{
 			},
 			"sources": map[string]any{
 				"type":        "array",
-				"items":       map[string]any{"type": "string", "enum": []string{"filesystem", "imap", "telegram", "paperless"}},
+				"items":       map[string]any{"type": "string", "enum": []string{"filesystem", "imap", "telegram", "paperless", "ical"}},
 				"description": "Optional list of source types to restrict the search to.",
 			},
 			"date_from": map[string]any{
@@ -382,33 +382,19 @@ func openAttachmentResultText(attached, title, content string) string {
 }
 
 // renderToolResultDocuments formats the search hits as <document> blocks
-// the LLM can read. Mirrors the shape used by the Ollama adapter's
-// initial-context block (internal/llm/ollama/ollama.go buildDocumentsBlock)
-// so models trained on either format get a familiar prompt structure.
-// The leading line is a short prose summary so the model can decide
-// whether the call helped before reading the bodies.
+// the LLM can read. Delegates to llm.RenderDocumentsBlock so the block shape
+// stays identical to the initial-context block AND every attribute value
+// (id/source/title/date) is HTML-escaped — an email subject or filename
+// containing a quote or angle bracket can't break out of an attribute and
+// corrupt the tool_result the model reads. The leading line is a short prose
+// summary so the model can decide whether the call helped before reading the
+// bodies.
 func renderToolResultDocuments(query string, docs []llm.Document) string {
 	if len(docs) == 0 {
 		return fmt.Sprintf("No results for %q.", query)
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Found %d result(s) for %q.\n", len(docs), query)
-	for i, d := range docs {
-		fmt.Fprintf(&b, "\n<document index=\"%d\" id=\"%s\"", i+1, d.ID)
-		if d.Source != "" {
-			fmt.Fprintf(&b, " source=\"%s\"", d.Source)
-		}
-		if d.Title != "" {
-			fmt.Fprintf(&b, " title=\"%s\"", d.Title)
-		}
-		if d.Date != "" {
-			fmt.Fprintf(&b, " date=\"%s\"", d.Date)
-		}
-		b.WriteString(">\n")
-		b.WriteString(d.Content)
-		b.WriteString("\n</document>\n")
-	}
-	return b.String()
+	return fmt.Sprintf("Found %d result(s) for %q.\n", len(docs), query) +
+		llm.RenderDocumentsBlock(docs)
 }
 
 // appendUniqueDocs extends `dst` with `src` entries whose DocID isn't

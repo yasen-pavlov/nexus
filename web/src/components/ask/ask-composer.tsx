@@ -76,8 +76,8 @@ export function AskComposer({
   };
 
   const placeholder = isFirstTurn
-    ? "Ask a follow-up…"
-    : "Ask anything — your email, Telegram, files…";
+    ? "Ask anything — your email, Telegram, files…"
+    : "Ask a follow-up…";
   const hasContent = value.trim().length > 0;
   const showHint = hasContent && !isStreaming;
 
@@ -94,7 +94,11 @@ export function AskComposer({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKey}
         placeholder={placeholder}
-        disabled={isStreaming}
+        // readOnly (not disabled) while streaming: a disabled textarea loses
+        // focus and receives no key events, so the Esc-to-cancel branch in
+        // handleKey could never fire. readOnly keeps focus + keydown while
+        // still blocking edits; opacity communicates the frozen state.
+        readOnly={isStreaming}
         rows={2}
         className={cn(
           "block w-full resize-none rounded-t-xl bg-transparent px-4 pt-3 pb-2 text-[15px] leading-[22px] tracking-[-0.005em] outline-none",

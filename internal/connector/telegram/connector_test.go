@@ -29,6 +29,7 @@ type mockTelegramAPI struct {
 	dialogsErr  error
 	msgList     []tg.MessagesMessagesClass // returned in order
 	msgIdx      int
+	historyErr  error // when set, MessagesGetHistory fails (e.g. CHANNEL_PRIVATE)
 }
 
 // stubDownloader is a mediaDownloader that returns a fixed payload
@@ -123,6 +124,9 @@ func (m *mockTelegramAPI) MessagesGetDialogs(_ context.Context, _ *tg.MessagesGe
 }
 
 func (m *mockTelegramAPI) MessagesGetHistory(_ context.Context, _ *tg.MessagesGetHistoryRequest) (tg.MessagesMessagesClass, error) {
+	if m.historyErr != nil {
+		return nil, m.historyErr
+	}
 	if m.msgIdx < len(m.msgList) {
 		result := m.msgList[m.msgIdx]
 		m.msgIdx++
@@ -420,6 +424,71 @@ func TestDBSessionStorage(t *testing.T) {
 
 	if !s.HasSession(context.Background()) {
 		t.Error("expected session to exist")
+	}
+}
+
+// TestStreamGroupChats_SurfacesPerChatError pins the fix for silently-dropped
+// per-chat failures: when one chat's pagination fails, streamGroupChats sets
+// *failed (blocking the cursor) AND emits a FetchItem carrying the error so the
+// pipeline logs it and counts it in the SyncReport — instead of the run
+// reporting a clean success.
+func TestStreamGroupChats_SurfacesPerChatError(t *testing.T) {
+	c := &Connector{name: "tg"}
+	api := &mockTelegramAPI{historyErr: fmt.Errorf("CHANNEL_PRIVATE")}
+	chats := []tg.ChatClass{&tg.Chat{ID: 123, Title: "Restricted"}}
+
+	items := make(chan model.FetchItem, 16)
+	var failed bool
+	var total int64
+	err := c.streamGroupChats(context.Background(), api, &stubDownloader{}, chats, map[int64]*tg.User{}, 0, 0, &total, &failed, items)
+	close(items)
+	if err != nil {
+		t.Fatalf("streamGroupChats returned a terminal error, want nil (per-chat best-effort): %v", err)
+	}
+	if !failed {
+		t.Error("expected *failed to be set so the cursor doesn't advance past the failed chat")
+	}
+	var gotErr error
+	for it := range items {
+		if it.Err != nil {
+			gotErr = it.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected a FetchItem carrying the per-chat error")
+	}
+	if !strings.Contains(gotErr.Error(), "CHANNEL_PRIVATE") || !strings.Contains(gotErr.Error(), "Restricted") {
+		t.Errorf("error = %v, want it to name the chat and underlying cause", gotErr)
+	}
+}
+
+// TestStreamPrivateChats_SurfacesPerChatError is the DM-side mirror of the
+// group-chat test: a failing private chat sets *failed and emits a FetchItem
+// carrying the error rather than silently succeeding.
+func TestStreamPrivateChats_SurfacesPerChatError(t *testing.T) {
+	c := &Connector{name: "tg"}
+	api := &mockTelegramAPI{historyErr: fmt.Errorf("USER_BANNED")}
+	users := []tg.UserClass{&tg.User{ID: 42, FirstName: "Dana", AccessHash: 99}}
+
+	items := make(chan model.FetchItem, 16)
+	var failed bool
+	var total int64
+	err := c.streamPrivateChats(context.Background(), api, &stubDownloader{}, users, buildUserMap(users), 0, 0, &total, &failed, items)
+	close(items)
+	if err != nil {
+		t.Fatalf("streamPrivateChats returned a terminal error, want nil: %v", err)
+	}
+	if !failed {
+		t.Error("expected *failed to be set for a failed DM")
+	}
+	var gotErr error
+	for it := range items {
+		if it.Err != nil {
+			gotErr = it.Err
+		}
+	}
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "USER_BANNED") {
+		t.Errorf("error = %v, want the per-chat error surfaced", gotErr)
 	}
 }
 

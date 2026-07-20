@@ -17,6 +17,7 @@ var metadataFields = map[string][]string{
 	"paperless":  {"original_file_name", "correspondent", "tags"},
 	"filesystem": {"path"},
 	"telegram":   {"chat_name"},
+	"ical":       {"calendar", "location", "organizer", "attendees"},
 }
 
 // ApplyMetadataBonus adds a score bonus when query terms match structured

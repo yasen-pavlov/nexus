@@ -237,9 +237,9 @@ export function EmailCardBody({
                   </span>
                 </button>
               ))
-            : attachments.map((name) => (
+            : attachments.map((name, index) => (
                 <span
-                  key={name}
+                  key={`${name}-${index}`}
                   title={name}
                   style={{
                     backgroundColor:

@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { clearToken } from "./api-client";
+import { authKeys } from "./query-keys";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -15,7 +16,7 @@ export const queryClient = new QueryClient({
       onError: (error) => {
         if (error instanceof Error && error.message === "Unauthorized") {
           clearToken();
-          queryClient.setQueryData(["auth", "me"], null);
+          queryClient.setQueryData(authKeys.me(), null);
         }
       },
     },

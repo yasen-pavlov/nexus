@@ -96,6 +96,29 @@ export function ConversationView({
     return () => obs.disconnect();
   }, [observersReady, hasNewer, isFetchingNewer, onNewerIntersect]);
 
+  // When the loaded window renders zero visible rows but the source still
+  // reports more messages either side (e.g. an all-stickers/polls Telegram page
+  // that ConversationPage filters down to nothing), the positioning effect
+  // below bails on rows.length === 0 and never arms the observers — pagination
+  // would dead-end with hasOlder/hasNewer stuck true. Pull the adjacent page
+  // directly (prefer older) so we walk past the empty window until real content
+  // appears or we reach an end.
+  useEffect(() => {
+    if (isLoadingInitial || rows.length > 0) return;
+    if (isFetchingOlder || isFetchingNewer) return;
+    if (hasOlder) onOlderIntersect?.();
+    else if (hasNewer) onNewerIntersect?.();
+  }, [
+    isLoadingInitial,
+    rows.length,
+    hasOlder,
+    hasNewer,
+    isFetchingOlder,
+    isFetchingNewer,
+    onOlderIntersect,
+    onNewerIntersect,
+  ]);
+
   useEffect(() => {
     if (hasPositionedRef.current) return;
     if (isLoadingInitial || rows.length === 0) return;

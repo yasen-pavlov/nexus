@@ -63,7 +63,7 @@ OpenAI, Voyage, or Cohere — the same UI, just a different provider.
 | Connector      | What it indexes                                                                | Incremental sync                |
 | -------------- | ------------------------------------------------------------------------------ | ------------------------------- |
 | Filesystem     | Any directory tree. Text, markdown, PDF, Office docs, images (OCR via Tika).   | Mtime + content hash            |
-| IMAP           | Any IMAP mailbox (iCloud, Gmail app passwords, Fastmail…). Bodies are cleaned — tracking redirects and RFC 3676 signatures are dropped before embedding. | `UIDNEXT` + UID cursor          |
+| IMAP           | Any IMAP mailbox (iCloud, Gmail app passwords, Fastmail…). Bodies are cleaned — tracking redirects and RFC 3676 signatures are dropped before embedding. | UIDVALIDITY + CONDSTORE HIGHESTMODSEQ delta |
 | Telegram       | Private chats, groups, and channels you're a member of. Messages are grouped into 30-minute conversation windows for richer embeddings. Attachments download to the local binary cache. | Last seen message ID per chat   |
 | Paperless-ngx  | Scanned documents and OCR text from your Paperless instance.                   | `modified__gt` timestamp cursor |
 | iCal / CalDAV  | Calendar events from an iCloud (or other CalDAV) calendar, indexed for search. | Per-calendar sync token         |
@@ -187,7 +187,7 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 | `NEXUS_PORT`                | no       | `8080`                                                                    | HTTP port the app listens on.                                         |
 | `NEXUS_LOG_LEVEL`           | no       | `info`                                                                    | `info` or `debug`.                                                    |
 | `NEXUS_CORS_ORIGINS`        | no       | `http://localhost:5173`                                                   | Comma-separated allowed origins.                                      |
-| `NEXUS_BINARY_STORE_PATH`   | no       | `/var/lib/nexus/binaries` (compose) / temp dir (local)                    | On-disk cache for Telegram/IMAP attachments and file binaries.        |
+| `NEXUS_BINARY_STORE_PATH`   | no       | `/var/lib/nexus/binaries` (compose) / `data/binaries` (local, relative to CWD) | On-disk cache for Telegram/IMAP attachments and file binaries.        |
 | `NEXUS_FS_ROOT_PATH`        | no       | —                                                                         | On first boot, seeds a shared Filesystem connector at this path.      |
 | `NEXUS_FS_PATTERNS`         | no       | `*.txt,*.md`                                                              | Comma-separated glob patterns for the seeded Filesystem connector.    |
 | `NEXUS_EMBEDDING_PROVIDER`  | no       | (configured via UI)                                                       | `ollama` \| `openai` \| `voyage` \| `cohere` — forces the provider.   |
@@ -379,7 +379,7 @@ cp .env.example .env
 # fill in NEXUS_ENCRYPTION_KEY / NEXUS_JWT_SECRET as above
 
 make dev                    # starts Postgres/OpenSearch/Tika in Docker, runs the Go app locally
-cd web && npm install && npm run dev   # starts Vite dev server at :5173 (proxies /api to :8080)
+cd web && npm install && npm run dev   # starts Vite dev server at :5174 (proxies /api to :8080)
 ```
 
 The bundled Makefile also has:
@@ -419,7 +419,7 @@ run needs no setup beyond a working Docker socket. See
                        │  │  Connectors                    │  │
                        │  │  • Filesystem  • IMAP          │  │     ┌──────────────┐
                        │  │  • Telegram    • Paperless-ngx │  │ ───▶│ OpenSearch   │
-                       │  │                                │  │     │ (BM25 + kNN) │
+                       │  │  • iCal / CalDAV               │  │     │ (BM25 + kNN) │
                        │  │  → chunk → embed → index       │  │     └──────────────┘
                        │  └────────────────────────────────┘  │
                        │                                      │     ┌──────────────┐
@@ -435,7 +435,7 @@ run needs no setup beyond a working Docker socket. See
 
 - `cmd/nexus/` — entry point, wiring, graceful shutdown.
 - `internal/api/` — HTTP handlers, connector manager, static file serving.
-- `internal/connector/` — connector interface + Filesystem / IMAP / Telegram / Paperless-ngx implementations.
+- `internal/connector/` — connector interface + Filesystem / IMAP / Telegram / Paperless-ngx / iCal (CalDAV) implementations.
 - `internal/pipeline/` — fetch → extract → chunk → embed → index.
 - `internal/search/` — OpenSearch client, hybrid retrieval, highlighting.
 - `internal/llm/` — provider adapters (Anthropic / OpenAI / Ollama) + the model catalog and registry.

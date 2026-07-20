@@ -147,10 +147,10 @@ describe("ChatThread", () => {
   it("renders the composer with an empty (first-turn) thread", async () => {
     setChat({ isPending: false, isError: false, data: detail([]) });
     renderWithRouter(<ChatThread chatID="chat-1" />);
-    // Empty thread → first-turn composer ("Ask a follow-up…" placeholder).
+    // Empty thread → first-turn composer ("Ask anything…" placeholder).
     await waitFor(() =>
       expect(
-        screen.getByPlaceholderText(/Ask a follow-up/),
+        screen.getByPlaceholderText(/Ask anything/),
       ).toBeInTheDocument(),
     );
     // No persisted turns: nothing from the message list rendered.

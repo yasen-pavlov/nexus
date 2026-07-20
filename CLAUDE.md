@@ -83,7 +83,7 @@ make rag-eval            # Offline RAG quality eval → rag-eval-report.md
 ### Running locally
 ```bash
 make dev    # starts Postgres + OpenSearch + Go app with testdata/
-cd web && npm run dev   # starts Vite dev server at localhost:5173 (proxies /api to :8080)
+cd web && npm run dev   # starts Vite dev server at localhost:5174 (proxies /api to :8080)
 ```
 
 ### Docker
@@ -135,6 +135,7 @@ All via environment variables with `NEXUS_` prefix:
 - `NEXUS_OPENSEARCH_CA_FILE` — PEM CA bundle to verify the OpenSearch server cert; `NEXUS_OPENSEARCH_INSECURE_SKIP_VERIFY` (bool, default false) skips TLS verification for demo certs over a private bridge. Wired in `internal/search/search.go` `buildClientConfig` via a custom TLS transport.
 - `NEXUS_LOG_LEVEL` (default: info)
 - `NEXUS_TIKA_URL` (default: http://localhost:9998) — Apache Tika endpoint for rich binary extraction / OCR
+- `NEXUS_TIKA_TIMEOUT` (default: 5m) — per-request timeout for Tika extract calls (Go duration, e.g. `10m`). Generous by default because OCR of multi-page scanned PDFs runs several seconds per page; raise it on slow hardware. The `Available()` health probe uses a fixed short timeout regardless.
 - `NEXUS_EMBEDDING_PROVIDER` — `ollama`, `openai`, `voyage`, `cohere` (empty = disabled)
 - `NEXUS_EMBEDDING_MODEL` — model name (provider-specific defaults apply)
 - `NEXUS_EMBEDDING_API_KEY` — API key for openai/voyage/cohere
@@ -162,4 +163,5 @@ All via environment variables with `NEXUS_` prefix:
 - Search results are scoped per request: a user only sees chunks where `owner_id` matches them OR `shared = true`. The seeded filesystem connector (`NEXUS_FS_ROOT_PATH`) is always created as shared.
 - Connector handlers (`Get`/`Update`/`Delete`/`TriggerSync`/`DeleteCursor`/`StreamProgress`) all enforce ownership: a regular user can only modify their own connectors; admins can modify anything; users can read shared connectors but not mutate them. The same ownership check covers the connector-scoped routes: avatar fetch (`/api/connectors/{id}/avatars/{external_id}`), sync-run history (`/api/connectors/{id}/runs`), and the Telegram auth flow (`/api/connectors/{id}/auth/start`, `/api/connectors/{id}/auth/code`).
 - Chats are owned by a user (`chats.user_id`); ownership is enforced for ALL chat operations including read. Admins are NOT exempt — admins cannot view or modify other users' chats. Non-owners receive 404 (not 403) on `/api/chats/:id*` to avoid leaking chat existence. The RAG orchestrator scopes retrieval by the chat owner's UUID, so even tool-issued searches stay inside the user's permitted corpus.
-- Admin-only routes: `/api/settings/*`, `/api/reindex`, `/api/sync/cursors`, `/api/users/*`, `/api/admin/stats`, `/api/storage/stats`, `/api/storage/cache`, `/api/storage/cache/{id}`.
+- Admin-only routes: `/api/settings/*`, `/api/reindex`, `/api/sync/cursors`, `/api/admin/stats`, `/api/storage/stats`, `/api/storage/cache`, `/api/storage/cache/{id}`. User management (`POST`/`GET`/`DELETE /api/users`) is admin-only too, but `PUT /api/users/{id}/password` is **admin-or-self**: any authenticated user can change their own password. Its contract is dual — self-rotation returns `200` + a fresh `AuthResponse` (the old JWT is revoked, so the caller needs the new token), while an admin changing another user's password returns `204`.
+- Personal access tokens (`GET`/`POST /api/tokens`, `DELETE /api/tokens/{id}`) are self-service for any authenticated user, but the group is gated by `auth.RequireInteractiveSession`: only a real interactive JWT session can mint or revoke tokens. A leaked PAT therefore cannot be used to create or delete tokens (nor to change a password, which is under the same interactive-session gate) — it can only search. PATs are also exempt from `token_version` revocation, which is why these privilege-escalation paths are closed to them.

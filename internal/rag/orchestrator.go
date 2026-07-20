@@ -764,6 +764,17 @@ func (l *roundLoop) run(ctx context.Context) {
 		// some providers (notably Ollama's loose done_reason mapping) can
 		// report tool_use with nothing to dispatch. Without this hard ceiling
 		// the loop would spin forever, so we answer with whatever text exists.
+		// A cancelled stop (adapter emitted EventDone{StopCancelled} because
+		// the user hit Stop) must NOT go through finalizeAnswer — that path
+		// writes the misleading "I wasn't able to produce an answer"
+		// placeholder. Route it through the same persistAndDone("cancelled")
+		// path the ctx.Done() branch uses so a cancelled turn deterministically
+		// persists whatever text streamed (empty if none), never the placeholder.
+		if res.stop == llm.StopCancelled {
+			st.persistAndDone("cancelled", "", l.isFirst, st.in.Content)
+			return
+		}
+
 		if res.stop != llm.StopToolUse || toolRound >= l.settings.MaxToolRounds {
 			stop := res.stop
 			if stop == llm.StopToolUse {
@@ -786,6 +797,20 @@ func (l *roundLoop) run(ctx context.Context) {
 // doesn't capture.
 const contextTokenMargin = 8000
 
+// Multi-modal payloads cost far more tokens than their (dropped) text does, so
+// the char-count estimate would miss them entirely. These coarse per-attachment
+// figures approximate the vision/native-PDF billing so a media-heavy turn still
+// trips the backpressure before a provider 400.
+const (
+	// estTokensPerImage is a rough token cost for one attached image.
+	estTokensPerImage = 1500
+	// pdfBytesPerPage estimates a PDF's page count from its byte length when no
+	// page metadata is available (~50 KB/page average).
+	pdfBytesPerPage = 50 << 10
+	// estTokensPerPDFPage approximates one rendered/OCR'd PDF page's token cost.
+	estTokensPerPDFPage = 1500
+)
+
 // contextNearLimit estimates, with a coarse ~4-chars-per-token heuristic,
 // whether the cumulative system prompt + documents + conversation are close
 // enough to the model's context window that adding another tool round risks
@@ -797,21 +822,37 @@ func (l *roundLoop) contextNearLimit() bool {
 
 // contextNearLimit is the pure core of the budget check, split out so it's
 // unit-testable without constructing a full turn. Returns false when the
-// window is unknown (treat as ample).
+// window is unknown (treat as ample), but true when the usable budget is
+// non-positive (a tiny window always needs backpressure).
 func contextNearLimit(window, maxTokens int, systemPrompt string, docs []llm.Document, msgs []llm.Message) bool {
 	if window <= 0 {
 		return false
 	}
 	chars := len(systemPrompt)
+	mediaTokens := 0
 	for i := range docs {
 		chars += len(docs[i].Title) + len(docs[i].Content)
+		mediaTokens += len(docs[i].Images) * estTokensPerImage
+		for j := range docs[i].PDFs {
+			pages := len(docs[i].PDFs[j].Data) / pdfBytesPerPage
+			if pages < 1 {
+				pages = 1
+			}
+			mediaTokens += pages * estTokensPerPDFPage
+		}
 	}
 	for i := range msgs {
 		chars += len(msgs[i].Content)
 	}
-	estTokens := chars / 4
+	estTokens := chars/4 + mediaTokens
 	budget := window - maxTokens - contextTokenMargin
-	return budget > 0 && estTokens >= budget
+	// A window too small to hold the reserved margin (e.g. an 8k Ollama extra
+	// with a 4k MaxTokens) yields budget <= 0; those are exactly the windows
+	// that must always withhold further tool rounds, so treat them as at-limit.
+	if budget <= 0 {
+		return true
+	}
+	return estTokens >= budget
 }
 
 // startRound builds the per-round tools + parser-free request and starts

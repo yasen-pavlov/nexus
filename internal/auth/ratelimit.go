@@ -27,8 +27,9 @@ type LoginRateLimiter struct {
 	window      time.Duration
 	lockout     time.Duration
 
-	mu      sync.Mutex
-	buckets map[string]*loginBucket
+	mu        sync.Mutex
+	buckets   map[string]*loginBucket
+	lastSweep time.Time
 }
 
 type loginBucket struct {
@@ -106,6 +107,12 @@ func (l *LoginRateLimiter) Allow(username, ip string) (allowed bool, retryAfter 
 		b.lockedUntil = now.Add(l.lockout)
 		return false, l.lockout
 	}
+	// Prune the encountered bucket if it has no live attempts left and its
+	// lockout has expired (we already returned above when still locked) — a
+	// tripped bucket that has fully cooled down leaves no state behind.
+	if len(live) == 0 {
+		delete(l.buckets, key)
+	}
 	return true, 0
 }
 
@@ -119,12 +126,21 @@ func (l *LoginRateLimiter) RecordFailure(username, ip string) {
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	cutoff := now.Add(-l.window)
+	// Credential-stuffing sprays distinct (username, ip) keys, each of which is
+	// allocated here and — unlike the success path — never revisited to be
+	// deleted. Sweep the whole map (at most once per window, so the cost is
+	// amortised) dropping buckets whose attempts have all aged out and whose
+	// lockout has expired, bounding the map to roughly the active-window keys.
+	if now.Sub(l.lastSweep) >= l.window {
+		l.pruneStaleLocked(now, cutoff)
+		l.lastSweep = now
+	}
 	b, ok := l.buckets[key]
 	if !ok {
 		b = &loginBucket{}
 		l.buckets[key] = b
 	}
-	cutoff := now.Add(-l.window)
 	live := b.attempts[:0]
 	for _, t := range b.attempts {
 		if t.After(cutoff) {
@@ -135,6 +151,28 @@ func (l *LoginRateLimiter) RecordFailure(username, ip string) {
 	b.attempts = live
 	if len(live) >= l.maxAttempts {
 		b.lockedUntil = now.Add(l.lockout)
+	}
+}
+
+// pruneStaleLocked deletes every bucket with no attempts left inside the
+// window and an expired lockout. The caller must hold l.mu and pass the
+// current time plus the window cutoff. Buckets still serving a lockout or
+// holding a live attempt are kept.
+func (l *LoginRateLimiter) pruneStaleLocked(now, cutoff time.Time) {
+	for k, b := range l.buckets {
+		if now.Before(b.lockedUntil) {
+			continue
+		}
+		live := false
+		for _, t := range b.attempts {
+			if t.After(cutoff) {
+				live = true
+				break
+			}
+		}
+		if !live {
+			delete(l.buckets, k)
+		}
 	}
 }
 

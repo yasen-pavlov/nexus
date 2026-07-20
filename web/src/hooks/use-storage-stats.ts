@@ -8,20 +8,12 @@ import { formatBytes } from "@/lib/format";
 
 /**
  * Issues a cache-wipe DELETE and unwraps the `{ data }` envelope. Both wipe
- * mutations (whole cache vs. single connector) differ only in their URL, so the
- * hand-rolled fetch + auth header + error mapping lives here once. A 401 maps to
- * "Unauthorized"; any other non-2xx surfaces the server's error body.
+ * mutations (whole cache vs. single connector) differ only in their URL.
+ * Routes through fetchAPI so a 401 clears the token + redirects to /login
+ * (like every other authed call) and the `{error}` envelope is surfaced.
  */
-async function wipeCache(url: string): Promise<StorageWipeResult> {
-  const token = localStorage.getItem("nexus_jwt");
-  const res = await fetch(url, {
-    method: "DELETE",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  if (res.status === 401) throw new Error("Unauthorized");
-  const body = await res.json();
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return body.data as StorageWipeResult;
+function wipeCache(url: string): Promise<StorageWipeResult> {
+  return fetchAPI<StorageWipeResult>(url, { method: "DELETE" });
 }
 
 /**

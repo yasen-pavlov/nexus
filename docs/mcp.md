@@ -12,12 +12,24 @@ top of it.
 
 ## 1. Install `nexus-cli`
 
-Until prebuilt packages ship, build from source and put the binary on your `PATH`:
+Each release publishes prebuilt binaries; pick whichever channel fits your
+platform, then confirm the binary is on your `PATH`:
 
 ```bash
-make build-cli            # -> bin/nexus-cli
-go install ./cmd/nexus-cli   # or symlink bin/nexus-cli into a PATH dir
-command -v nexus-cli      # confirm
+# Homebrew (macOS / Linuxbrew)
+brew install yasen-pavlov/tap/nexus-cli
+
+# Arch (AUR)
+paru -S nexus-cli-bin            # or: yay -S nexus-cli-bin
+
+# Script (Linux / macOS)
+curl -fsSL https://raw.githubusercontent.com/yasen-pavlov/nexus/main/install.sh | sh
+
+# From source (Go toolchain)
+git clone https://github.com/yasen-pavlov/nexus
+cd nexus && make build-cli       # -> bin/nexus-cli  (or: go install ./cmd/nexus-cli)
+
+command -v nexus-cli             # confirm it resolves
 ```
 
 ## 2. Authenticate (once)

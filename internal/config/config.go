@@ -1,7 +1,11 @@
 // Package config handles application configuration loaded from environment variables.
 package config
 
-import "github.com/kelseyhightower/envconfig"
+import (
+	"time"
+
+	"github.com/kelseyhightower/envconfig"
+)
 
 type Config struct {
 	Port          int    `envconfig:"PORT" default:"8080"`
@@ -20,6 +24,10 @@ type Config struct {
 
 	// Content extraction
 	TikaURL string `envconfig:"TIKA_URL" default:"http://localhost:9998"`
+	// TikaTimeout bounds a single Tika extract request. OCR of multi-page
+	// scanned PDFs can take minutes, so the default is generous; raise it on
+	// slow homelab hardware. Accepts Go durations (e.g. "10m", "300s").
+	TikaTimeout time.Duration `envconfig:"TIKA_TIMEOUT" default:"5m"`
 
 	// Embedding
 	EmbeddingProvider string `envconfig:"EMBEDDING_PROVIDER"` // ollama, openai, voyage, cohere (empty = disabled)

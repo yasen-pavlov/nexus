@@ -48,6 +48,25 @@ function parseWeekly(expr: string): { hour: number; minute: number; days: number
   };
 }
 
+// The backend parses schedules with robfig/cron in exactly 5-field mode
+// (minute hour dom month dow) and rejects @descriptors — see validateSchedule
+// in internal/api/connector_handlers.go. cronstrue + cron-parser happily accept
+// 6-field (seconds-granularity) expressions and @daily/@hourly keywords, which
+// would preview as valid here and then 400 on save. Mirror the backend grammar
+// so the preview never green-lights an expression the server will reject.
+function backendCronError(expr: string): string | null {
+  const trimmed = expr.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("@")) {
+    return "@keywords (e.g. @daily) aren't supported — use 5 fields: minute hour dom month dow.";
+  }
+  const fieldCount = trimmed.split(/\s+/).length;
+  if (fieldCount !== 5) {
+    return `Expected 5 fields (minute hour dom month dow); got ${fieldCount}.`;
+  }
+  return null;
+}
+
 export interface ScheduleFieldProps {
   value: string;
   onChange: (next: string) => void;
@@ -85,23 +104,26 @@ export function ScheduleField({ value, onChange, className }: Readonly<ScheduleF
   const daily = parseDaily(value);
   const weekly = parseWeekly(value);
 
+  const cronError = useMemo(() => backendCronError(value), [value]);
+
   const description = useMemo(() => {
     if (!value.trim()) return "Manual trigger only";
+    if (cronError) return "Invalid cron expression";
     try {
       return cronstrue.toString(value, { use24HourTimeFormat: true });
     } catch {
       return "Invalid cron expression";
     }
-  }, [value]);
+  }, [value, cronError]);
 
   const nextRun = useMemo<Date | null>(() => {
-    if (!value.trim()) return null;
+    if (!value.trim() || cronError) return null;
     try {
       return CronExpressionParser.parse(value).next().toDate();
     } catch {
       return null;
     }
-  }, [value]);
+  }, [value, cronError]);
 
   return (
     <div className={cn("flex flex-col gap-3", className)}>
@@ -192,7 +214,13 @@ export function ScheduleField({ value, onChange, className }: Readonly<ScheduleF
               placeholder="0 */4 * * *"
               spellCheck={false}
               className="font-mono text-[13px]"
+              aria-invalid={cronError ? true : undefined}
             />
+            {cronError && (
+              <p role="alert" className="text-[12px] leading-[1.5] text-destructive">
+                {cronError}
+              </p>
+            )}
           </div>
         )}
       </div>

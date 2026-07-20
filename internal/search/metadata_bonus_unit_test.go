@@ -79,6 +79,23 @@ func TestCalcMetadataBonus_NilMetadata(t *testing.T) {
 	}
 }
 
+// TestCalcMetadataBonus_IcalCalendarMatch covers the ical entry — the
+// calendar NAME is metadata-only (the reranker never sees it), so a query
+// matching it must earn the metadata bonus.
+func TestCalcMetadataBonus_IcalCalendarMatch(t *testing.T) {
+	doc := &model.DocumentHit{Document: model.Document{
+		SourceType: "ical",
+		Metadata: map[string]any{
+			"calendar":  "Family",
+			"organizer": "dentist@example.com",
+			"attendees": []any{"alice@example.com"},
+		},
+	}}
+	if got := calcMetadataBonus(doc, []string{"family"}); got <= 0 {
+		t.Errorf("ical calendar match bonus = %v, want > 0", got)
+	}
+}
+
 // TestCalcMetadataBonus_UnknownSourceTypeReturnsZero covers the
 // branch where metadataFields has no entry for the doc's source
 // type — we don't know which fields to check, so we skip.

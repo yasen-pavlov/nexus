@@ -47,6 +47,13 @@ type SyncCursor struct {
 //     it onto the SyncJob so the UI can show "Syncing Archive…"
 //     instead of a bare N/M counter. Emit once when entering a
 //     new scope; an empty-string value clears the label.
+//   - Err: a non-fatal, per-unit failure (e.g. one Telegram chat's
+//     pagination failed) that must NOT abort the whole run but must
+//     still be observable. The pipeline logs it and bumps the
+//     SyncReport error count so a run with silently-failed sub-units
+//     isn't reported as a clean success. Distinct from the terminal
+//     error returned on the Fetch error channel, which aborts the run
+//     and gates deletion reconciliation.
 //
 // Deletion-reconciliation gating: pending deletions computed during
 // merge-diff are only flushed when the connector's error channel
@@ -60,4 +67,5 @@ type FetchItem struct {
 	Checkpoint          *SyncCursor
 	EstimatedTotal      *int64
 	Scope               *string
+	Err                 error
 }

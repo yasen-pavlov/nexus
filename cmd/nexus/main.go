@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // embed the IANA tz database so TZID-tagged calendar times resolve without OS tzdata (the Alpine image has none)
@@ -44,6 +45,7 @@ import (
 	"github.com/muty/nexus/internal/syncruns"
 	"github.com/muty/nexus/migrations"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
@@ -230,13 +232,33 @@ func run() error {
 	return serve(ctx, cancel, cfg.Port, router, sched, syncJobs, log)
 }
 
-// newLogger builds the zap logger matching the configured log level.
+// newLogger builds the zap logger for the configured NEXUS_LOG_LEVEL. "debug"
+// keeps the human-friendly development encoder; every other recognised level
+// (info/warn/error/dpanic/panic/fatal) is parsed via zapcore.ParseLevel and
+// applied to the production (JSON) config, so NEXUS_LOG_LEVEL=warn actually
+// quiets the instance. An unrecognised value logs a warning to stderr and
+// falls back to info, and constructor errors are surfaced rather than
+// silently swallowed.
 func newLogger(level string) *zap.Logger {
-	var log *zap.Logger
-	if level == "debug" {
-		log, _ = zap.NewDevelopment()
-	} else {
-		log, _ = zap.NewProduction()
+	if strings.EqualFold(level, "debug") {
+		log, err := zap.NewDevelopment()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "zap: build development logger: %v; falling back to no-op\n", err)
+			return zap.NewNop()
+		}
+		return log
+	}
+
+	cfg := zap.NewProductionConfig()
+	if lvl, err := zapcore.ParseLevel(level); err == nil {
+		cfg.Level = zap.NewAtomicLevelAt(lvl)
+	} else if level != "" {
+		fmt.Fprintf(os.Stderr, "unrecognised NEXUS_LOG_LEVEL %q; falling back to info\n", level)
+	}
+	log, err := cfg.Build()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "zap: build production logger: %v; falling back to no-op\n", err)
+		return zap.NewNop()
 	}
 	return log
 }
@@ -325,7 +347,7 @@ func setupSearchStack(ctx context.Context, cfg *config.Config, st *store.Store, 
 		log.Warn("search index mapping is out of date; run POST /api/reindex to rebuild with per-language analyzers")
 	}
 
-	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages)
+	extractorRegistry := extractor.NewRegistry(cfg.TikaURL, languages, extractor.WithTimeout(cfg.TikaTimeout))
 
 	binaryStore, err := storage.New(cfg.BinaryStorePath, st, log)
 	if err != nil {

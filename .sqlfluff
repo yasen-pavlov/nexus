@@ -51,7 +51,9 @@ extended_capitalisation_policy = lower
 [sqlfluff:rules:capitalisation.functions]
 extended_capitalisation_policy = lower
 
-# Two-space indents match the style of our hand-written migrations.
+# Four-space indents match the dominant style of our hand-written migrations
+# (LT02 is excluded above, so this only sets the width sqlfluff assumes for any
+# indent-aware rule, not an enforced policy).
 [sqlfluff:indentation]
 tab_space_size = 4
 indent_unit = space

@@ -49,7 +49,14 @@ export function ICalFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canDiscover = Boolean(username) && Boolean(password) && !loading;
+  // In edit mode the password field is prefilled with the masked value from
+  // GET ("****" + last 4, crypto/sensitive.go MaskConfig). Discovery POSTs the
+  // raw config to /api/connectors/discover, which has no stored secret to
+  // restore the mask from — so sending "****xxxx" guarantees a CalDAV auth
+  // failure. Treat the untouched mask as "no usable password yet".
+  const passwordMasked = Boolean(password?.startsWith("****"));
+  const canDiscover =
+    Boolean(username) && Boolean(password) && !passwordMasked && !loading;
 
   const discover = async () => {
     setLoading(true);
@@ -155,6 +162,13 @@ export function ICalFields({ mode }: Readonly<{ mode: "create" | "edit" }>) {
             {discovered ? "Re-discover" : "Discover calendars"}
           </Button>
         </div>
+
+        {passwordMasked && (
+          <p className="text-[12px] leading-[1.5] text-muted-foreground">
+            Re-enter your app-specific password to re-discover — the stored one
+            is masked and can&apos;t be reused here.
+          </p>
+        )}
 
         {error && <FieldError message={error} />}
 

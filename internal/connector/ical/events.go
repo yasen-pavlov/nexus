@@ -374,8 +374,11 @@ func (c *Connector) syncSinceKey() string {
 	return c.syncSince.Format("2006-01-02")
 }
 
-// newCursor builds a checkpoint cursor. When m is nil it carries only the
-// timestamp (a mid-run progress checkpoint); a non-nil m persists the manifest.
+// newCursor builds a checkpoint cursor carrying sync_since plus the ETag
+// manifest. Only emitted at end-of-run (or on a suspicious-shrink bail-out),
+// never mid-run — the ical cursor has no incremental position, so a
+// manifest-less checkpoint would only erase the persisted manifest. A nil m
+// is tolerated (carries just the timestamp) but no live caller passes one.
 func (c *Connector) newCursor(m manifest) *model.SyncCursor {
 	now := c.now()
 	data := map[string]any{"sync_since": c.syncSinceKey()}

@@ -28,6 +28,66 @@ func TestNexusSearchTool_SchemaShape(t *testing.T) {
 	if !ok || len(required) != 1 || required[0] != "query" {
 		t.Errorf("required = %v, want [query]", required)
 	}
+
+	// The sources enum must include every live source type so the model can
+	// target calendar (ical) the same way it targets email/telegram/etc.
+	sources, ok := props["sources"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing 'sources' property")
+	}
+	items, ok := sources["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("sources.items missing or wrong type")
+	}
+	enum, ok := items["enum"].([]string)
+	if !ok {
+		t.Fatalf("sources.items.enum missing or wrong type")
+	}
+	for _, want := range []string{"filesystem", "imap", "telegram", "paperless", "ical"} {
+		found := false
+		for _, e := range enum {
+			if e == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("sources enum %v missing %q", enum, want)
+		}
+	}
+}
+
+func TestRenderToolResultDocuments_EscapesAttributes(t *testing.T) {
+	docs := []llm.Document{{
+		ID:      "id-1",
+		Source:  "imap",
+		Title:   `Re: "urgent" <script>`,
+		Date:    "2026-01-01",
+		Content: "body text",
+	}}
+	got := renderToolResultDocuments("query", docs)
+
+	if !strings.Contains(got, "Found 1 result(s)") {
+		t.Errorf("missing per-query summary line:\n%s", got)
+	}
+	// The angle brackets and quotes in the title must be HTML-escaped so they
+	// can't break out of the attribute and corrupt the block structure.
+	if !strings.Contains(got, "title=\"Re: &quot;urgent&quot; &lt;script&gt;\"") {
+		t.Errorf("title attribute not escaped:\n%s", got)
+	}
+	if strings.Contains(got, `title="Re: "urgent"`) {
+		t.Errorf("raw unescaped quote leaked into attribute:\n%s", got)
+	}
+	// Content between the tags stays verbatim.
+	if !strings.Contains(got, "body text") {
+		t.Errorf("content missing:\n%s", got)
+	}
+}
+
+func TestRenderToolResultDocuments_NoResults(t *testing.T) {
+	if got := renderToolResultDocuments("q", nil); got != `No results for "q".` {
+		t.Errorf("got %q", got)
+	}
 }
 
 func TestBuildToolList_HonoursModelAndCap(t *testing.T) {

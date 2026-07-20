@@ -105,4 +105,47 @@ describe("ICalFields", () => {
     expect(screen.getByText(/2 calendars selected/i)).toBeInTheDocument();
     expect(screen.getByPlaceholderText("••••••••")).toBeInTheDocument();
   });
+
+  it("disables Discover while the prefilled password is masked and hints to re-enter it", () => {
+    // Edit mode prefills the password with the masked GET value ("****" +
+    // last 4). POSTing that to /discover guarantees a CalDAV auth failure, so
+    // Discover must stay disabled until the admin re-enters a real password.
+    render(
+      <Harness
+        mode="edit"
+        config={{
+          username: "me@icloud.com",
+          password: "****mnop",
+          calendars: [],
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /discover calendars/i }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/the stored one is masked/i),
+    ).toBeInTheDocument();
+  });
+
+  it("enables Discover once the masked password is replaced with a real one", async () => {
+    render(
+      <Harness
+        mode="edit"
+        config={{
+          username: "me@icloud.com",
+          password: "****mnop",
+          calendars: [],
+        }}
+      />,
+    );
+    const pw = screen.getByLabelText("App-specific password");
+    await userEvent.clear(pw);
+    await userEvent.type(pw, "abcd-efgh-ijkl-mnop");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /re-discover|discover calendars/i }),
+      ).toBeEnabled(),
+    );
+  });
 });

@@ -179,6 +179,13 @@ jobs:
     name: Sonar
     runs-on: ubuntu-latest
     needs: [backend, frontend]
+    # SONAR_TOKEN is a repository secret and is NOT injected into workflows
+    # triggered by pull_request events from forks — the scan would fail with an
+    # empty token, giving external contributors a guaranteed-red required check.
+    # Run Sonar only for pushes and for PRs originating from this repo.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     # SonarCloud scanner needs the full history + PR base ref so it can compute
     # "new code" vs. the base branch; shallow clones confuse the blame layer.
     steps:
@@ -207,7 +214,7 @@ jobs:
       - name: SonarQube Scan
         id: sonar1
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
@@ -220,7 +227,7 @@ jobs:
         id: sonar2
         if: steps.sonar1.outcome == 'failure'
         continue-on-error: true
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
@@ -231,7 +238,7 @@ jobs:
 
       - name: SonarQube Scan (retry 2)
         if: steps.sonar1.outcome == 'failure' && steps.sonar2.outcome == 'failure'
-        uses: SonarSource/sonarqube-scan-action@v8
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io

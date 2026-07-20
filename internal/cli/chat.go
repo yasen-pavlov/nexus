@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/muty/nexus/internal/cliclient"
@@ -58,7 +59,7 @@ type chatOptions struct {
 // question and streaming its grounded answer until the user leaves. Ctrl-C exits
 // (interrupting any in-flight answer) and Ctrl-D / EOF / /exit also leave.
 func runChat(ctx context.Context, client *cliclient.Client, in io.Reader, out, errOut io.Writer, opts chatOptions) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	interactive := isInteractive(in)
@@ -67,11 +68,15 @@ func runChat(ctx context.Context, client *cliclient.Client, in io.Reader, out, e
 		return err
 	}
 	turns := 0
-	var lastErr error // most recent per-turn error, for the exit code
-	// A brand-new chat left with no turns is empty clutter — delete it. Use a
-	// fresh context so a cancelled parent (Ctrl-C) still lets cleanup through.
+	submitted := false // any question sent to the server (even if interrupted mid-answer)
+	var lastErr error  // most recent per-turn error, for the exit code
+	// A brand-new chat the user never asked anything in is empty clutter —
+	// delete it. But once a question has been submitted the server has persisted
+	// it (and possibly a partial answer), so keep the chat even if the turn was
+	// interrupted by Ctrl-C. Use a fresh context so a cancelled parent still lets
+	// cleanup through.
 	defer func() {
-		if isNew && turns == 0 {
+		if isNew && !submitted {
 			delCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = client.DeleteChat(delCtx, chatID)
@@ -89,15 +94,15 @@ func runChat(ctx context.Context, client *cliclient.Client, in io.Reader, out, e
 		}
 		select {
 		case <-ctx.Done():
-			return endChat(errOut, chatID, turns, lastErr, isNew, interactive)
+			return endChat(errOut, chatID, turns, lastErr, isNew, submitted, interactive)
 		case line, ok := <-lines:
 			if !ok {
-				return endChat(errOut, chatID, turns, lastErr, isNew, interactive)
+				return endChat(errOut, chatID, turns, lastErr, isNew, submitted, interactive)
 			}
-			res, turnErr := handleLine(ctx, client, out, errOut, chatID, line, opts)
+			res, turnErr := handleLine(ctx, client, out, errOut, chatID, line, opts, &submitted)
 			switch res {
 			case turnDone:
-				return endChat(errOut, chatID, turns, lastErr, isNew, interactive)
+				return endChat(errOut, chatID, turns, lastErr, isNew, submitted, interactive)
 			case turnOK:
 				turns++
 				lastErr = nil
@@ -122,7 +127,7 @@ const (
 // streamed answer. A Ctrl-C mid-answer (ctx cancelled) ends the session; a
 // recoverable per-turn error is printed and the loop continues, and is returned
 // so the caller can reflect it in the exit code if no turn ever succeeds.
-func handleLine(ctx context.Context, client *cliclient.Client, out, errOut io.Writer, chatID, line string, opts chatOptions) (turnResult, error) {
+func handleLine(ctx context.Context, client *cliclient.Client, out, errOut io.Writer, chatID, line string, opts chatOptions, submitted *bool) (turnResult, error) {
 	q := strings.TrimSpace(line)
 	if q == "/exit" || q == "/quit" {
 		return turnDone, nil
@@ -130,6 +135,9 @@ func handleLine(ctx context.Context, client *cliclient.Client, out, errOut io.Wr
 	if q == "" {
 		return turnContinue, nil
 	}
+	// Mark before streaming: the server persists the user message up front, so an
+	// interrupted turn still leaves real content worth keeping.
+	*submitted = true
 	turnErr := streamTurn(ctx, client, out, errOut, chatID, q, opts)
 	if ctx.Err() != nil {
 		return turnDone, nil
@@ -176,11 +184,11 @@ func openChatSession(ctx context.Context, client *cliclient.Client, out io.Write
 // answer-only) unless the chat was empty, and returns the session's exit error:
 // the last per-turn error when no turn ever succeeded, else nil. The empty-chat
 // delete is handled by runChat's deferred cleanup.
-func endChat(w io.Writer, chatID string, turns int, lastErr error, isNew, interactive bool) error {
+func endChat(w io.Writer, chatID string, turns int, lastErr error, isNew, submitted, interactive bool) error {
 	if interactive {
 		fprintf(w, "\n")
 	}
-	if turns > 0 || !isNew {
+	if turns > 0 || !isNew || submitted {
 		fprintf(w, "Conversation saved: %s\n", chatID)
 		if interactive {
 			fprintf(w, "Resume it with:  nexus-cli chat %s\n", chatID)

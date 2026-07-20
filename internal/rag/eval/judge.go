@@ -92,14 +92,15 @@ func scoreCase(ctx context.Context, c GoldenCase, runner TurnRunner, judgeGen Ge
 		res.MissingCites = missing
 	}
 
-	// Relevance always applies.
+	// Relevance always applies. A judge error leaves Relevance nil (unscored)
+	// rather than setting res.Error — matching the faithfulness/abstain judges
+	// below and RunSuite's documented contract, so one transient 429/timeout on
+	// the judge model doesn't flip a genuinely-passing case to failed.
 	if v, err := judgeGen(ctx, judgeSystem, relevancePrompt(c.Query, out.Answer)); err == nil {
 		verdict := parseVerdict(v)
 		if verdict != "" {
 			res.Relevance = &verdict
 		}
-	} else {
-		res.Error = "judge relevance: " + err.Error()
 	}
 
 	if c.ShouldAbstain {

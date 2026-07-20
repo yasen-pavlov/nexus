@@ -147,7 +147,7 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 	req := buildSearchRequest(r, query)
 	explain := r.URL.Query().Get("score_details") == "true"
 
-	result, err := h.search2().Run(r.Context(), req, SearchOptions{IncludeScoreDetails: explain})
+	result, err := h.searchService.Run(r.Context(), req, SearchOptions{IncludeScoreDetails: explain})
 	if err != nil {
 		h.log.Error("search failed", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "search failed")
@@ -156,17 +156,6 @@ func (h *handler) Search(w http.ResponseWriter, r *http.Request) {
 
 	paginateSearchResult(result, req)
 	writeJSON(w, http.StatusOK, result)
-}
-
-// search2 returns the configured SearchService, falling back to a
-// services constructed from the handler's individual managers when
-// nil. Tests that build &handler{...} directly hit the fallback;
-// production goes through NewRouter which wires it explicitly.
-func (h *handler) search2() *SearchService {
-	if h.searchService != nil {
-		return h.searchService
-	}
-	return NewSearchService(h.search, h.em, h.rm, h.ranking, h.log)
 }
 
 // buildSearchRequest parses and clamps the query-string pagination + filter

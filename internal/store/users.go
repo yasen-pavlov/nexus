@@ -153,6 +153,9 @@ func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
 		}
 		users = append(users, u)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate users: %w", err)
+	}
 	if users == nil {
 		users = []model.User{}
 	}
