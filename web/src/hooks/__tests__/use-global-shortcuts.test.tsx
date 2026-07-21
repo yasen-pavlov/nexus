@@ -91,35 +91,18 @@ describe("useGlobalShortcuts", () => {
     expect(spies.onPalette).toHaveBeenCalledTimes(1);
   });
 
-  it("g + s within 200 ms fires the 's' chord", async () => {
-    const spies = makeSpies();
-    render(<Harness {...spies} />);
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  it.each<ChordKey>(["s", "c", "a"])(
+    "g + %s within 200 ms fires the matching chord",
+    async (key) => {
+      const spies = makeSpies();
+      render(<Harness {...spies} />);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    await user.keyboard("g");
-    await user.keyboard("s");
-    expect(spies.onChord).toHaveBeenCalledWith("s");
-  });
-
-  it("g + c fires the 'c' chord", async () => {
-    const spies = makeSpies();
-    render(<Harness {...spies} />);
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-
-    await user.keyboard("g");
-    await user.keyboard("c");
-    expect(spies.onChord).toHaveBeenCalledWith("c");
-  });
-
-  it("g + a fires the 'a' chord", async () => {
-    const spies = makeSpies();
-    render(<Harness {...spies} />);
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-
-    await user.keyboard("g");
-    await user.keyboard("a");
-    expect(spies.onChord).toHaveBeenCalledWith("a");
-  });
+      await user.keyboard("g");
+      await user.keyboard(key);
+      expect(spies.onChord).toHaveBeenCalledWith(key);
+    },
+  );
 
   it("g followed by an unrelated key cancels the chord", async () => {
     const spies = makeSpies();

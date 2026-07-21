@@ -89,18 +89,16 @@ describe("useRAGSettings", () => {
     const { result } = renderHook(() => useRAGSettings(), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
-    await act(async () => {
-      try {
-        await result.current.update.mutateAsync({
-          max_tool_rounds: 99,
-          max_images_per_turn: 4,
-          enable_multimodal: true,
-          enable_open_attachment: false,
-        });
-      } catch {
-        // expected — non-2xx throws
-      }
-    });
+    try {
+      await result.current.update.mutateAsync({
+        max_tool_rounds: 99,
+        max_images_per_turn: 4,
+        enable_multimodal: true,
+        enable_open_attachment: false,
+      });
+    } catch {
+      // expected — non-2xx throws
+    }
     expect(toast.error).toHaveBeenCalled();
   });
 });

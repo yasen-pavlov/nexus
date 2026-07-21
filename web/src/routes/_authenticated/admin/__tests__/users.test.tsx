@@ -88,9 +88,7 @@ describe("admin/users page", () => {
     setup();
     // Wait for data to render — useUsers fetches async so the heading
     // appears before the rows.
-    await waitFor(() =>
-      expect(screen.getByText("alice")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("alice")).toBeInTheDocument();
     expect(screen.getAllByText(/admin/i).length).toBeGreaterThan(0);
   });
 
@@ -100,17 +98,13 @@ describe("admin/users page", () => {
       http.get("*/api/users", () => HttpResponse.json({ data: seeded })),
     );
     setup();
-    await waitFor(() =>
-      expect(screen.getByText("alice")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("alice")).toBeInTheDocument();
   });
 
   it("shows the empty-roster hint when the list is empty", async () => {
     server.use(http.get("*/api/users", () => HttpResponse.json({ data: [] })));
     setup();
-    await waitFor(() =>
-      expect(screen.getByText(/No users yet/i)).toBeInTheDocument(),
-    );
+    expect(await screen.findByText(/No users yet/i)).toBeInTheDocument();
   });
 
   it("New user sheet opens, submits, toasts, and closes", async () => {
@@ -147,9 +141,7 @@ describe("admin/users page", () => {
       }),
     );
     setup();
-    await waitFor(() =>
-      expect(screen.getByText("alice")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("alice")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /new user/i }));
     // The sheet uses explicit ids for its fields (avoiding clashes with the

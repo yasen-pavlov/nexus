@@ -285,16 +285,14 @@ describe("useUsers", () => {
     const { result } = renderHook(() => useUsers(), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
-    await act(async () => {
-      try {
-        await result.current.changePassword.mutateAsync({
-          userId: "u2",
-          password: "short",
-        });
-      } catch {
-        // expected
-      }
-    });
+    try {
+      await result.current.changePassword.mutateAsync({
+        userId: "u2",
+        password: "short",
+      });
+    } catch {
+      // expected
+    }
     expect(toast.error).toHaveBeenCalled();
   });
 });
