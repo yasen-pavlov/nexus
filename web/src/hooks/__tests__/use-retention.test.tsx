@@ -122,17 +122,15 @@ describe("useRetentionSettings", () => {
     });
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
-    await act(async () => {
-      try {
-        await result.current.update.mutateAsync({
-          retention_days: 30,
-          retention_per_connector: 200,
-          sweep_interval_minutes: 2,
-        });
-      } catch {
-        // expected — the mutation throws on non-2xx so onError fires.
-      }
-    });
+    try {
+      await result.current.update.mutateAsync({
+        retention_days: 30,
+        retention_per_connector: 200,
+        sweep_interval_minutes: 2,
+      });
+    } catch {
+      // expected — the mutation throws on non-2xx so onError fires.
+    }
     expect(toast.error).toHaveBeenCalled();
   });
 });

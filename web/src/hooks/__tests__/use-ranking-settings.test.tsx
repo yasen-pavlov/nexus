@@ -114,16 +114,14 @@ describe("useRankingSettings", () => {
     const { result } = renderHook(() => useRankingSettings(), { wrapper: Wrapper });
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
-    await act(async () => {
-      try {
-        await result.current.update.mutateAsync({
-          ...defaults,
-          source_recency_floor: { ...defaults.source_recency_floor, imap: 2 },
-        });
-      } catch {
-        // expected
-      }
-    });
+    try {
+      await result.current.update.mutateAsync({
+        ...defaults,
+        source_recency_floor: { ...defaults.source_recency_floor, imap: 2 },
+      });
+    } catch {
+      // expected
+    }
     expect(toast.error).toHaveBeenCalled();
   });
 });

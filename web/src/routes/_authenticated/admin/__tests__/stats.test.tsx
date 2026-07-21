@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -103,13 +103,11 @@ describe("admin/stats", () => {
       ),
     );
     setup();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: /Stats/i, level: 1 }),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: /Stats/i, level: 1 }),
+    ).toBeInTheDocument();
     // Both sources appear in the desktop table.
-    await waitFor(() => expect(screen.getByText("notes")).toBeInTheDocument());
+    expect(await screen.findByText("notes")).toBeInTheDocument();
     expect(screen.getByText("chats")).toBeInTheDocument();
     // The populated KPI count shows up somewhere as a formatted number.
     // `formatCount` uses the locale separator, so match flexibly.
@@ -126,13 +124,11 @@ describe("admin/stats", () => {
       ),
     );
     setup();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: /Stats/i, level: 1 }),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: /Stats/i, level: 1 }),
+    ).toBeInTheDocument();
     // The mobile list still shows source rows.
-    await waitFor(() => expect(screen.getByText("notes")).toBeInTheDocument());
+    expect(await screen.findByText("notes")).toBeInTheDocument();
   });
 
   it("shows the empty-state when per_source is empty", async () => {
@@ -145,16 +141,14 @@ describe("admin/stats", () => {
       ),
     );
     setup();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: /Stats/i, level: 1 }),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: /Stats/i, level: 1 }),
+    ).toBeInTheDocument();
     // KpiPlaque "Latest activity" falls back to "No content indexed yet"
     // when per_source is empty — that caption is unique to the empty path.
-    await waitFor(() =>
-      expect(screen.getByText(/No content indexed yet/)).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByText(/No content indexed yet/),
+    ).toBeInTheDocument();
   });
 
   it("renders the error plaque when the stats request fails", async () => {
@@ -165,8 +159,6 @@ describe("admin/stats", () => {
       ),
     );
     setup();
-    await waitFor(() =>
-      expect(screen.getByText(/internal/i)).toBeInTheDocument(),
-    );
+    expect(await screen.findByText(/internal/i)).toBeInTheDocument();
   });
 });

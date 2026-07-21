@@ -93,9 +93,9 @@ describe("connectors/:id route", () => {
   it("renders the connector header with name + type label", async () => {
     mockDetail();
     setup("/connectors/c1");
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "notes" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: "notes" }),
+    ).toBeInTheDocument();
     // Back link to the connectors list.
     expect(screen.getByRole("link", { name: /all connectors/i })).toHaveAttribute(
       "href",
@@ -128,9 +128,9 @@ describe("connectors/:id route", () => {
       }),
     );
     setup("/connectors/c1");
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "notes" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: "notes" }),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /sync now/i }));
     await waitFor(() => expect(hit).toBe(true));
   });
@@ -138,18 +138,18 @@ describe("connectors/:id route", () => {
   it("renders the Identity tab only for telegram connectors", async () => {
     mockDetail(telegramConnector());
     setup("/connectors/c-tg");
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "tg" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: "tg" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /identity/i })).toBeInTheDocument();
   });
 
   it("filesystem connectors do not get an Identity tab", async () => {
     mockDetail();
     setup("/connectors/c1");
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "notes" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: "notes" }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("tab", { name: /identity/i }),
     ).not.toBeInTheDocument();
@@ -159,9 +159,9 @@ describe("connectors/:id route", () => {
     setToken(fakeUserToken);
     mockDetail(filesystemConnector({ shared: true, user_id: "u1" }));
     setup("/connectors/c1");
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "notes" })).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("heading", { name: "notes" }),
+    ).toBeInTheDocument();
     const sync = screen.getByRole("button", { name: /sync now/i });
     expect(sync).toBeDisabled();
   });
