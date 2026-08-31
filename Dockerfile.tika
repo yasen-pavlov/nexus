@@ -5,7 +5,7 @@
 #
 # See internal/lang/lang.go for the canonical language list that drives the
 # X-Tika-OCRLanguage header.
-FROM apache/tika:3.3.1.0-full
+FROM apache/tika:4.0.0-1-full
 
 # The upstream image runs as numeric uid 35002 with no matching passwd
 # entry, so we switch to root for apt-get and restore the original uid
