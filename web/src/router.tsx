@@ -8,8 +8,13 @@ export const router = createRouter({
   context: { queryClient },
   defaultPreload: "intent",
   defaultNotFoundComponent: () => <ErrorPage kind="404" />,
+  // The router types thrown values as `unknown` (anything can be thrown);
+  // ErrorPage renders Error.stack, so wrap non-Error throws.
   defaultErrorComponent: ({ error }) => (
-    <ErrorPage kind="error" error={error} />
+    <ErrorPage
+      kind="error"
+      error={error instanceof Error ? error : new Error(String(error))}
+    />
   ),
 });
 

@@ -9,27 +9,27 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
 import { Route as AuthenticatedAccountRouteImport } from './routes/_authenticated/account'
 import { Route as AuthenticatedAdminRouteRouteImport } from './routes/_authenticated/admin/route'
-import { Route as AuthenticatedConnectorsIndexRouteImport } from './routes/_authenticated/connectors.index'
-import { Route as AuthenticatedAskIndexRouteImport } from './routes/_authenticated/ask.index'
-import { Route as AuthenticatedConnectorsIdRouteImport } from './routes/_authenticated/connectors.$id'
-import { Route as AuthenticatedAskChatIdRouteImport } from './routes/_authenticated/ask.$chatId'
-import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin/users'
-import { Route as AuthenticatedAdminStatsRouteImport } from './routes/_authenticated/admin/stats'
 import { Route as AuthenticatedAdminSettingsRouteImport } from './routes/_authenticated/admin/settings'
+import { Route as AuthenticatedAdminStatsRouteImport } from './routes/_authenticated/admin/stats'
+import { Route as AuthenticatedAdminUsersRouteImport } from './routes/_authenticated/admin/users'
+import { Route as AuthenticatedAskIndexRouteImport } from './routes/_authenticated/ask.index'
+import { Route as AuthenticatedAskChatIdRouteImport } from './routes/_authenticated/ask.$chatId'
+import { Route as AuthenticatedConnectorsIndexRouteImport } from './routes/_authenticated/connectors.index'
+import { Route as AuthenticatedConnectorsIdRouteImport } from './routes/_authenticated/connectors.$id'
 import { Route as AuthenticatedConversationsSourceTypeConversationIdRouteImport } from './routes/_authenticated/conversations/$sourceType/$conversationId'
 
+const AuthenticatedRoute = AuthenticatedRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthenticatedRoute = AuthenticatedRouteImport.update({
-  id: '/_authenticated',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
@@ -47,43 +47,43 @@ const AuthenticatedAdminRouteRoute = AuthenticatedAdminRouteRouteImport.update({
   path: '/admin',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedConnectorsIndexRoute =
-  AuthenticatedConnectorsIndexRouteImport.update({
-    id: '/connectors/',
-    path: '/connectors/',
-    getParentRoute: () => AuthenticatedRoute,
+const AuthenticatedAdminSettingsRoute =
+  AuthenticatedAdminSettingsRouteImport.update({
+    id: '/settings',
+    path: '/settings',
+    getParentRoute: () => AuthenticatedAdminRouteRoute,
   } as any)
-const AuthenticatedAskIndexRoute = AuthenticatedAskIndexRouteImport.update({
-  id: '/ask/',
-  path: '/ask/',
-  getParentRoute: () => AuthenticatedRoute,
-} as any)
-const AuthenticatedConnectorsIdRoute =
-  AuthenticatedConnectorsIdRouteImport.update({
-    id: '/connectors/$id',
-    path: '/connectors/$id',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedAskChatIdRoute = AuthenticatedAskChatIdRouteImport.update({
-  id: '/ask/$chatId',
-  path: '/ask/$chatId',
-  getParentRoute: () => AuthenticatedRoute,
+const AuthenticatedAdminStatsRoute = AuthenticatedAdminStatsRouteImport.update({
+  id: '/stats',
+  path: '/stats',
+  getParentRoute: () => AuthenticatedAdminRouteRoute,
 } as any)
 const AuthenticatedAdminUsersRoute = AuthenticatedAdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
   getParentRoute: () => AuthenticatedAdminRouteRoute,
 } as any)
-const AuthenticatedAdminStatsRoute = AuthenticatedAdminStatsRouteImport.update({
-  id: '/stats',
-  path: '/stats',
-  getParentRoute: () => AuthenticatedAdminRouteRoute,
+const AuthenticatedAskIndexRoute = AuthenticatedAskIndexRouteImport.update({
+  id: '/ask/',
+  path: '/ask/',
+  getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AuthenticatedAdminSettingsRoute =
-  AuthenticatedAdminSettingsRouteImport.update({
-    id: '/settings',
-    path: '/settings',
-    getParentRoute: () => AuthenticatedAdminRouteRoute,
+const AuthenticatedAskChatIdRoute = AuthenticatedAskChatIdRouteImport.update({
+  id: '/ask/$chatId',
+  path: '/ask/$chatId',
+  getParentRoute: () => AuthenticatedRoute,
+} as any)
+const AuthenticatedConnectorsIndexRoute =
+  AuthenticatedConnectorsIndexRouteImport.update({
+    id: '/connectors/',
+    path: '/connectors/',
+    getParentRoute: () => AuthenticatedRoute,
+  } as any)
+const AuthenticatedConnectorsIdRoute =
+  AuthenticatedConnectorsIdRouteImport.update({
+    id: '/connectors/$id',
+    path: '/connectors/$id',
+    getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedConversationsSourceTypeConversationIdRoute =
   AuthenticatedConversationsSourceTypeConversationIdRouteImport.update({
@@ -189,18 +189,18 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_authenticated': {
       id: '/_authenticated'
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AuthenticatedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/': {
@@ -224,39 +224,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminRouteRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/_authenticated/connectors/': {
-      id: '/_authenticated/connectors/'
-      path: '/connectors'
-      fullPath: '/connectors/'
-      preLoaderRoute: typeof AuthenticatedConnectorsIndexRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/ask/': {
-      id: '/_authenticated/ask/'
-      path: '/ask'
-      fullPath: '/ask/'
-      preLoaderRoute: typeof AuthenticatedAskIndexRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/connectors/$id': {
-      id: '/_authenticated/connectors/$id'
-      path: '/connectors/$id'
-      fullPath: '/connectors/$id'
-      preLoaderRoute: typeof AuthenticatedConnectorsIdRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/ask/$chatId': {
-      id: '/_authenticated/ask/$chatId'
-      path: '/ask/$chatId'
-      fullPath: '/ask/$chatId'
-      preLoaderRoute: typeof AuthenticatedAskChatIdRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/admin/users': {
-      id: '/_authenticated/admin/users'
-      path: '/users'
-      fullPath: '/admin/users'
-      preLoaderRoute: typeof AuthenticatedAdminUsersRouteImport
+    '/_authenticated/admin/settings': {
+      id: '/_authenticated/admin/settings'
+      path: '/settings'
+      fullPath: '/admin/settings'
+      preLoaderRoute: typeof AuthenticatedAdminSettingsRouteImport
       parentRoute: typeof AuthenticatedAdminRouteRoute
     }
     '/_authenticated/admin/stats': {
@@ -266,12 +238,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminStatsRouteImport
       parentRoute: typeof AuthenticatedAdminRouteRoute
     }
-    '/_authenticated/admin/settings': {
-      id: '/_authenticated/admin/settings'
-      path: '/settings'
-      fullPath: '/admin/settings'
-      preLoaderRoute: typeof AuthenticatedAdminSettingsRouteImport
+    '/_authenticated/admin/users': {
+      id: '/_authenticated/admin/users'
+      path: '/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AuthenticatedAdminUsersRouteImport
       parentRoute: typeof AuthenticatedAdminRouteRoute
+    }
+    '/_authenticated/ask/': {
+      id: '/_authenticated/ask/'
+      path: '/ask'
+      fullPath: '/ask/'
+      preLoaderRoute: typeof AuthenticatedAskIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/ask/$chatId': {
+      id: '/_authenticated/ask/$chatId'
+      path: '/ask/$chatId'
+      fullPath: '/ask/$chatId'
+      preLoaderRoute: typeof AuthenticatedAskChatIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/connectors/': {
+      id: '/_authenticated/connectors/'
+      path: '/connectors'
+      fullPath: '/connectors/'
+      preLoaderRoute: typeof AuthenticatedConnectorsIndexRouteImport
+      parentRoute: typeof AuthenticatedRoute
+    }
+    '/_authenticated/connectors/$id': {
+      id: '/_authenticated/connectors/$id'
+      path: '/connectors/$id'
+      fullPath: '/connectors/$id'
+      preLoaderRoute: typeof AuthenticatedConnectorsIdRouteImport
+      parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/conversations/$sourceType/$conversationId': {
       id: '/_authenticated/conversations/$sourceType/$conversationId'

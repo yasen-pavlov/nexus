@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0 # goreleaser wants the full history for changelog
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "26"
           cache: npm
