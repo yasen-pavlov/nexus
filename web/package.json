@@ -68,7 +68,7 @@
     "happy-dom": "^20.14.5",
     "jsdom": "^29.1.1",
     "monocart-coverage-reports": "^2.13.0",
-    "msw": "^2.15.0",
+    "msw": "^3.0.3",
     "openapi-typescript": "^7.13.0",
     "swagger2openapi": "^7.0.8",
     "tailwindcss": "^4.2.2",
