@@ -65,7 +65,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.7",
     "globals": "^17.12.0",
-    "happy-dom": "^20.14.5",
+    "happy-dom": "^21.0.4",
     "jsdom": "^29.1.1",
     "monocart-coverage-reports": "^2.13.0",
     "msw": "^2.15.0",
