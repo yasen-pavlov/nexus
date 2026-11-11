@@ -44,6 +44,12 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "deps(docker)"
+    ignore:
+      # Tika 4.x (tested through 4.2.0) silently ignores the X-Tika-OCRLanguage
+      # header, so Bulgarian scans OCR as Latin gibberish. Stay on 3.x until the
+      # extractor moves to Tika 4's per-request config API.
+      - dependency-name: "apache/tika"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
