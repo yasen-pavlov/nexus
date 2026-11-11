@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -168,6 +169,17 @@ func NewWithIndex(ctx context.Context, url string, index string, log *zap.Logger
 func (c *Client) EnsureIndex(ctx context.Context, embeddingDimension int) error {
 	c.embeddingDimension = embeddingDimension
 
+	// The pipeline is (re)written on every boot, not only at index creation:
+	// OpenSearch 3 drops stored pipelines it can no longer parse (the pre-3.x
+	// definition nested rank_constant under "parameters"), so a cluster
+	// upgraded in place needs the definition rewritten before hybrid search
+	// works again.
+	if embeddingDimension > 0 {
+		if err := c.ensureHybridPipeline(ctx); err != nil {
+			return err
+		}
+	}
+
 	_, err := c.os.Indices.Exists(ctx, opensearchapi.IndicesExistsReq{
 		Indices: []string{c.index},
 	})
@@ -186,25 +198,21 @@ func (c *Client) EnsureIndex(ctx context.Context, embeddingDimension int) error 
 
 	c.log.Info("created search index", zap.String("index", c.index), zap.Int("embedding_dim", embeddingDimension))
 
-	if embeddingDimension > 0 {
-		if err := c.ensureHybridPipeline(ctx); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-// ensureHybridPipeline creates the RRF search pipeline if it doesn't exist.
+// ensureHybridPipeline creates or overwrites the RRF search pipeline (PUT is
+// idempotent).
 func (c *Client) ensureHybridPipeline(ctx context.Context) error {
+	// rank_constant sits directly under "combination". OpenSearch 2.19
+	// silently ignored it when nested under "parameters"; 3.x rejects that
+	// shape outright.
 	pipeline := fmt.Sprintf(`{
 		"phase_results_processors": [{
 			"score-ranker-processor": {
 				"combination": {
 					"technique": "rrf",
-					"parameters": {
-						"rank_constant": %d
-					}
+					"rank_constant": %d
 				}
 			}
 		}]
@@ -221,14 +229,22 @@ func (c *Client) ensureHybridPipeline(ctx context.Context) error {
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	// Stream returns the raw response (we own+close the body); it replaces the
-	// v4.7-deprecated Perform for this fire-and-forget PUT.
+	// v4.7-deprecated Perform.
 	resp, err := c.os.Client.Stream(httpReq)
 	if err != nil {
 		return fmt.Errorf("search: create hybrid pipeline: %w", err)
 	}
-	resp.Body.Close() //nolint:errcheck // best-effort
+	defer resp.Body.Close() //nolint:errcheck // best-effort
 
-	c.log.Info("created hybrid search pipeline", zap.String("pipeline", hybridPipeline))
+	// Stream does not turn HTTP errors into Go errors. A rejected definition
+	// must fail startup: otherwise every hybrid query 400s with "pipeline is
+	// not defined".
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("search: create hybrid pipeline: status %d: %s", resp.StatusCode, body)
+	}
+
+	c.log.Info("ensured hybrid search pipeline", zap.String("pipeline", hybridPipeline))
 	return nil
 }
 

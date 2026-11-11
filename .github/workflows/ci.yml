@@ -35,7 +35,7 @@ jobs:
           --health-retries 10
 
       opensearch:
-        image: opensearchproject/opensearch:2
+        image: opensearchproject/opensearch:3
         env:
           discovery.type: single-node
           DISABLE_SECURITY_PLUGIN: "true"

@@ -282,6 +282,27 @@ Docker does not re-seed ownership on an already-populated volume, so skipping
 this leaves the app logging `permission denied` when it tries to cache an
 attachment. (Adjust the `nexus_` prefix if you use a custom compose project name.)
 
+### OpenSearch 2 → 3
+
+The compose files now run OpenSearch 3 (`opensearchproject/opensearch:3`). An
+existing `osdata` volume is upgraded in place on first start — no reindex needed
+(verified 2.19.7 → 3.9.0). Two things to know before you pull:
+
+- **It is one-way.** Once OpenSearch 3 has opened the data, OpenSearch 2 can no
+  longer read it. Take a [backup](#backup--restore) first.
+- **Upgrade Nexus in the same step.** OpenSearch 3 discards the hybrid-search
+  pipeline that older Nexus versions stored; this version rewrites it on every
+  start. An older Nexus against OpenSearch 3 fails semantic search with
+  `Pipeline nexus-hybrid is not defined`.
+
+```bash
+docker compose --profile app pull
+docker compose --profile app up -d
+```
+
+Running your own OpenSearch instead of the bundled one? Nexus still works
+against 2.19; move to 3.x whenever suits you.
+
 ## Backup & restore
 
 Nexus keeps state in three places that must stay **mutually consistent**:

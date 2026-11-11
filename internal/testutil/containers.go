@@ -12,7 +12,7 @@ import (
 
 const (
 	pgImage = "postgres:17"
-	osImage = "opensearchproject/opensearch:2"
+	osImage = "opensearchproject/opensearch:3"
 )
 
 var (
