@@ -963,6 +963,41 @@ func TestEnsureIndex_Idempotent(t *testing.T) {
 	}
 }
 
+// TestEnsureIndex_ExistingIndexSurfacesPipelineRejection guards the in-place
+// OpenSearch 2 → 3 upgrade path. 3.x discards the stored pre-3.x pipeline, so
+// EnsureIndex must rewrite it even when the index already exists, and a
+// rejected definition must fail loudly instead of leaving every hybrid query
+// to 400 with "pipeline is not defined".
+func TestEnsureIndex_ExistingIndexSurfacesPipelineRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/_search/pipeline/"):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"type":"illegal_argument_exception","reason":"unsupported parameter"},"status":400}`))
+		case r.Method == http.MethodHead:
+			// Index exists.
+		default:
+			_, _ = w.Write([]byte(`{"name":"n","cluster_name":"c","cluster_uuid":"u","version":{"number":"3.9.0","distribution":"opensearch"},"tagline":"The OpenSearch Project"}`))
+		}
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	c, err := NewWithIndex(ctx, srv.URL, "existing", nil, lang.Default())
+	if err != nil {
+		t.Skipf("could not build client against stub: %v", err)
+	}
+
+	err = c.EnsureIndex(ctx, 3)
+	if err == nil {
+		t.Fatal("expected EnsureIndex to fail when the pipeline is rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported parameter") {
+		t.Errorf("error should carry the OpenSearch reason, got: %v", err)
+	}
+}
+
 func TestRecreateIndex(t *testing.T) {
 	c := newTestClient(t)
 	ctx := context.Background()
