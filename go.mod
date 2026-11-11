@@ -28,7 +28,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
