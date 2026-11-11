@@ -238,95 +238,96 @@ const columnHelper = createColumnHelper<typeof features, AdminPerSourceStats>();
 
 function PerSourceTable({ rows }: Readonly<{ rows: AdminPerSourceStats[] }>) {
   const columns = useMemo(
-    () =>
-      columnHelper.columns([
-        columnHelper.accessor("source_name", {
-          header: () => <span>Source</span>,
-          cell: (info) => {
-            const row = info.row.original;
-            return (
-              <div className="flex min-w-0 items-center gap-3">
-                <ConnectorLogo type={row.source_type} size="sm" />
-                <div className="min-w-0 leading-tight">
-                  <div className="truncate text-[13.5px] font-medium text-foreground">
-                    {row.source_name}
-                  </div>
-                  <div className="mt-0.5">
-                    <SourceChip type={row.source_type} />
-                  </div>
+    // columns() keeps each column's value type; a bare array widens to a
+    // union useTable rejects.
+    () => columnHelper.columns([
+      columnHelper.accessor("source_name", {
+        header: () => <span>Source</span>,
+        cell: (info) => {
+          const row = info.row.original;
+          return (
+            <div className="flex min-w-0 items-center gap-3">
+              <ConnectorLogo type={row.source_type} size="sm" />
+              <div className="min-w-0 leading-tight">
+                <div className="truncate text-[13.5px] font-medium text-foreground">
+                  {row.source_name}
+                </div>
+                <div className="mt-0.5">
+                  <SourceChip type={row.source_type} />
                 </div>
               </div>
-            );
-          },
-        }),
-        columnHelper.accessor("document_count", {
-          header: () => <span>Documents</span>,
-          cell: (info) => {
-            const row = info.row.original;
-            return (
-              <div className="leading-tight">
-                <div className="text-[13.5px] tabular-nums text-foreground">
-                  {formatCount(row.document_count)}
-                </div>
-                <div className="mt-0.5 text-[11.5px] tabular-nums text-muted-foreground">
-                  {formatCount(row.chunk_count)} chunks
-                </div>
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor("document_count", {
+        header: () => <span>Documents</span>,
+        cell: (info) => {
+          const row = info.row.original;
+          return (
+            <div className="leading-tight">
+              <div className="text-[13.5px] tabular-nums text-foreground">
+                {formatCount(row.document_count)}
               </div>
-            );
-          },
-        }),
-        columnHelper.accessor((row) => row.latest_indexed_at ?? "", {
-          id: "fresh",
-          header: () => <span>Fresh</span>,
-          cell: (info) => {
-            const iso = info.row.original.latest_indexed_at;
-            return (
-              <div
-                title={formatAbsolute(iso)}
-                className="text-[13px] tabular-nums text-muted-foreground"
-              >
-                {formatRelative(iso)}
+              <div className="mt-0.5 text-[11.5px] tabular-nums text-muted-foreground">
+                {formatCount(row.chunk_count)} chunks
               </div>
-            );
-          },
-        }),
-        columnHelper.accessor("cache_bytes", {
-          header: () => <span className="block sm:text-right">Cache</span>,
-          cell: (info) => {
-            const row = info.row.original;
-            return (
-              <div className="flex items-baseline gap-1.5 sm:justify-end">
-                <span className="text-[13.5px] tabular-nums text-foreground">
-                  {formatBytes(row.cache_bytes)}
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor((row) => row.latest_indexed_at ?? "", {
+        id: "fresh",
+        header: () => <span>Fresh</span>,
+        cell: (info) => {
+          const iso = info.row.original.latest_indexed_at;
+          return (
+            <div
+              title={formatAbsolute(iso)}
+              className="text-[13px] tabular-nums text-muted-foreground"
+            >
+              {formatRelative(iso)}
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor("cache_bytes", {
+        header: () => <span className="block sm:text-right">Cache</span>,
+        cell: (info) => {
+          const row = info.row.original;
+          return (
+            <div className="flex items-baseline gap-1.5 sm:justify-end">
+              <span className="text-[13.5px] tabular-nums text-foreground">
+                {formatBytes(row.cache_bytes)}
+              </span>
+              {row.cache_count > 0 && (
+                <span className="text-[11.5px] tabular-nums text-muted-foreground">
+                  {formatCount(row.cache_count)}
                 </span>
-                {row.cache_count > 0 && (
-                  <span className="text-[11.5px] tabular-nums text-muted-foreground">
-                    {formatCount(row.cache_count)}
-                  </span>
-                )}
-              </div>
-            );
-          },
-        }),
-        columnHelper.display({
-          id: "actions",
-          header: () => <span className="sr-only">Open</span>,
-          cell: (info) => {
-            const row = info.row.original;
-            return (
-              <div className="flex sm:justify-end">
-                <Link
-                  to="/connectors"
-                  aria-label={`View connectors filtered by ${row.source_name}`}
-                  className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
-                >
-                  <ArrowUpRight className="size-3.5" aria-hidden />
-                </Link>
-              </div>
-            );
-          },
-        }),
-      ]),
+              )}
+            </div>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "actions",
+        header: () => <span className="sr-only">Open</span>,
+        cell: (info) => {
+          const row = info.row.original;
+          return (
+            <div className="flex sm:justify-end">
+              <Link
+                to="/connectors"
+                aria-label={`View connectors filtered by ${row.source_name}`}
+                className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <ArrowUpRight className="size-3.5" aria-hidden />
+              </Link>
+            </div>
+          );
+        },
+      }),
+    ]),
     [],
   );
 
@@ -474,7 +475,9 @@ function EngineCard({
           <Icon className="size-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[15px] font-medium text-foreground">{title}</div>
+          <div className="text-[15px] font-medium text-foreground">
+            {title}
+          </div>
         </div>
         <StatusPill enabled={enabled} />
       </header>

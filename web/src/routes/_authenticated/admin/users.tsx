@@ -63,10 +63,9 @@ function UsersPage() {
   const isMobile = useIsMobile();
 
   const [newOpen, setNewOpen] = useState(false);
-  const [passwordTarget, setPasswordTarget] = useState<{
-    userId: string;
-    label: string;
-  } | null>(null);
+  const [passwordTarget, setPasswordTarget] = useState<
+    { userId: string; label: string } | null
+  >(null);
   const [deleteTarget, setDeleteTarget] = useState<AdminUserRow | null>(null);
 
   const rows = data ?? [];
@@ -74,7 +73,9 @@ function UsersPage() {
 
   const handleChangePassword = (u: AdminUserRow) => {
     const label =
-      u.id === currentUser.id ? "your password" : `${u.username}'s password`;
+      u.id === currentUser.id
+        ? "your password"
+        : `${u.username}'s password`;
     setPasswordTarget({ userId: u.id, label });
   };
 
@@ -226,8 +227,9 @@ function UsersPage() {
               <span className="font-medium text-foreground">
                 {deleteTarget.username}
               </span>{" "}
-              and detaches every connector they own. Content they marked shared
-              stays searchable; private content drops out on the next sync.
+              and detaches every connector they own. Content they marked
+              shared stays searchable; private content drops out on the next
+              sync.
             </span>
           }
           confirmPhrase={deleteTarget.username}
@@ -263,72 +265,73 @@ function UsersTable({
   onDelete,
 }: Readonly<UsersTableProps>) {
   const columns = useMemo(
-    () =>
-      columnHelper.columns([
-        columnHelper.accessor("username", {
-          header: () => <span>User</span>,
-          cell: (info) => {
-            const u = info.row.original;
-            const isSelf = u.id === currentUserId;
-            return (
-              <div className="flex min-w-0 items-center gap-3">
-                <InitialsTile username={u.username} />
-                <span className="min-w-0 truncate text-[13.5px] font-medium text-foreground">
-                  {u.username}
-                </span>
-                {isSelf && <YouBadge />}
-              </div>
-            );
-          },
-        }),
-        columnHelper.accessor("role", {
-          header: () => <span>Role</span>,
-          cell: (info) => <RoleBadge role={info.getValue()} />,
-        }),
-        columnHelper.accessor((row) => row.created_at ?? "", {
-          id: "created_at",
-          header: () => <span className="block text-right">Joined</span>,
-          cell: (info) => {
-            const iso = info.getValue() as string | undefined;
-            return (
-              <div
-                className="text-right text-[12.5px] tabular-nums text-muted-foreground"
-                title={formatAbsolute(iso)}
-              >
-                {formatRelative(iso)}
-              </div>
-            );
-          },
-        }),
-        columnHelper.display({
-          id: "actions",
-          header: () => <span className="sr-only">Actions</span>,
-          cell: (info) => {
-            const u = info.row.original;
-            const isSelf = u.id === currentUserId;
-            return (
-              <div className="text-right">
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    aria-label={`Actions for ${u.username}`}
-                    className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    <MoreHorizontal className="size-4" aria-hidden />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
-                    <UserActionMenuItems
-                      user={u}
-                      isSelf={isSelf}
-                      onChangePassword={onChangePassword}
-                      onDelete={onDelete}
-                    />
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            );
-          },
-        }),
-      ]),
+    // columns() keeps each column's value type; a bare array widens to a
+    // union useTable rejects.
+    () => columnHelper.columns([
+      columnHelper.accessor("username", {
+        header: () => <span>User</span>,
+        cell: (info) => {
+          const u = info.row.original;
+          const isSelf = u.id === currentUserId;
+          return (
+            <div className="flex min-w-0 items-center gap-3">
+              <InitialsTile username={u.username} />
+              <span className="min-w-0 truncate text-[13.5px] font-medium text-foreground">
+                {u.username}
+              </span>
+              {isSelf && <YouBadge />}
+            </div>
+          );
+        },
+      }),
+      columnHelper.accessor("role", {
+        header: () => <span>Role</span>,
+        cell: (info) => <RoleBadge role={info.getValue()} />,
+      }),
+      columnHelper.accessor((row) => row.created_at ?? "", {
+        id: "created_at",
+        header: () => <span className="block text-right">Joined</span>,
+        cell: (info) => {
+          const iso = info.getValue() as string | undefined;
+          return (
+            <div
+              className="text-right text-[12.5px] tabular-nums text-muted-foreground"
+              title={formatAbsolute(iso)}
+            >
+              {formatRelative(iso)}
+            </div>
+          );
+        },
+      }),
+      columnHelper.display({
+        id: "actions",
+        header: () => <span className="sr-only">Actions</span>,
+        cell: (info) => {
+          const u = info.row.original;
+          const isSelf = u.id === currentUserId;
+          return (
+            <div className="text-right">
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  aria-label={`Actions for ${u.username}`}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <MoreHorizontal className="size-4" aria-hidden />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <UserActionMenuItems
+                    user={u}
+                    isSelf={isSelf}
+                    onChangePassword={onChangePassword}
+                    onDelete={onDelete}
+                  />
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          );
+        },
+      }),
+    ]),
     [currentUserId, onChangePassword, onDelete],
   );
 
@@ -463,7 +466,9 @@ function NewUserSheet({
                     placeholder="alice"
                   />
                 </div>
-                <FieldError message={form.formState.errors.username?.message} />
+                <FieldError
+                  message={form.formState.errors.username?.message}
+                />
               </div>
 
               <div className="flex flex-col gap-1.5">
@@ -485,9 +490,7 @@ function NewUserSheet({
                   <button
                     type="button"
                     onClick={() => setShowPassword((v) => !v)}
-                    aria-label={
-                      showPassword ? "Hide password" : "Show password"
-                    }
+                    aria-label={showPassword ? "Hide password" : "Show password"}
                     className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground"
                     tabIndex={-1}
                   >
@@ -498,20 +501,17 @@ function NewUserSheet({
                     )}
                   </button>
                 </div>
-                <FieldError message={form.formState.errors.password?.message} />
+                <FieldError
+                  message={form.formState.errors.password?.message}
+                />
               </div>
 
               <div className="flex flex-col gap-1.5">
                 <Label className="text-[13px] font-medium">Role</Label>
-                <RoleField
-                  control={form.control}
-                  onChange={(r) =>
-                    form.setValue("role", r, { shouldDirty: true })
-                  }
-                />
+                <RoleField control={form.control} onChange={(r) => form.setValue("role", r, { shouldDirty: true })} />
                 <p className="text-[12px] leading-[1.5] text-muted-foreground">
-                  Admins can manage users, tweak settings, and reindex. Regular
-                  users can search and manage their own connectors.
+                  Admins can manage users, tweak settings, and reindex.
+                  Regular users can search and manage their own connectors.
                 </p>
               </div>
             </div>
