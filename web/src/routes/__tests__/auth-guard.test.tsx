@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -9,6 +10,7 @@ import {
 import { routeTree } from "@/routeTree.gen";
 import { setToken } from "@/lib/api-client";
 import { fakeToken, fakeUserToken } from "@/test/mocks/handlers";
+import { server } from "@/test/mocks/server";
 
 function setup(initialPath: string) {
   const queryClient = new QueryClient({
@@ -62,6 +64,16 @@ describe("auth guards", () => {
   });
 
   it("admin user can access /admin/settings", async () => {
+    // Only the guard is under test. The settings page's own queries get an
+    // explicit stub failure — left unhandled, msw 3 rejects each one and
+    // happy-dom dumps a stack trace per request into the test output.
+    const unavailable = () =>
+      HttpResponse.json({ error: "not under test" }, { status: 500 });
+    server.use(
+      http.get("*/api/settings/*", unavailable),
+      http.get("*/api/admin/stats", unavailable),
+      http.get("*/api/storage/stats", unavailable),
+    );
     setToken(fakeToken);
     const router = setup("/admin/settings");
     await waitFor(() => {

@@ -17,9 +17,8 @@ import {
 } from "lucide-react";
 import {
   createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 
 import { Button } from "@/components/ui/button";
@@ -248,7 +247,9 @@ function UsersPage() {
 
 // --- Table ------------------------------------------------------------------
 
-const columnHelper = createColumnHelper<AdminUserRow>();
+// Core row model only — no sorting/filtering/pagination features registered.
+const features = tableFeatures({});
+const columnHelper = createColumnHelper<typeof features, AdminUserRow>();
 
 interface UsersTableProps {
   rows: AdminUserRow[];
@@ -264,7 +265,9 @@ function UsersTable({
   onDelete,
 }: Readonly<UsersTableProps>) {
   const columns = useMemo(
-    () => [
+    // columns() keeps each column's value type; a bare array widens to a
+    // union useTable rejects.
+    () => columnHelper.columns([
       columnHelper.accessor("username", {
         header: () => <span>User</span>,
         cell: (info) => {
@@ -328,27 +331,18 @@ function UsersTable({
           );
         },
       }),
-    ],
+    ]),
     [currentUserId, onChangePassword, onDelete],
   );
 
-  // TanStack Table's useReactTable returns methods that intentionally
-  // aren't memoized — React Compiler can't auto-memoize components that
-  // consume it. That's a library-level constraint, not a local smell, so
-  // we explicitly opt out of the warning here.
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
-    data: rows,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  const table = useTable({ features, columns, data: rows });
 
   return (
     <div className="flex flex-col">
       <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-4 border-b border-border/60 px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
         {table.getHeaderGroups()[0].headers.map((header) => (
           <div key={header.id}>
-            {flexRender(header.column.columnDef.header, header.getContext())}
+            <table.FlexRender header={header} />
           </div>
         ))}
       </div>
@@ -358,9 +352,9 @@ function UsersTable({
             key={row.id}
             className="grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-4 rounded-md px-3 py-3 transition-colors hover:bg-card-hover"
           >
-            {row.getVisibleCells().map((cell) => (
+            {row.getAllCells().map((cell) => (
               <div key={cell.id} className="min-w-0">
-                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                <table.FlexRender cell={cell} />
               </div>
             ))}
           </div>
