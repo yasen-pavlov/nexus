@@ -41,7 +41,7 @@ function installInMemoryStorage(target: "localStorage" | "sessionStorage") {
 installInMemoryStorage("localStorage");
 installInMemoryStorage("sessionStorage");
 
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
