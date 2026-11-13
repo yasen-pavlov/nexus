@@ -396,6 +396,32 @@ reconciliation before trusting search. Both levers are in the admin
   and back-fills the gap. To reset a single connector, its owner (or an admin)
   can call `DELETE /api/sync/cursors/{id}`.
 
+### Repairing missing vectors without reindexing the corpus
+
+Voyage embedding requests are partitioned by a conservative byte-level BPE
+token bound (120,000 aggregate tokens, including instruction overhead), not
+chunk count or an average words-to-tokens estimate. Exact provider
+`TOO_MANY_TOKENS_IN_BATCH` rejections are split into smaller requests in input
+order; other errors and oversized single inputs still fail explicitly.
+
+To recover one already-indexed document after an embedding failure, stop the
+server and run the maintenance subcommand with the same environment, network,
+and database credentials:
+
+```sh
+nexus repair-embeddings \
+  -parent-id 'imap:Mailbox:INBOX:123:attachment:0' \
+  -snapshot /private-backups/attachment-before.json
+```
+
+Use the exact stored `parent_id`, not a source prefix. The snapshot is required,
+private (0600), and cannot overwrite an existing file. The command reads saved
+embedding settings, preserves the ingestion noise gate, fills only missing
+vectors, and uses optimistic concurrency on each update. It verifies unchanged
+chunk count, IDs, text, metadata and pre-existing vectors plus the repaired
+vector dimensions. It never deletes documents, resets cursors, or recreates an
+index. Restart the server afterwards; retain the snapshot as sensitive data.
+
 ## Development
 
 Requirements: Go 1.26+, Node.js 24+, Docker.

@@ -2,6 +2,8 @@ package embedding
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -41,9 +43,51 @@ type voyageEmbedResponse struct {
 		Embedding []float32 `json:"embedding"`
 		Index     int       `json:"index"`
 	} `json:"data"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func (v *Voyage) Embed(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
+	// Voyage's Qwen2 byte-level BPE tokenizer starts from UTF-8 bytes;
+	// merges can only reduce their count. Reserve 64 additional tokens per
+	// input: even byte-tokenizing the documented query/document instruction
+	// (under 60 ASCII bytes) leaves room for special tokens.
+	// Unlike words*constant, this bounds dense code, numbers and non-Latin text.
+	// Keep this conservative for all models; an authoritative provider limit
+	// error below also handles tokenizer/instruction changes without dropping
+	// any input. Voyage documents 120K aggregate tokens for voyage-4-large.
+	const tokenBudget = 120000
+	const inputOverhead = 64
+	const maxInputs = 1000
+	embeddings := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); {
+		end, tokens := start, 0
+		for end < len(texts) && end-start < maxInputs {
+			bound := len(texts[end]) + inputOverhead
+			if end > start && bound > tokenBudget-tokens {
+				break
+			}
+			// A conservative bound cannot prove a single input is too large.
+			// Submit it alone and let the provider decide; never truncate it
+			// locally or recurse forever on an unsplittable failure.
+			tokens += bound
+			end++
+		}
+		batch, err := v.embedBatch(ctx, texts[start:end], inputType)
+		if err != nil {
+			return nil, err
+		}
+		embeddings = append(embeddings, batch...)
+		start = end
+	}
+	return embeddings, nil
+}
+
+// embedBatch splits only the provider's typed aggregate-token rejection.
+// Other errors retain their normal retry semantics; an oversized singleton
+// fails explicitly. Concatenating left then right preserves every input index.
+func (v *Voyage) embedBatch(ctx context.Context, texts []string, inputType string) ([][]float32, error) {
 	// Voyage uses "document" / "query" — same strings as our InputType constants,
 	// so no translation needed. Empty string is also accepted by Voyage (treated
 	// as un-typed) but our callers should always pass one of the constants.
@@ -56,22 +100,41 @@ func (v *Voyage) Embed(ctx context.Context, texts []string, inputType string) ([
 	var result voyageEmbedResponse
 	if err := providerhttp.PostJSON(ctx, v.client, v.baseURL+"/v1/embeddings", v.apiKey, reqBody, &result,
 		func(resp *http.Response) error { return errorFromResponse(resp, "voyage") }); err != nil {
-		return nil, fmt.Errorf("voyage: embed: %w", err)
+		var apiErr *EmbedError
+		var detail struct {
+			Code string `json:"error_code"`
+		}
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+			json.Unmarshal([]byte(apiErr.Body), &detail) == nil &&
+			detail.Code == "TOO_MANY_TOKENS_IN_BATCH" && len(texts) > 1 {
+			mid := len(texts) / 2
+			left, err := v.embedBatch(ctx, texts[:mid], inputType)
+			if err != nil {
+				return nil, err
+			}
+			right, err := v.embedBatch(ctx, texts[mid:], inputType)
+			if err != nil {
+				return nil, err
+			}
+			return append(left, right...), nil
+		}
+		return nil, fmt.Errorf("voyage: embed (%d inputs): %w", len(texts), err)
 	}
 
-	// Place each embedding at its response-reported index rather than trusting
-	// positional order — the API contract returns an `index` field precisely
-	// because order isn't guaranteed, and a mis-ordered vector would silently
-	// attach to the wrong chunk. Fall back to positional when index is absent
-	// or out of range.
-	embeddings := make([][]float32, len(result.Data))
-	for i, d := range result.Data {
-		pos := d.Index
-		if pos < 0 || pos >= len(embeddings) {
-			pos = i
-		}
-		embeddings[pos] = d.Embedding
+	// Reject malformed responses instead of silently losing or misassigning
+	// vectors. Indices are batch-local and may arrive out of order.
+	if len(result.Data) != len(texts) {
+		return nil, fmt.Errorf("voyage: embedding count mismatch: got %d, want %d", len(result.Data), len(texts))
 	}
+	embeddings := make([][]float32, len(texts))
+	for _, d := range result.Data {
+		if d.Index < 0 || d.Index >= len(texts) || embeddings[d.Index] != nil || len(d.Embedding) == 0 {
+			return nil, fmt.Errorf("voyage: invalid or duplicate embedding index %d", d.Index)
+		}
+		embeddings[d.Index] = d.Embedding
+	}
+	v.log.Debug("voyage embedding batch completed", zap.Int("inputs", len(texts)),
+		zap.Int("tokens", result.Usage.TotalTokens))
 	return embeddings, nil
 }
 
