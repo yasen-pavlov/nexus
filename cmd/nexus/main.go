@@ -50,6 +50,13 @@ import (
 
 func main() {
 	// Maintenance subcommands run and exit before the server boots.
+	if len(os.Args) > 1 && os.Args[1] == "repair-embeddings" {
+		if err := repairEmbeddings(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
 		if err := rotateKey(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)

@@ -63,11 +63,9 @@ const minEmbeddingUnsegmentedLetters = 20
 // less back-pressure on the connector goroutine.
 const indexBatchSize = 25
 
-// embedBatchSize caps how many chunk texts are sent per embedder request.
-// Conservatively under Cohere's 96-text hard cap, and ~64*500≈32K tokens keeps
-// a full sub-batch well under Voyage/OpenAI per-request token budgets and
-// bounds Ollama request size to avoid its 120s CPU timeout. A document with
-// more gated chunks than this is embedded across multiple requests.
+// embedBatchSize caps input count for Cohere and request duration for Ollama.
+// It is not a token bound: provider adapters must enforce their own token
+// budgets, since a 500-word chunk can contain many more model tokens.
 const embedBatchSize = 64
 
 // checkpointInterval is the time-based fallback cadence for persisting
@@ -844,6 +842,12 @@ func countAlphabeticTokens(text string) int {
 var unsegmentedScripts = []*unicode.RangeTable{
 	unicode.Han, unicode.Hiragana, unicode.Katakana,
 	unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar,
+}
+
+// EligibleForEmbedding exposes the ingestion noise gate for targeted vector
+// repair, so maintenance cannot add vectors to intentionally BM25-only chunks.
+func EligibleForEmbedding(text string) bool {
+	return passesNoiseGate(text)
 }
 
 // passesNoiseGate reports whether a chunk carries enough real content to be
