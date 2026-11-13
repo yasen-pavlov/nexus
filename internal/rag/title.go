@@ -75,6 +75,7 @@ func summarizeForTitle(parentCtx context.Context, gen llm.Generator, info llm.Mo
 			},
 		},
 		MaxTokens: titleMaxTokens,
+		Reasoning: llm.ReasoningMinimal, // same budget constraints as the rewriter
 	}
 
 	text, u, err := collectText(ctx, gen, req)

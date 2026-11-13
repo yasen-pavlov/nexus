@@ -135,7 +135,7 @@ func TestRegistry_AllConfiguredModelsIgnoresAllowlist(t *testing.T) {
 		Allowlist:  []string{"anthropic:claude-haiku-4-5"},
 	})
 	// Models() honours the allowlist (1); AllConfiguredModels() ignores it
-	// and returns every configured-provider catalog model (all 3 Anthropic).
+	// and returns every configured-provider catalog model (all of Anthropic's).
 	if got := len(r.Models()); got != 1 {
 		t.Fatalf("Models() = %d, want 1", got)
 	}
@@ -325,5 +325,47 @@ func TestLastUserIndex(t *testing.T) {
 	}
 	if got := LastUserIndex(nil); got != -1 {
 		t.Errorf("nil → %d, want -1", got)
+	}
+}
+
+// With no default configured, the model a new user lands on must be the
+// recommended one. Left to display-name order it would be Claude Fable 5.2,
+// the most expensive model in the catalog.
+func TestRecommendedDefault(t *testing.T) {
+	ids := func(in ...string) []ModelInfo {
+		out := make([]ModelInfo, len(in))
+		for i, id := range in {
+			out[i] = ModelInfo{ID: id}
+		}
+		return out
+	}
+	cases := []struct {
+		name    string
+		visible []ModelInfo
+		want    string
+	}{
+		{"anthropic configured", CatalogForProvider(ProviderAnthropic), "anthropic:claude-sonnet-5-5"},
+		{"openai only", CatalogForProvider(ProviderOpenAI), "openai:gpt-6.1-sol"},
+		{"both prefer anthropic", append(CatalogForProvider(ProviderOpenAI), CatalogForProvider(ProviderAnthropic)...), "anthropic:claude-sonnet-5-5"},
+		{"ollama only", CatalogForProvider(ProviderOllama), "ollama:qwen3:14b"},
+		{"recommended model hidden by the allowlist", ids("anthropic:claude-haiku-5-5", "anthropic:claude-opus-5-5"), "anthropic:claude-haiku-5-5"},
+		{"nothing visible", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RecommendedDefault(tc.visible); got != tc.want {
+				t.Errorf("RecommendedDefault = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Every recommended default has to exist, or a fresh install silently falls
+// through to display-name order.
+func TestRecommendedDefaults_AreInTheCatalog(t *testing.T) {
+	for _, id := range recommendedDefaults {
+		if _, ok := LookupModel(id); !ok {
+			t.Errorf("recommended default %q is not in the catalog", id)
+		}
 	}
 }

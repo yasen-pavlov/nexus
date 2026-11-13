@@ -1324,7 +1324,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the configured default model id (provider-prefixed). The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.",
+                "description": "Returns the system default model id (provider-prefixed): the admin's saved choice, or the recommended model among those available when none is saved. The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.",
                 "produces": [
                     "application/json"
                 ],

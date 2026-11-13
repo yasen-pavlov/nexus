@@ -195,7 +195,7 @@ func (h *handler) GetLLMModels(w http.ResponseWriter, r *http.Request) {
 // GetLLMDefault godoc
 //
 //	@Summary	Get the system-wide default LLM model
-//	@Description	Returns the configured default model id (provider-prefixed). The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.
+//	@Description	Returns the system default model id (provider-prefixed): the admin's saved choice, or the recommended model among those available when none is saved. The per-message picker falls back to this value when the user has no chat-level override; lets admin choices propagate to all users without requiring localStorage clears.
 //	@Tags		llm
 //	@Produce	json
 //	@Success	200	{object}	llmDefaultResponse

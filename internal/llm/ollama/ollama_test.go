@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -291,4 +292,43 @@ func readJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	defer r.Body.Close() //nolint:errcheck // test
 	return dec.Decode(v)
+}
+
+// Ollama has no tool_choice and reads documents from one numbered system
+// block. A forced-answer round must therefore reach it without tools, and
+// with the documents tool calls fetched numbered after the initial ones —
+// the orchestrator's [N] parser counts them the same way.
+func TestGenerate_ForcedAnswerRoundDropsToolsAndKeepsToolDocuments(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = fmt.Fprintln(w, `{"model":"qwen3:14b","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}`)
+	}))
+	defer srv.Close()
+
+	ch, err := New(srv.URL, zap.NewNop()).Generate(context.Background(), llm.GenerateRequest{
+		Model:      "qwen3:14b",
+		Documents:  []llm.Document{{ID: "a", Content: "alpha"}},
+		ToolChoice: llm.ToolChoiceNone,
+		Tools:      []llm.Tool{{Name: "nexus_search", Description: "search"}},
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: "q"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "t1", Name: "nexus_search", ArgsJSON: `{"query":"beta"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "t1", Content: "Found 1 result(s).", Documents: []llm.Document{{ID: "b", Content: "beta"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(body, `"tools"`) {
+		t.Errorf("forced-answer round still offered tools: %s", body)
+	}
+	if !strings.Contains(body, `index=\"1\" id=\"a\"`) || !strings.Contains(body, `index=\"2\" id=\"b\"`) {
+		t.Errorf("system block should number the initial document 1 and the tool-fetched one 2: %s", body)
+	}
 }

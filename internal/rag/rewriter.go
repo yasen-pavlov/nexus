@@ -103,6 +103,9 @@ func rewriteQuery(parentCtx context.Context, gen llm.Generator, info llm.ModelIn
 		System:    systemPromptRewriter + "\n\n" + dateContextLine(now),
 		Messages:  append(append([]llm.Message{}, history...), llm.Message{Role: llm.RoleUser, Content: current}),
 		MaxTokens: rewriterMaxTokens,
+		// A one-line rewrite needs no reasoning, and the 3s budget and
+		// 80-token cap leave no room for it.
+		Reasoning: llm.ReasoningMinimal,
 	}
 
 	text, usage, err := collectText(ctx, gen, req)

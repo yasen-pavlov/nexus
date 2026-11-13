@@ -64,11 +64,16 @@ func (m *LLMManager) Get() llm.Registry {
 	return m.registry
 }
 
-// DefaultModel returns the configured default model id (provider-prefixed).
+// DefaultModel returns the system default model id (provider-prefixed): the
+// admin's choice when there is one, otherwise the recommended model among
+// those currently visible. Empty only when no model is available at all.
 func (m *LLMManager) DefaultModel() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.defaultModel
+	if m.defaultModel != "" {
+		return m.defaultModel
+	}
+	return llm.RecommendedDefault(m.registry.Models())
 }
 
 // RewriterModel returns the configured cheap-model id used for query

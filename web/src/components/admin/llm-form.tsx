@@ -19,6 +19,7 @@ import { useLLMCatalog } from "@/hooks/use-llm-models";
 import type { LLMSettings } from "@/lib/api-types";
 import {
   DEFAULT_LLM_BARE_MODEL,
+  DEFAULT_LLM_REWRITER_BARE_MODEL,
   LLM_BARE_MODELS,
   LLM_PROVIDERS,
   joinModelID,
@@ -125,7 +126,7 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
       setForm((f) => ({ ...f, rewriter_model: "" }));
       return;
     }
-    const bare = DEFAULT_LLM_BARE_MODEL[next] ?? "";
+    const bare = DEFAULT_LLM_REWRITER_BARE_MODEL[next] ?? "";
     setForm((f) => ({ ...f, rewriter_model: joinModelID(next, bare) }));
   };
 
@@ -204,7 +205,7 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
 
         <Field
           label="Rewriter model"
-          hint="Cheap model used to refine multi-turn questions before search and to summarise chats into titles. Pick something fast and inexpensive — Haiku, GPT-mini, or a small Ollama model. Leave the provider unset to disable refinement."
+          hint="Cheap model used to refine multi-turn questions before search and to summarise chats into titles. Pick something fast and inexpensive — Haiku, GPT-6 Luna, or a small Ollama model. Leave the provider unset to disable refinement."
         >
           <div className="grid grid-cols-[200px_1fr] gap-2">
             <Select
@@ -232,7 +233,7 @@ function LLMFormInner({ ctx }: Readonly<{ ctx: UseLLMSettings }>) {
                 onChange={handleRewriterBareChange}
                 options={LLM_BARE_MODELS[rewriterProvider] ?? []}
                 placeholder={
-                  DEFAULT_LLM_BARE_MODEL[rewriterProvider] ?? "model id"
+                  DEFAULT_LLM_REWRITER_BARE_MODEL[rewriterProvider] ?? "model id"
                 }
                 showDimensions={false}
               />

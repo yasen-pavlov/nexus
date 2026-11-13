@@ -109,7 +109,7 @@ type ToolDispatcher interface {
 // ToolOutcome is the result of one dispatched tool call. ResultText is
 // what gets fed back to the LLM as a tool_result message; Summary and
 // Chunks drive the FE collapsible trace + evidence-rail merge; Docs
-// extend the cumulative GenerateRequest.Documents on the next round so
+// travel back on the tool_result message and join the turn's evidence, so
 // the model can cite the new chunks via stable indices.
 type ToolOutcome struct {
 	ResultText string
@@ -144,8 +144,12 @@ type searchToolDispatcher struct {
 	userID         uuid.UUID
 	supportsVision bool
 	supportsPDF    bool
-	limit          int
-	log            *zap.Logger
+	// nativeDocs is true when the provider receives tool-fetched documents
+	// as native document blocks (Anthropic); the tool_result text is then
+	// an index of the hits rather than a second copy of their bodies.
+	nativeDocs bool
+	limit      int
+	log        *zap.Logger
 }
 
 // newSearchToolDispatcher constructs a dispatcher for one user turn. The
@@ -231,6 +235,9 @@ func (d *searchToolDispatcher) dispatchSearch(ctx context.Context, call llm.Tool
 	docs := buildLLMDocs(hits, d.limit)
 	chunks := buildPreviews(hits, d.limit)
 	resultText := renderToolResultDocuments(args.Query, docs)
+	if d.nativeDocs {
+		resultText = renderToolResultIndex(args.Query, docs)
+	}
 
 	summary := fmt.Sprintf("Searched %q — %d result", args.Query, len(chunks))
 	if len(chunks) != 1 {
@@ -397,74 +404,30 @@ func renderToolResultDocuments(query string, docs []llm.Document) string {
 		llm.RenderDocumentsBlock(docs)
 }
 
-// appendUniqueDocs extends `dst` with `src` entries whose DocID isn't
-// already present in `dst`. Used by the orchestrator's round loop to
-// keep the cumulative GenerateRequest.Documents slice deduped while
-// preserving the original ordering — citation indices stay stable
-// across rounds for non-Anthropic providers, and the Anthropic SDK's
-// document_index behaviour matches.
-func appendUniqueDocs(dst, src []llm.Document) []llm.Document {
-	if len(src) == 0 {
-		return dst
+// renderToolResultIndex is the nexus_search result for providers that
+// receive the hits as native document blocks: a summary line and an index of
+// what matched. The bodies travel in the document blocks, so rendering them
+// here as well would bill every fetched document twice, and the rendered
+// block's "cite as [N]" header makes current Claude models write a literal
+// "[3]" next to their native citations. The index names every hit because a
+// document the model was already given is not attached a second time.
+func renderToolResultIndex(query string, docs []llm.Document) string {
+	if len(docs) == 0 {
+		return fmt.Sprintf("No results for %q.", query)
 	}
-	idx := make(map[string]int, len(dst)+len(src))
-	for i, d := range dst {
-		idx[d.ID] = i
-	}
-	for _, d := range src {
-		if i, ok := idx[d.ID]; ok {
-			// Already present — usually a text-only entry from the initial
-			// retrieval or a prior nexus_search round. Merge any media the
-			// incoming copy carries onto the existing entry IN PLACE, preserving
-			// the stable append order citation indices depend on. This is the
-			// nexus_open_attachment path: the opened chunk id is always already
-			// in dst as text, so discarding the media-bearing copy (the old
-			// behavior) meant the model was told "(image attached below)" for
-			// media it never actually received.
-			mergeDocMedia(&dst[i], d)
-			continue
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d result(s) for %q. They are attached as documents; any you were already given are listed here but not attached again.\n", len(docs), query)
+	for _, d := range docs {
+		b.WriteString("- " + d.ID)
+		if d.Title != "" {
+			b.WriteString(": " + d.Title)
 		}
-		idx[d.ID] = len(dst)
-		dst = append(dst, d)
+		b.WriteString("\n")
 	}
-	return dst
+	return b.String()
 }
 
-// mergeDocMedia appends src's Images/PDFs onto dst, skipping any whose SourceID
-// is already present so re-opening an already-auto-attached binary doesn't
-// double-attach it (wasted provider budget). Media with an empty SourceID
-// always appends, to avoid collapsing distinct payloads.
-func mergeDocMedia(dst *llm.Document, src llm.Document) {
-	dst.Images = mergeBySourceID(dst.Images, src.Images, func(im llm.Image) string { return im.SourceID })
-	dst.PDFs = mergeBySourceID(dst.PDFs, src.PDFs, func(p llm.PDF) string { return p.SourceID })
-}
-
-// mergeBySourceID appends items from src onto dst, skipping any whose key
-// (SourceID) is already present in dst or was already appended. An empty key
-// always appends, so distinct keyless payloads aren't collapsed.
-func mergeBySourceID[T any](dst, src []T, key func(T) string) []T {
-	if len(src) == 0 {
-		return dst
-	}
-	have := make(map[string]struct{}, len(dst))
-	for _, it := range dst {
-		if k := key(it); k != "" {
-			have[k] = struct{}{}
-		}
-	}
-	for _, it := range src {
-		if k := key(it); k != "" {
-			if _, ok := have[k]; ok {
-				continue
-			}
-			have[k] = struct{}{}
-		}
-		dst = append(dst, it)
-	}
-	return dst
-}
-
-// appendUniqueChunks is the ChunkPreview twin of appendUniqueDocs —
+// appendUniqueChunks is the ChunkPreview twin of llm.MergeDocuments —
 // orchestrator uses it to grow the persisted evidence union (shown in
 // the FE rail and re-rendered after page reload) without duplicating
 // chunks that were already in the initial retrieval.

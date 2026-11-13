@@ -3553,6 +3553,7 @@ func llmRouter(t *testing.T) (*store.Store, *LLMManager, http.Handler, string) {
 	r := chi.NewRouter()
 	r.Use(auth.Middleware(testJWTSecret))
 	r.Get("/api/llm/models", h.GetLLMModels)
+	r.Get("/api/llm/default", h.GetLLMDefault)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireRole("admin"))
 		r.Get("/api/settings/llm", h.GetLLMSettings)
@@ -3840,6 +3841,42 @@ func TestGetLLMModels_IncludeDisallowedReturnsPreAllowlist(t *testing.T) {
 	all := resp2.Data.([]any)
 	if len(all) <= len(allowed) {
 		t.Errorf("pre-allowlist returned %d models, want more than the post-allowlist count %d", len(all), len(allowed))
+	}
+}
+
+// The web UI opens a new chat on whatever /api/llm/default returns. With no
+// default saved it must be the recommended model, and the settings endpoint
+// must still report "not set" so the admin form doesn't show a choice nobody
+// made. A saved default wins.
+func TestGetLLMDefault_RecommendsWhenUnsetAndHonoursSavedChoice(t *testing.T) {
+	_, _, router, token := llmRouter(t)
+
+	do := func(method, path, body string) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d; %s", method, path, w.Code, w.Body.String())
+		}
+		var resp APIResponse
+		json.NewDecoder(w.Body).Decode(&resp) //nolint:errcheck // test
+		return resp.Data.(map[string]any)
+	}
+
+	saved := do(http.MethodPut, "/api/settings/llm", `{"default_model":"","anthropic_api_key":"sk-ant-test","openai_api_key":"","ollama_url":"","allowlist":[]}`)
+	if saved["default_model"] != "" {
+		t.Errorf("settings default_model = %v, want empty (nothing was chosen)", saved["default_model"])
+	}
+	if got := do(http.MethodGet, "/api/llm/default", "")["default_model"]; got != "anthropic:claude-sonnet-5-5" {
+		t.Errorf("default with nothing saved = %v, want the recommended Sonnet 5.5", got)
+	}
+
+	do(http.MethodPut, "/api/settings/llm", `{"default_model":"anthropic:claude-haiku-5-5","anthropic_api_key":"sk-ant-test","openai_api_key":"","ollama_url":"","allowlist":[]}`)
+	if got := do(http.MethodGet, "/api/llm/default", "")["default_model"]; got != "anthropic:claude-haiku-5-5" {
+		t.Errorf("default after saving a choice = %v, want the saved Haiku 5.5", got)
 	}
 }
 
