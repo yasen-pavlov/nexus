@@ -48,10 +48,10 @@ type Config struct {
 
 	// LLM (answer generation for RAG). Provider keys are independent so a
 	// single deployment can mix-and-match (e.g. Anthropic for synthesis,
-	// Ollama for the cheap rewriter). Empty default model = first-boot
-	// auto-detect picks the cheapest available across the configured
-	// providers (resolved by the LLM manager, not envconfig).
-	LLMDefaultModel    string `envconfig:"LLM_DEFAULT_MODEL"` // provider-prefixed, e.g. "anthropic:claude-sonnet-4-6"
+	// Ollama for the cheap rewriter). Empty default model = the catalog's
+	// recommended model for the first configured provider (resolved by the
+	// LLM manager, not envconfig).
+	LLMDefaultModel    string `envconfig:"LLM_DEFAULT_MODEL"` // provider-prefixed, e.g. "anthropic:claude-sonnet-5-5"
 	LLMAnthropicAPIKey string `envconfig:"LLM_ANTHROPIC_API_KEY"`
 	LLMOpenAIAPIKey    string `envconfig:"LLM_OPENAI_API_KEY"`
 	// LLMOllamaURL falls back to OllamaURL when empty so single-Ollama

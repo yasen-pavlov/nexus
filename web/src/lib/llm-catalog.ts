@@ -1,5 +1,5 @@
 // LLM (answer-generation) catalog the admin form renders. Mirrors
-// internal/llm/catalog.go. Verified 2026-04-25; admins can also add custom
+// internal/llm/catalog.go. Verified 2026-11-13; admins can also add custom
 // IDs from the allowlist editor when a freshly-released model isn't here yet.
 
 import type { ModelOption } from "@/lib/model-catalog";
@@ -8,7 +8,7 @@ export type LLMProvider = "anthropic" | "openai" | "ollama";
 
 export const LLM_PROVIDERS: { value: LLMProvider; label: string; hint?: string }[] = [
   { value: "anthropic", label: "Anthropic", hint: "Claude — native citations" },
-  { value: "openai", label: "OpenAI", hint: "GPT-5 / GPT-4.1" },
+  { value: "openai", label: "OpenAI", hint: "GPT-6 family" },
   { value: "ollama", label: "Ollama", hint: "Self-hosted local models" },
 ];
 
@@ -17,14 +17,16 @@ export const LLM_PROVIDERS: { value: LLMProvider; label: string; hint?: string }
 // but the admin combobox edits the bare id and the form prefixes it on save.
 export const LLM_BARE_MODELS: Record<LLMProvider, ModelOption[]> = {
   anthropic: [
-    { value: "claude-opus-4-7", label: "claude-opus-4-7", notes: "Flagship synthesis" },
-    { value: "claude-sonnet-4-6", label: "claude-sonnet-4-6", notes: "Recommended default" },
-    { value: "claude-haiku-4-5", label: "claude-haiku-4-5", notes: "Fast / cheap rewriter" },
+    { value: "claude-fable-5-2", label: "claude-fable-5-2", notes: "Deepest reasoning" },
+    { value: "claude-opus-5-5", label: "claude-opus-5-5", notes: "Flagship synthesis" },
+    { value: "claude-sonnet-5-5", label: "claude-sonnet-5-5", notes: "Recommended default" },
+    { value: "claude-haiku-5-5", label: "claude-haiku-5-5", notes: "Fast / cheap rewriter" },
   ],
   openai: [
-    { value: "gpt-5", label: "gpt-5", notes: "Frontier" },
-    { value: "gpt-4.1", label: "gpt-4.1", notes: "Long-context value" },
-    { value: "gpt-5-mini", label: "gpt-5-mini", notes: "Fast / cheap" },
+    { value: "gpt-6-astra", label: "gpt-6-astra", notes: "Flagship" },
+    { value: "gpt-6.1-sol", label: "gpt-6.1-sol", notes: "Recommended default" },
+    { value: "gpt-6.1-terra", label: "gpt-6.1-terra", notes: "Fast" },
+    { value: "gpt-6-luna", label: "gpt-6-luna", notes: "Fast / cheap rewriter" },
   ],
   ollama: [
     { value: "qwen3:14b", label: "qwen3:14b", notes: "16GB VRAM" },
@@ -35,10 +37,20 @@ export const LLM_BARE_MODELS: Record<LLMProvider, ModelOption[]> = {
 };
 
 // Default bare model when admin picks a provider in the combobox. Matches the
-// "Recommended" entry above per provider.
+// "Recommended default" entry above per provider, and the backend's fallback
+// (recommendedDefaults in internal/llm/catalog.go).
 export const DEFAULT_LLM_BARE_MODEL: Record<LLMProvider, string> = {
-  anthropic: "claude-sonnet-4-6",
-  openai: "gpt-5-mini",
+  anthropic: "claude-sonnet-5-5",
+  openai: "gpt-6.1-sol",
+  ollama: "qwen3:14b",
+};
+
+// Default bare model for the rewriter. It runs before every follow-up
+// question inside a 3s budget, so it is the provider's fastest model, not
+// its recommended answer model.
+export const DEFAULT_LLM_REWRITER_BARE_MODEL: Record<LLMProvider, string> = {
+  anthropic: "claude-haiku-5-5",
+  openai: "gpt-6-luna",
   ollama: "qwen3:14b",
 };
 

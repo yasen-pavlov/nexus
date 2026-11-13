@@ -56,6 +56,10 @@ type RegistryFunc func() llm.Registry
 // (e.g. swapping the rewriter model) take effect without restart —
 // mirrors the RegistryFunc pattern.
 type Settings struct {
+	// DefaultModel is the system default answer model (provider-prefixed):
+	// the admin's choice, or the catalog's recommendation when unset. Used
+	// when neither the message nor the chat names a model.
+	DefaultModel string
 	// RewriterModel is the cheap-model id (provider-prefixed) used for
 	// query rewriting AND auto-titling. Empty disables both features.
 	RewriterModel string
@@ -202,7 +206,7 @@ type RunInput struct {
 	ChatID  uuid.UUID
 	UserID  uuid.UUID // for per-user retrieval scoping
 	Content string    // the user's message
-	Model   string    // per-message override; empty = chat default → registry default
+	Model   string    // per-message override; empty = chat default → system default
 }
 
 // ErrChatNotFound is returned when the chat doesn't exist or has been
@@ -228,11 +232,10 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (<-chan Event, erro
 	}
 	registry := o.registry()
 	if modelID == "" {
-		visible := registry.Models()
-		if len(visible) == 0 {
+		modelID = o.systemDefaultModel(registry)
+		if modelID == "" {
 			return nil, errors.New("rag: no LLM models configured")
 		}
-		modelID = visible[0].ID
 	}
 	gen, info, err := registry.Get(modelID)
 	if err != nil {
@@ -251,6 +254,19 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput) (<-chan Event, erro
 	out := make(chan Event, 32)
 	go o.runTurn(ctx, in, chat, modelID, info, gen, out)
 	return out, nil
+}
+
+// systemDefaultModel resolves the model for a turn that names none: the
+// configured system default when the registry can still serve it, otherwise
+// the recommended model among the visible ones. Returns "" when no model is
+// available.
+func (o *Orchestrator) systemDefaultModel(registry llm.Registry) string {
+	if id := strings.TrimSpace(o.settings().DefaultModel); id != "" {
+		if _, _, err := registry.Get(id); err == nil {
+			return id
+		}
+	}
+	return llm.RecommendedDefault(registry.Models())
 }
 
 // turnState holds the mutable per-turn accumulators the orchestrator
@@ -594,18 +610,20 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 	}
 
 	// Phase 5 round loop. Initial state:
+	//   initialDocs     — the retrieval result, sent unchanged on every round.
 	//   documents       — cumulative across rounds (initial + tool-fetched), deduped
-	//                     by DocID. Stable order so citation indices stay valid for
-	//                     non-Anthropic providers and Anthropic's document_index
-	//                     also stays monotonic.
+	//                     by DocID, in the order adapters number them (see
+	//                     llm.AllDocuments). Drives [N] citation parsing and the
+	//                     context budget; a copy, so growing it leaves initialDocs
+	//                     alone.
 	//   rolledMessages  — the conversation we feed the LLM. Grows with each round:
 	//                     [history, user, asst+tool_use, tool_result, asst+tool_use,
 	//                     tool_result, ..., asst]. Ends when stop != tool_use.
 	//   dispatcher      — built per turn so the per-user OwnerID is baked in
 	//                     (master plan §2 hard constraint).
-	documents := docs
 	rolledMessages := append(history, llm.Message{Role: llm.RoleUser, Content: in.Content})
 	dispatcher := newSearchToolDispatcher(o.search, o.attachments, o.binaries, in.UserID, info.SupportsVision, info.SupportsPDF, o.log)
+	dispatcher.nativeDocs = info.SupportsCitations
 	loop := &roundLoop{
 		st:                 st,
 		gen:                gen,
@@ -615,7 +633,8 @@ func (o *Orchestrator) runTurn(ctx context.Context, in RunInput, chat *model.Cha
 		dispatcher:         dispatcher,
 		useNativeCitations: info.SupportsCitations,
 		isFirst:            isFirstAssistantTurn,
-		documents:          documents,
+		initialDocs:        docs,
+		documents:          append([]llm.Document(nil), docs...),
 		rolledMessages:     rolledMessages,
 	}
 	loop.run(ctx)
@@ -722,6 +741,7 @@ type roundLoop struct {
 	useNativeCitations bool
 	isFirst            bool
 
+	initialDocs    []llm.Document
 	documents      []llm.Document
 	rolledMessages []llm.Message
 }
@@ -731,6 +751,9 @@ type roundResult struct {
 	stop      llm.StopReason
 	roundText string
 	calls     []llm.ToolCall
+	// replay is the adapter's own rendering of the round (llm.Event.Replay),
+	// sent back verbatim with the tool results.
+	replay any
 	// done is set when the drain already finalised the turn (cancel /
 	// stream-closed / EventError); the loop must return without further
 	// work.
@@ -817,7 +840,17 @@ const (
 // overflowing it. Returns false when the window is unknown (treat as ample).
 func (l *roundLoop) contextNearLimit() bool {
 	return contextNearLimit(l.info.ContextWindow, l.st.o.cfg.MaxTokens,
-		l.st.o.cfg.SystemPrompt, l.documents, l.rolledMessages)
+		l.systemPrompt(), l.documents, l.rolledMessages)
+}
+
+// systemPrompt is the turn's instruction prefix. A provider with native
+// citations gets the built-in prompt's marker-free variant; a prompt the host
+// configured itself is used as given.
+func (l *roundLoop) systemPrompt() string {
+	if l.useNativeCitations && l.st.o.cfg.SystemPrompt == systemPromptDefault {
+		return systemPromptNative
+	}
+	return l.st.o.cfg.SystemPrompt
 }
 
 // contextNearLimit is the pure core of the budget check, split out so it's
@@ -860,17 +893,23 @@ func contextNearLimit(window, maxTokens int, systemPrompt string, docs []llm.Doc
 // errors synchronously.
 func (l *roundLoop) startRound(ctx context.Context, toolRound int) (<-chan llm.Event, bool) {
 	st := l.st
-	// Tools for this round. nil after the cap so the model is forced to
-	// answer from current context — no separate "force-finish" branch
-	// needed. Also drop tools when the accumulated context is approaching the
-	// model's window, so a long agentic turn degrades to "answer now" instead
-	// of growing past the limit and triggering a provider 400 (which
-	// RetryGenerator won't retry). We never trim existing documents —
-	// citation [N] indices depend on their stable cumulative order — so
-	// withholding further tools is the only safe backpressure.
-	var roundTools []llm.Tool
-	if toolRound < l.settings.MaxToolRounds && !l.contextNearLimit() {
-		roundTools = BuildToolList(l.info, l.settings.MaxToolRounds, l.settings.EnableOpenAttachment)
+	// The request stays append-only across the rounds of a turn: same system
+	// prompt, same tools, same initial documents, new material only at the
+	// end. Providers bind the model's reasoning to everything before it, so
+	// a mid-turn change to any of those invalidates it.
+	//
+	// After the round cap the model is told to answer from current context
+	// with ToolChoiceNone, tools still defined. The same applies when the
+	// accumulated context is approaching the model's window, so a long
+	// agentic turn degrades to "answer now" instead of growing past the
+	// limit and triggering a provider 400 (which RetryGenerator won't
+	// retry). We never trim existing documents — citation [N] indices depend
+	// on their stable cumulative order — so withholding further tool calls
+	// is the only safe backpressure.
+	roundTools := BuildToolList(l.info, l.settings.MaxToolRounds, l.settings.EnableOpenAttachment)
+	toolChoice := llm.ToolChoiceAuto
+	if toolRound >= l.settings.MaxToolRounds || l.contextNearLimit() {
+		toolChoice = llm.ToolChoiceNone
 	}
 
 	llmReq := llm.GenerateRequest{
@@ -878,10 +917,11 @@ func (l *roundLoop) startRound(ctx context.Context, toolRound int) (<-chan llm.E
 		// Append the current date so the model can resolve relative time
 		// windows. It's stable for the whole day, so the Anthropic system-block
 		// cache still holds across turns (it only rotates at midnight).
-		System:      st.o.cfg.SystemPrompt + "\n\n" + dateContextLine(st.turnStart),
-		Documents:   l.documents,
+		System:      l.systemPrompt() + "\n\n" + dateContextLine(st.turnStart),
+		Documents:   l.initialDocs,
 		Messages:    l.rolledMessages,
 		Tools:       roundTools,
+		ToolChoice:  toolChoice,
 		MaxTokens:   st.o.cfg.MaxTokens,
 		EnableCache: true,
 	}
@@ -983,7 +1023,9 @@ func (l *roundLoop) handleDone(ev llm.Event, parser *CitationParser, roundText *
 	if roundStop == "" {
 		roundStop = llm.StopEnd
 	}
-	return l.finishDrain(roundStop, roundText.String(), toolBuf, toolOrder)
+	res := l.finishDrain(roundStop, roundText.String(), toolBuf, toolOrder)
+	res.replay = ev.Replay
+	return res
 }
 
 // handleStreamError anchors any buffered citations and finalises the turn
@@ -1065,7 +1107,7 @@ func (l *roundLoop) finishDrain(stop llm.StopReason, roundText string, toolBuf m
 // dispatchRound appends the assistant tool_use turn, dispatches each tool
 // call in order, appends the tool_result turns, and grows the cumulative
 // documents/evidence/tool-trace accumulators. Document ordering is stable:
-// appendUniqueDocs only ever appends new doc ids at the tail.
+// llm.MergeDocuments only ever appends new doc ids at the tail.
 func (l *roundLoop) dispatchRound(ctx context.Context, res roundResult) {
 	st := l.st
 	// Append the assistant turn (text emitted this round + tool_use
@@ -1077,6 +1119,7 @@ func (l *roundLoop) dispatchRound(ctx context.Context, res roundResult) {
 		Role:      llm.RoleAssistant,
 		Content:   res.roundText,
 		ToolCalls: res.calls,
+		Replay:    res.replay,
 	})
 
 	// Dispatch each call. Visibility filter applies because the dispatcher
@@ -1088,8 +1131,9 @@ func (l *roundLoop) dispatchRound(ctx context.Context, res roundResult) {
 			Role:       llm.RoleTool,
 			Content:    outcome.ResultText,
 			ToolCallID: call.ID,
+			Documents:  outcome.Docs,
 		})
-		l.documents = appendUniqueDocs(l.documents, outcome.Docs)
+		l.documents = llm.MergeDocuments(l.documents, outcome.Docs)
 		st.evidence = appendUniqueChunks(st.evidence, outcome.Chunks)
 		st.toolCallsCollected = append(st.toolCallsCollected, model.ChatToolCall{
 			Name:          call.Name,

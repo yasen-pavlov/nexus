@@ -45,7 +45,7 @@ func newAskCmd(rf *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&modelFlag, "model", "m", "",
-		"model to use (provider:id, e.g. anthropic:claude-sonnet-4-6); server default if empty")
+		"model to use (provider:id, e.g. anthropic:claude-sonnet-5-5); server default if empty")
 	cmd.Flags().BoolVar(&showSources, "sources", false, "show all retrieved sources, not just cited ones")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "output the full answer + sources as one JSON object")
 	return cmd

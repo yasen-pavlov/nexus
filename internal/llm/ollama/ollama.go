@@ -101,6 +101,14 @@ func (c *Client) Generate(ctx context.Context, req llm.GenerateRequest) (<-chan 
 		return nil, errors.New("ollama: model required")
 	}
 
+	// Ollama gets every document in one numbered system block and has no
+	// tool_choice: fold in the documents tool calls added, and express "no
+	// tool calls" by withholding the tools.
+	req.Documents = llm.AllDocuments(req)
+	if req.ToolChoice == llm.ToolChoiceNone {
+		req.Tools = nil
+	}
+
 	useStream := len(req.Tools) == 0 || !knownToolStreamingBroken[req.Model]
 
 	body, err := buildBody(req, useStream)

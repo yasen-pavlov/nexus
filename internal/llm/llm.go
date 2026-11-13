@@ -14,6 +14,8 @@
 //     parser (not in this package).
 //   - EventToolCall arguments accumulate across deltas; Final=true marks the
 //     end of a tool call's arguments.
+//   - EventDone may carry a Replay: the provider's own rendering of the turn,
+//     which the caller hands back on the next round of a tool loop.
 //   - ctx cancellation aborts the underlying SDK call and emits a final
 //     EventDone with StopCancelled.
 package llm
@@ -112,6 +114,15 @@ type Message struct {
 	Content    string
 	ToolCalls  []ToolCall // assistant turns
 	ToolCallID string     // tool turns reference the assistant's tool_use id
+	// Documents are the documents a tool call returned (tool turns only).
+	// They join the turn's evidence set after GenerateRequest.Documents, in
+	// message order — see AllDocuments.
+	Documents []Document
+	// Replay is the Event.Replay of the EventDone that ended this assistant
+	// turn (assistant turns inside an in-flight tool loop only). The adapter
+	// that produced it sends the turn back verbatim instead of rebuilding it
+	// from Content + ToolCalls, which is how reasoning survives a tool round.
+	Replay any
 }
 
 // ToolCall is a fully-formed tool invocation in a persisted message.
@@ -128,16 +139,48 @@ type Tool struct {
 	Schema      map[string]any // JSON Schema (object with properties, required)
 }
 
+// Reasoning selects how much hidden reasoning ("thinking") a request may
+// spend. Adapters translate it per model; models without reasoning ignore it.
+type Reasoning string
+
+const (
+	// ReasoningDefault is the adapter's standard level for answering: the
+	// model reasons when the question needs it.
+	ReasoningDefault Reasoning = ""
+	// ReasoningMinimal asks for the fastest response the model can give. For
+	// short utility calls (query rewriting, titles) with tight output caps
+	// and latency budgets.
+	ReasoningMinimal Reasoning = "minimal"
+)
+
+// ToolChoice constrains tool use for one request.
+type ToolChoice string
+
+const (
+	// ToolChoiceAuto lets the model decide whether to call a tool.
+	ToolChoiceAuto ToolChoice = ""
+	// ToolChoiceNone forbids tool calls while keeping the tool definitions in
+	// the request. Dropping the definitions instead would change the prompt
+	// prefix mid-turn, which invalidates the reasoning some providers bind
+	// to it (and misses their prompt cache).
+	ToolChoiceNone ToolChoice = "none"
+)
+
 // GenerateRequest is the unified shape all adapters consume.
 type GenerateRequest struct {
-	// Model is registry-resolved, e.g. "anthropic:claude-sonnet-4-6". The
+	// Model is registry-resolved, e.g. "anthropic:claude-sonnet-5-5". The
 	// adapter for the resolved provider only sees the bare model id.
-	Model       string
-	System      string
+	Model  string
+	System string
+	// Documents are the documents retrieved before the model's first round.
+	// They must not change between the rounds of one turn; documents a tool
+	// call adds travel on that tool's Message instead.
 	Documents   []Document
 	Messages    []Message
 	Tools       []Tool
-	MaxTokens   int
+	ToolChoice  ToolChoice
+	Reasoning   Reasoning
+	MaxTokens   int // cap on the visible answer; adapters add reasoning headroom
 	Temperature *float32
 	// EnableCache hints prompt caching where supported. Anthropic uses
 	// explicit cache_control breakpoints; OpenAI auto-prefix-caches; Ollama
@@ -181,7 +224,11 @@ type Event struct {
 	ToolCall   *ToolCallDelta // EventToolCall
 	StopReason StopReason     // EventDone
 	Usage      *Usage         // EventDone (may be nil if provider didn't report)
-	Err        error          // EventError
+	// Replay is set on an EventDone that stopped for tool use, by adapters
+	// whose provider needs the turn sent back exactly as produced. Opaque to
+	// callers: copy it onto the assistant Message and never persist it.
+	Replay any   // EventDone
+	Err    error // EventError
 }
 
 // Citation ties a span of generated text back to a source Document. DocID
@@ -227,9 +274,9 @@ type Generator interface {
 // drive UI affordances and orchestrator decisions (e.g. only attach images
 // when SupportsVision).
 type ModelInfo struct {
-	ID                string // provider-prefixed: "anthropic:claude-sonnet-4-6"
+	ID                string // provider-prefixed: "anthropic:claude-sonnet-5-5"
 	Provider          string
-	BareID            string // "claude-sonnet-4-6"
+	BareID            string // "claude-sonnet-5-5"
 	DisplayName       string
 	ContextWindow     int
 	SupportsCitations bool

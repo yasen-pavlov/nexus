@@ -76,7 +76,7 @@ func TestRunTurn_OneToolRound_DispatchesAndCompletes(t *testing.T) {
 			{Kind: llm.EventText, TextDelta: "Let me check. "},
 			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Name: "nexus_search", ArgsJSON: `{"query":"beta"}`}},
 			{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Final: true}},
-			{Kind: llm.EventDone, StopReason: llm.StopToolUse, Usage: &llm.Usage{InputTokens: 100, OutputTokens: 20}},
+			{Kind: llm.EventDone, StopReason: llm.StopToolUse, Usage: &llm.Usage{InputTokens: 100, OutputTokens: 20}, Replay: "round-1-as-the-provider-sent-it"},
 		},
 		// Round 2: model produces the answer.
 		{
@@ -132,9 +132,26 @@ func TestRunTurn_OneToolRound_DispatchesAndCompletes(t *testing.T) {
 		}
 	}
 
-	// Round-2 request carries the cumulative documents (initial + tool-fetched).
-	if got := len(gen.requestAt(1).Documents); got != 2 {
-		t.Errorf("round 2 Documents = %d, want 2 (cumulative)", got)
+	// Round 2 is round 1 plus new material at the end. Providers bind the
+	// model's reasoning to everything before it, so the initial documents
+	// must be re-sent unchanged and the tool-fetched one must travel on its
+	// tool turn; the evidence set is still initial + tool-fetched.
+	round1, round2 := gen.requestAt(0), gen.requestAt(1)
+	if len(round2.Documents) != 1 || round2.Documents[0].ID != round1.Documents[0].ID {
+		t.Errorf("round 2 initial Documents = %+v, want round 1's single document unchanged", round2.Documents)
+	}
+	if got := len(llm.AllDocuments(round2)); got != 2 {
+		t.Errorf("round 2 evidence = %d documents, want 2 (initial + tool-fetched)", got)
+	}
+	last := round2.Messages[len(round2.Messages)-1]
+	if last.Role != llm.RoleTool || len(last.Documents) != 1 || last.Documents[0].Content != "beta" {
+		t.Errorf("tool turn should carry the fetched document, got role=%s docs=%+v", last.Role, last.Documents)
+	}
+	// The assistant turn goes back with the provider's own rendering of it,
+	// which is how reasoning survives the tool round.
+	toolUseTurn := round2.Messages[len(round2.Messages)-2]
+	if toolUseTurn.Role != llm.RoleAssistant || toolUseTurn.Replay != "round-1-as-the-provider-sent-it" {
+		t.Errorf("assistant turn Replay = %v (role %s), want the round-1 replay", toolUseTurn.Replay, toolUseTurn.Role)
 	}
 
 	// Persisted assistant message captures everything.
@@ -199,13 +216,13 @@ func TestRunTurn_TwoToolRounds_DispatchesBoth(t *testing.T) {
 	if starts != 2 {
 		t.Errorf("EvToolStart = %d, want 2", starts)
 	}
-	// Cumulative documents grow per round: init=1 → after r1=2 → after r2=3.
-	if got := len(gen.requestAt(2).Documents); got != 3 {
-		t.Errorf("round 3 Documents = %d, want 3", got)
+	// Evidence grows per round: init=1 → after r1=2 → after r2=3.
+	if got := len(llm.AllDocuments(gen.requestAt(2))); got != 3 {
+		t.Errorf("round 3 evidence = %d documents, want 3", got)
 	}
 }
 
-func TestRunTurn_ToolRoundCapExceeded_FinalRoundHasNoTools(t *testing.T) {
+func TestRunTurn_ToolRoundCapExceeded_FinalRoundForbidsToolCalls(t *testing.T) {
 	srch := &rotatingSearch{turns: [][]model.DocumentHit{
 		{{Document: model.Document{ID: uuid.New(), Title: "init", SourceType: "imap", Content: "x"}}},
 		{{Document: model.Document{ID: uuid.New(), Title: "r1", SourceType: "imap", Content: "y"}}},
@@ -226,12 +243,14 @@ func TestRunTurn_ToolRoundCapExceeded_FinalRoundHasNoTools(t *testing.T) {
 	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 
 	// Round 1 (toolRound==0): tools enabled.
-	if got := len(gen.requestAt(0).Tools); got != 1 {
-		t.Errorf("round 0 Tools = %d, want 1", got)
+	if r := gen.requestAt(0); len(r.Tools) != 1 || r.ToolChoice != llm.ToolChoiceAuto {
+		t.Errorf("round 0: Tools = %d, ToolChoice = %q, want 1 tool the model may call", len(r.Tools), r.ToolChoice)
 	}
-	// Round 2 (toolRound==1, == MaxToolRounds): tools disabled — model is forced to answer.
-	if got := len(gen.requestAt(1).Tools); got != 0 {
-		t.Errorf("round 1 Tools = %d, want 0 (cap exceeded)", got)
+	// Round 2 (toolRound==1, == MaxToolRounds): the model is forced to
+	// answer. The tool definitions stay — dropping them mid-turn changes the
+	// prompt prefix — and tool calls are forbidden instead.
+	if r := gen.requestAt(1); len(r.Tools) != 1 || r.ToolChoice != llm.ToolChoiceNone {
+		t.Errorf("round 1: Tools = %d, ToolChoice = %q, want the same tool with calls forbidden", len(r.Tools), r.ToolChoice)
 	}
 }
 
@@ -400,9 +419,8 @@ func TestRunTurn_CumulativeDocsDeduped(t *testing.T) {
 	chat := makeChat(t, chats, toolsCapableModel().ID)
 	runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
 
-	round2 := gen.requestAt(1)
-	if got := len(round2.Documents); got != 2 {
-		t.Errorf("round 2 Documents = %d, want 2 (deduped — shared id collapsed)", got)
+	if got := len(llm.AllDocuments(gen.requestAt(1))); got != 2 {
+		t.Errorf("round 2 evidence = %d documents, want 2 (deduped — shared id collapsed)", got)
 	}
 }
 
@@ -580,4 +598,56 @@ func (s *sequencedSearch) Run(_ context.Context, _ model.SearchRequest) (*model.
 		return nil, step.err
 	}
 	return &model.SearchResult{Documents: step.docs, TotalCount: len(step.docs)}, nil
+}
+
+// A provider with a citations API attaches citations itself. Told to write
+// [N] markers anyway, Claude Sonnet 5.5 printed a literal "[3]" beside the
+// native citation (seen against the live API), so those models get neither
+// the marker instruction nor the marker-numbered copy of the tool's hits —
+// the hits reach them as native documents on the tool turn. Models without
+// the API keep both, since the [N] parser is their only source of citations.
+func TestRunTurn_CitationStyleFollowsTheProvider(t *testing.T) {
+	cases := []struct {
+		name        string
+		info        llm.ModelInfo
+		wantMarkers bool
+	}{
+		{"native citations", toolsCapableModel(), false},
+		{"[N] markers", llm.ModelInfo{ID: "openai:gpt-6.1-sol", Provider: "openai", BareID: "gpt-6.1-sol", SupportsTools: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srch := &rotatingSearch{turns: [][]model.DocumentHit{
+				{{Document: model.Document{ID: uuid.New(), Title: "Invoice March", SourceType: "paperless", Content: "march body"}}},
+				{{Document: model.Document{ID: uuid.New(), Title: "Invoice February", SourceType: "paperless", Content: "february body"}}},
+			}}
+			gen := &fakeGenerator{eventsPerCall: [][]llm.Event{
+				{
+					{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Name: "nexus_search", ArgsJSON: `{"query":"february"}`}},
+					{Kind: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{ID: "tu_1", Final: true}},
+					{Kind: llm.EventDone, StopReason: llm.StopToolUse},
+				},
+				{
+					{Kind: llm.EventText, TextDelta: "ok"},
+					{Kind: llm.EventDone, StopReason: llm.StopEnd},
+				},
+			}}
+			o, chats := newOrchTestWithSettings(t, gen, tc.info, srch, Settings{MaxToolRounds: 3})
+			chat := makeChat(t, chats, tc.info.ID)
+			runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "compare"})
+
+			round2 := gen.requestAt(1)
+			if got := strings.Contains(round2.System, "[N]"); got != tc.wantMarkers {
+				t.Errorf("system prompt asks for [N] markers = %v, want %v", got, tc.wantMarkers)
+			}
+			toolTurn := round2.Messages[len(round2.Messages)-1]
+			if got := strings.Contains(toolTurn.Content, "february body"); got != tc.wantMarkers {
+				t.Errorf("tool result text repeats the document body = %v, want %v: %q", got, tc.wantMarkers, toolTurn.Content)
+			}
+			// Either way the model must be able to tell what the search found.
+			if !strings.Contains(toolTurn.Content, "Invoice February") || len(toolTurn.Documents) != 1 {
+				t.Errorf("tool turn should name the hit and carry it as a document: %q docs=%d", toolTurn.Content, len(toolTurn.Documents))
+			}
+		})
+	}
 }

@@ -186,6 +186,7 @@ func buildStack(ctx context.Context, cfg *config.Config, st *store.Store, log *z
 		Registry: lm.Get,
 		Settings: func() rag.Settings {
 			return rag.Settings{
+				DefaultModel:         lm.DefaultModel(),
 				RewriterModel:        lm.RewriterModel(),
 				MaxToolRounds:        ragMgr.MaxToolRounds(),
 				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),

@@ -4,6 +4,17 @@
 // The adapter is the only one that emits llm.EventCitation natively, mapping
 // the SDK's citations_delta events to Citation events tied to the Document.ID
 // the orchestrator originally provided.
+//
+// Claude models from the 5 generation on reason ("think") by default and bind
+// that reasoning to everything sent before it. Two rules follow, and both are
+// enforced here rather than left to callers:
+//
+//   - Requests within one turn are append-only. Documents a tool call adds
+//     ride in that tool's result instead of being inserted at the front, and
+//     tool use is switched off with tool_choice rather than by dropping the
+//     tool definitions.
+//   - A turn that stopped for tool use is sent back exactly as the API
+//     returned it (llm.Event.Replay), thinking blocks included.
 package anthropic
 
 import (
@@ -22,6 +33,18 @@ import (
 
 // Default cap when callers don't set MaxTokens — Anthropic requires the field.
 const defaultMaxTokens = 4096
+
+// max_tokens covers thinking as well as the visible answer, so a request that
+// may think gets headroom on top of the caller's answer cap. Without it a
+// model spends a small cap on thinking and returns no text at all.
+const (
+	// answerThinkingReserve covers default-level requests. Thinking at medium
+	// effort stayed under ~1,000 tokens on multi-step document questions.
+	answerThinkingReserve = 4096
+	// minimalThinkingReserve covers minimal requests on models that cannot
+	// switch thinking off (Opus 5.5, Fable 5.2).
+	minimalThinkingReserve = 1024
+)
 
 // Client is an llm.Generator backed by anthropic-sdk-go.
 type Client struct {
@@ -63,21 +86,22 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 		maxTokens = defaultMaxTokens
 	}
 
-	params := sdk.MessageNewParams{
-		Model:     sdk.Model(req.Model),
-		MaxTokens: int64(maxTokens),
-	}
-	if req.Temperature != nil {
+	params := sdk.MessageNewParams{Model: sdk.Model(req.Model)}
+	if thinksByDefault(req.Model) {
+		maxTokens += applyReasoning(&params, req.Model, req.Reasoning)
+	} else if req.Temperature != nil {
+		// Models that think by default reject sampling parameters.
 		params.Temperature = sdk.Float(float64(*req.Temperature))
 	}
+	params.MaxTokens = int64(maxTokens)
 	if sys := buildSystem(req); sys != nil {
 		params.System = sys
 	}
 
-	// Conversation history: replay messages in order. Documents (if any)
-	// are merged into the *first* user message so the citation index
-	// reflects document_index 0..N-1 from the start.
-	messages := mapMessages(req.Messages)
+	// Conversation history: replay messages in order. The initial documents
+	// are merged into the *first* user message; documents a tool call added
+	// stay with that tool's result (see mapMessages).
+	messages := mapMessages(req)
 	if leadingDocBlocks := buildLeadingDocBlocks(req); len(leadingDocBlocks) > 0 {
 		messages = prependDocs(messages, leadingDocBlocks)
 	}
@@ -88,9 +112,60 @@ func (c *Client) buildParams(req llm.GenerateRequest) (sdk.MessageNewParams, err
 
 	if tools := buildTools(req.Tools); len(tools) > 0 {
 		params.Tools = tools
+		if req.ToolChoice == llm.ToolChoiceNone {
+			none := sdk.NewToolChoiceNoneParam()
+			params.ToolChoice = sdk.ToolChoiceUnionParam{OfNone: &none}
+		}
 	}
 
 	return params, nil
+}
+
+// thinksByDefault reports whether the model reasons unless told otherwise and
+// takes its steering through output_config.effort: every Claude model from
+// the 5 generation on, including the Fable and Mythos lines. Claude 3.x and
+// 4.x answer without thinking by default and partly reject these settings, so
+// they are sent none of them. Unknown ids count as current: new models follow
+// the current rules, the legacy list is closed.
+func thinksByDefault(model string) bool {
+	for _, legacy := range []string{"claude-opus-4", "claude-sonnet-4", "claude-haiku-4", "claude-3", "claude-2", "claude-instant"} {
+		if strings.HasPrefix(model, legacy) {
+			return false
+		}
+	}
+	return true
+}
+
+// applyReasoning sets effort and thinking for a model that thinks by default
+// and returns the max_tokens headroom the request needs.
+//
+// Answers run adaptive thinking at medium effort: the model skips thinking on
+// simple lookups (same time to first token as with thinking off) and spends
+// ~3s on multi-step questions. Minimal requests use low effort plus the
+// model's off switch where it has one; measured against the live API on
+// 2026-11-13, Haiku 5.5 otherwise spends the rewriter's whole 80-token cap on
+// thinking and returns nothing.
+func applyReasoning(params *sdk.MessageNewParams, model string, level llm.Reasoning) (reserve int) {
+	if level != llm.ReasoningMinimal {
+		params.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffortMedium}
+		return answerThinkingReserve
+	}
+	params.OutputConfig = sdk.OutputConfigParam{Effort: sdk.OutputConfigEffortLow}
+	switch {
+	case strings.HasPrefix(model, "claude-sonnet-5-5"):
+		// Sonnet 5.5 rejects "disabled"; between_tools is its off switch.
+		off := sdk.NewThinkingConfigBetweenToolsParam()
+		params.Thinking = sdk.ThinkingConfigParamUnion{OfBetweenTools: &off}
+		return 0
+	case strings.HasPrefix(model, "claude-haiku-5-5"):
+		off := sdk.NewThinkingConfigDisabledParam()
+		params.Thinking = sdk.ThinkingConfigParamUnion{OfDisabled: &off}
+		return 0
+	default:
+		// Always-on models (Opus 5.5, Fable 5.2) and ids this table doesn't
+		// know: low effort is the only lever, so leave room to think.
+		return minimalThinkingReserve
+	}
 }
 
 // buildSystem renders the system prompt as a single text block, or nil when
@@ -122,7 +197,8 @@ func buildLeadingDocBlocks(req llm.GenerateRequest) []sdk.ContentBlockParamUnion
 	var blocks []sdk.ContentBlockParamUnion
 	for i, doc := range req.Documents {
 		isLast := i == len(req.Documents)-1
-		blocks = append(blocks, docToBlock(doc, req.EnableCache && isLast))
+		block := docToBlock(doc, req.EnableCache && isLast)
+		blocks = append(blocks, sdk.ContentBlockParamUnion{OfDocument: &block})
 	}
 	for _, doc := range req.Documents {
 		for _, img := range doc.Images {
@@ -163,6 +239,12 @@ type toolState struct {
 	name string
 }
 
+// replay is this adapter's llm.Event.Replay payload: the content blocks of an
+// assistant turn exactly as the API returned them, thinking blocks included.
+type replay struct {
+	blocks []sdk.ContentBlockParamUnion
+}
+
 // run drains the SDK stream and forwards events.
 func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.GenerateRequest, out chan<- llm.Event) {
 	defer close(out)
@@ -172,9 +254,18 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 	tools := make(map[int64]toolState)
 	stopReason := llm.StopEnd
 	var usage *llm.Usage
+	// The accumulated message is what a tool round has to send back. Thinking
+	// blocks arrive as a signature with no text, so they can't be rebuilt
+	// from the events forwarded to the caller.
+	var turn sdk.Message
 
 	for stream.Next() {
-		switch v := stream.Current().AsAny().(type) {
+		event := stream.Current()
+		if err := turn.Accumulate(event); err != nil {
+			out <- llm.Event{Kind: llm.EventError, Err: fmt.Errorf("anthropic: stream: %w", err)}
+			return
+		}
+		switch v := event.AsAny().(type) {
 		case sdk.ContentBlockStartEvent:
 			if !handleBlockStart(ctx, v, tools, out) {
 				return
@@ -203,7 +294,11 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 		return
 	}
 
-	out <- llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+	done := llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
+	if stopReason == llm.StopToolUse {
+		done.Replay = replay{blocks: turn.ToParam().Content}
+	}
+	out <- done
 }
 
 // streamErrEvent maps a stream error to the terminal event: a cancelled Done
@@ -283,7 +378,7 @@ func handleBlockStop(ctx context.Context, v sdk.ContentBlockStopEvent, tools map
 
 // docToBlock wraps a Document as a citation-enabled custom-content document
 // block so Claude emits structured citations tied to Document.ID.
-func docToBlock(doc llm.Document, enableCache bool) sdk.ContentBlockParamUnion {
+func docToBlock(doc llm.Document, enableCache bool) sdk.DocumentBlockParam {
 	// Each document is rendered as a custom-content block whose inner
 	// content array is a single text block. Title carries Document.ID
 	// (provider-prefixed by the orchestrator) so we can resolve citation
@@ -309,7 +404,7 @@ func docToBlock(doc llm.Document, enableCache bool) sdk.ContentBlockParamUnion {
 		// Pack source+title+date here for easy in-prompt provenance.
 		doc1.Context = sdk.String(metaLine(doc))
 	}
-	return sdk.ContentBlockParamUnion{OfDocument: &doc1}
+	return doc1
 }
 
 func metaLine(doc llm.Document) string {
@@ -329,9 +424,10 @@ func metaLine(doc llm.Document) string {
 // mapMessages maps llm.Messages → Anthropic MessageParams. Tool turns become
 // user messages carrying tool_result blocks; assistant turns with tool_calls
 // become assistant messages with tool_use blocks.
-func mapMessages(in []llm.Message) []sdk.MessageParam {
-	out := make([]sdk.MessageParam, 0, len(in))
-	for _, m := range in {
+func mapMessages(req llm.GenerateRequest) []sdk.MessageParam {
+	out := make([]sdk.MessageParam, 0, len(req.Messages))
+	shown := newShownDocs(req.Documents)
+	for _, m := range req.Messages {
 		switch m.Role {
 		case llm.RoleUser:
 			out = append(out, mapUserMessage(m))
@@ -340,13 +436,81 @@ func mapMessages(in []llm.Message) []sdk.MessageParam {
 		case llm.RoleTool:
 			// Tool turns are rendered as user messages on Anthropic with
 			// a single tool_result block.
-			block := sdk.NewToolResultBlock(m.ToolCallID, m.Content, false)
-			out = append(out, sdk.NewUserMessage(block))
+			out = append(out, sdk.NewUserMessage(toolResultBlock(m, shown)))
 		case llm.RoleSystem:
 			// System content goes through GenerateRequest.System; ignore here.
 		}
 	}
 	return out
+}
+
+// shownDocs records which documents and media the request has already put in
+// front of the model, so each tool result adds only what is new.
+type shownDocs struct {
+	docs  map[string]struct{}
+	media map[string]struct{}
+}
+
+func newShownDocs(initial []llm.Document) *shownDocs {
+	s := &shownDocs{docs: map[string]struct{}{}, media: map[string]struct{}{}}
+	for _, d := range initial {
+		s.docs[d.ID] = struct{}{}
+		for _, img := range d.Images {
+			s.firstMedia(d.ID, img.SourceID)
+		}
+		for _, pdf := range d.PDFs {
+			s.firstMedia(d.ID, pdf.SourceID)
+		}
+	}
+	return s
+}
+
+// firstMedia reports whether this is the first sighting of a document's
+// media item. Media without a SourceID can't be told apart, so it always
+// counts as new — the same rule llm.MergeDocuments applies.
+func (s *shownDocs) firstMedia(docID, sourceID string) bool {
+	if sourceID == "" {
+		return true
+	}
+	key := docID + "\x00" + sourceID
+	if _, seen := s.media[key]; seen {
+		return false
+	}
+	s.media[key] = struct{}{}
+	return true
+}
+
+// toolResultBlock renders a tool turn: its text, then the documents and media
+// the call returned that the model hasn't been shown yet. They sit here, not
+// with the initial documents at the front of the request, because inserting
+// anything ahead of the model's earlier thinking invalidates that thinking
+// (a 400 on Fable 5.2). Citations work the same from either place.
+func toolResultBlock(m llm.Message, shown *shownDocs) sdk.ContentBlockParamUnion {
+	var content []sdk.ToolResultBlockParamContentUnion
+	if m.Content != "" {
+		content = append(content, sdk.ToolResultBlockParamContentUnion{OfText: &sdk.TextBlockParam{Text: m.Content}})
+	}
+	for _, doc := range m.Documents {
+		if _, seen := shown.docs[doc.ID]; !seen {
+			shown.docs[doc.ID] = struct{}{}
+			block := docToBlock(doc, false)
+			content = append(content, sdk.ToolResultBlockParamContentUnion{OfDocument: &block})
+		}
+		for _, img := range doc.Images {
+			if shown.firstMedia(doc.ID, img.SourceID) {
+				content = append(content, sdk.ToolResultBlockParamContentUnion{OfImage: ImageContentBlock(img).OfImage})
+			}
+		}
+		for _, pdf := range doc.PDFs {
+			if shown.firstMedia(doc.ID, pdf.SourceID) {
+				content = append(content, sdk.ToolResultBlockParamContentUnion{OfDocument: PDFContentBlock(pdf).OfDocument})
+			}
+		}
+	}
+	return sdk.ContentBlockParamUnion{OfToolResult: &sdk.ToolResultBlockParam{
+		ToolUseID: m.ToolCallID,
+		Content:   content,
+	}}
 }
 
 // mapUserMessage maps a user turn to an Anthropic user message.
@@ -359,7 +523,11 @@ func mapUserMessage(m llm.Message) sdk.MessageParam {
 }
 
 // mapAssistantMessage maps an assistant turn, including any tool_use blocks.
+// A turn that carries this adapter's replay goes back verbatim.
 func mapAssistantMessage(m llm.Message) sdk.MessageParam {
+	if r, ok := m.Replay.(replay); ok && len(r.blocks) > 0 {
+		return sdk.NewAssistantMessage(r.blocks...)
+	}
 	blocks := []sdk.ContentBlockParamUnion{}
 	if m.Content != "" {
 		blocks = append(blocks, sdk.NewTextBlock(m.Content))
@@ -436,7 +604,8 @@ func mapStopReason(r sdk.StopReason) llm.StopReason {
 		return llm.StopEnd
 	case sdk.StopReasonToolUse:
 		return llm.StopToolUse
-	case sdk.StopReasonMaxTokens:
+	case sdk.StopReasonMaxTokens, sdk.StopReasonModelContextWindowExceeded:
+		// Both mean the answer was cut short by a token limit.
 		return llm.StopMaxTokens
 	case sdk.StopReasonRefusal:
 		return llm.StopFiltered

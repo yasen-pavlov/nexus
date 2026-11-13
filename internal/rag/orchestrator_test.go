@@ -754,3 +754,44 @@ func TestParserDocsFromLLM_PreservesOrder(t *testing.T) {
 		t.Errorf("pd=%+v", pd)
 	}
 }
+
+// A turn that names no model, in a chat with no default, answers with the
+// system default. It used to take the first visible model by display name,
+// ignoring the admin's choice (the CLI's ask path hit this).
+func TestRun_NoModelNamed_UsesSystemDefault(t *testing.T) {
+	gen := &fakeGenerator{events: []llm.Event{
+		{Kind: llm.EventText, TextDelta: "ok"},
+		{Kind: llm.EventDone, StopReason: llm.StopEnd},
+	}}
+	// The registry's first visible model is not the system default.
+	firstVisible := llm.ModelInfo{ID: "anthropic:claude-fable-5-2", SupportsCitations: true}
+	cases := []struct {
+		name          string
+		systemDefault string
+		want          string
+	}{
+		{"configured default", "anthropic:claude-sonnet-5-5", "anthropic:claude-sonnet-5-5"},
+		{"no default configured", "", firstVisible.ID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chats := newFakeChats()
+			o := NewOrchestrator(Deps{
+				Registry: func() llm.Registry { return &fakeRegistry{gen: gen, info: firstVisible} },
+				Settings: func() Settings { return Settings{DefaultModel: tc.systemDefault} },
+				Search:   &fakeSearch{},
+				Chats:    chats,
+				Cfg:      DefaultConfig(),
+				Log:      zap.NewNop(),
+			})
+			chat := makeChat(t, chats, "")
+
+			runOrchAndDrain(t, o, RunInput{ChatID: chat.ID, UserID: chat.UserID, Content: "q"})
+
+			msgs, _ := chats.ListMessages(context.Background(), chat.ID)
+			if len(msgs) != 2 || msgs[1].Model != tc.want {
+				t.Fatalf("answered with %q, want %q (msgs=%d)", msgs[len(msgs)-1].Model, tc.want, len(msgs))
+			}
+		})
+	}
+}

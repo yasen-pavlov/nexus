@@ -212,6 +212,7 @@ func run() error {
 		Registry: lm.Get,
 		Settings: func() rag.Settings {
 			return rag.Settings{
+				DefaultModel:         lm.DefaultModel(),
 				RewriterModel:        lm.RewriterModel(),
 				MaxToolRounds:        ragMgr.MaxToolRounds(),
 				MaxImagesPerTurn:     ragMgr.MaxImagesPerTurn(),

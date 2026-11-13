@@ -308,7 +308,7 @@ export interface LLMSettings {
 // flags drive composer affordances (vision/tools/citations chips) and let
 // the orchestrator skip image attachments on non-vision models.
 export interface LLMModelInfo {
-  id: string;             // provider-prefixed: "anthropic:claude-sonnet-4-6"
+  id: string;             // provider-prefixed: "anthropic:claude-sonnet-5-5"
   provider: string;
   bare_id: string;
   display_name: string;

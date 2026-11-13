@@ -44,7 +44,7 @@ func newChatCmd(rf *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&modelFlag, "model", "m", "",
-		"model for the session (provider:id, e.g. anthropic:claude-sonnet-4-6); server default if empty")
+		"model for the session (provider:id, e.g. anthropic:claude-sonnet-5-5); server default if empty")
 	cmd.Flags().BoolVar(&showSources, "sources", false, "show all retrieved sources each turn, not just cited ones")
 	return cmd
 }

@@ -25,19 +25,16 @@ func TestDocToBlock_AddsCachingAndContext(t *testing.T) {
 	block := docToBlock(llm.Document{
 		ID: "chunk-1", Title: "S", Source: "imap", Date: "2026-01-02", Content: "body",
 	}, true)
-	if block.OfDocument == nil {
-		t.Fatal("expected document content block")
-	}
-	if string(block.OfDocument.CacheControl.Type) == "" {
+	if string(block.CacheControl.Type) == "" {
 		t.Error("expected cache_control to be set when EnableCache is true")
 	}
-	if got := block.OfDocument.Title; got.Value != "chunk-1" {
+	if got := block.Title; got.Value != "chunk-1" {
 		t.Errorf("title = %v, want chunk-1", got)
 	}
 
 	// EnableCache = false drops the breakpoint.
 	plain := docToBlock(llm.Document{ID: "chunk-2", Content: "x"}, false)
-	if string(plain.OfDocument.CacheControl.Type) != "" {
+	if string(plain.CacheControl.Type) != "" {
 		t.Error("expected no cache_control when EnableCache is false")
 	}
 }
@@ -123,7 +120,7 @@ func TestMapMessages_HandlesAllRoles(t *testing.T) {
 		{Role: llm.RoleAssistant, Content: "hi", ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "search", ArgsJSON: `{"q":"x"}`}}},
 		{Role: llm.RoleTool, Content: "result", ToolCallID: "tc1"},
 	}
-	out := mapMessages(in)
+	out := mapMessages(llm.GenerateRequest{Messages: in})
 	if len(out) != 3 {
 		t.Fatalf("expected 3 messages (system dropped), got %d", len(out))
 	}
@@ -145,11 +142,11 @@ func TestMapMessages_HandlesAllRoles(t *testing.T) {
 // tool-use turn. mapMessages must therefore wrap ArgsJSON in
 // json.RawMessage (not []byte) when constructing the tool_use block.
 func TestMapMessages_ToolUseInputEncodesAsDictionary(t *testing.T) {
-	out := mapMessages([]llm.Message{
+	out := mapMessages(llm.GenerateRequest{Messages: []llm.Message{
 		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{
 			ID: "tc1", Name: "search", ArgsJSON: `{"q":"x","n":3}`,
 		}}},
-	})
+	}})
 	if len(out) != 1 {
 		t.Fatalf("got %d messages, want 1", len(out))
 	}
@@ -168,9 +165,9 @@ func TestMapMessages_ToolUseInputEncodesAsDictionary(t *testing.T) {
 // Empty ArgsJSON must collapse to "{}" so the tool_use.input remains a
 // valid (empty) dictionary — Anthropic still requires the field shape.
 func TestMapMessages_ToolUseInputEmptyArgsBecomesEmptyDict(t *testing.T) {
-	out := mapMessages([]llm.Message{
+	out := mapMessages(llm.GenerateRequest{Messages: []llm.Message{
 		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "search", ArgsJSON: ""}}},
-	})
+	}})
 	encoded, err := json.Marshal(out[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -210,11 +207,12 @@ func TestPrependDocs_EmptyMessages(t *testing.T) {
 
 func TestMapStopReason_CoversAllVariants(t *testing.T) {
 	cases := map[sdk.StopReason]llm.StopReason{
-		sdk.StopReasonEndTurn:   llm.StopEnd,
-		sdk.StopReasonToolUse:   llm.StopToolUse,
-		sdk.StopReasonMaxTokens: llm.StopMaxTokens,
-		sdk.StopReasonRefusal:   llm.StopFiltered,
-		"weird-thing":           llm.StopEnd,
+		sdk.StopReasonEndTurn:                    llm.StopEnd,
+		sdk.StopReasonToolUse:                    llm.StopToolUse,
+		sdk.StopReasonMaxTokens:                  llm.StopMaxTokens,
+		sdk.StopReasonModelContextWindowExceeded: llm.StopMaxTokens,
+		sdk.StopReasonRefusal:                    llm.StopFiltered,
+		"weird-thing":                            llm.StopEnd,
 	}
 	for in, want := range cases {
 		if got := mapStopReason(in); got != want {
@@ -268,7 +266,7 @@ func TestBuildParams_AssemblesSystemAndDocuments(t *testing.T) {
 	c := New("test-key", "", nil)
 	temp := float32(0.3)
 	params, err := c.buildParams(llm.GenerateRequest{
-		Model:       "claude-x",
+		Model:       "claude-sonnet-4-6",
 		System:      "be helpful",
 		Documents:   []llm.Document{{ID: "d1", Content: "x"}},
 		Messages:    []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
@@ -347,7 +345,7 @@ func TestBuildParams_OnlyLastDocumentHasCacheControl(t *testing.T) {
 func TestBuildParams_DefaultMaxTokens(t *testing.T) {
 	c := New("test-key", "", nil)
 	params, err := c.buildParams(llm.GenerateRequest{
-		Model:    "claude-x",
+		Model:    "claude-haiku-4-5",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
 	})
 	if err != nil {

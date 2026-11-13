@@ -115,7 +115,12 @@ generated from those same sources and showing its work.
   that text extraction loses. Anthropic and OpenAI read PDFs natively.
 - **Bring your own model.** Anthropic (with native citations), OpenAI, and
   local Ollama, picked per chat from an admin-curated allowlist. Provider keys
-  are encrypted at rest; configure them under **Settings → Ask**.
+  are encrypted at rest; configure them under **Settings → Ask**. Until you
+  pick a default there, Ask answers with the recommended model of the first
+  configured provider (Claude Sonnet 5.5, GPT-6.1 Sol, or Qwen3 14B).
+- **Reasons when it helps.** Current Claude and GPT models think before
+  answering multi-step questions and skip it for simple lookups; the rewriter
+  and chat titles always run without reasoning to stay fast.
 
 Answers stream over Server-Sent Events; retrieval stays scoped to the calling
 user exactly like search, including tool-issued searches. Thumbs feedback and
@@ -199,7 +204,7 @@ Everything is an environment variable prefixed with `NEXUS_`. Anything marked
 | `NEXUS_LLM_ANTHROPIC_API_KEY` | no     | (configured via UI)                                                       | Enables Claude models for Ask (native citations + PDF).               |
 | `NEXUS_LLM_OPENAI_API_KEY`  | no       | (configured via UI)                                                       | Enables GPT models for Ask.                                           |
 | `NEXUS_LLM_OLLAMA_URL`      | no       | falls back to `NEXUS_OLLAMA_URL`                                          | Dedicated Ollama endpoint for Ask (local models).                    |
-| `NEXUS_LLM_DEFAULT_MODEL`   | no       | first-boot picks the cheapest configured                                  | Provider-prefixed default model, e.g. `anthropic:claude-sonnet-4-6`.  |
+| `NEXUS_LLM_DEFAULT_MODEL`   | no       | recommended model of the first configured provider                        | Provider-prefixed default model, e.g. `anthropic:claude-sonnet-5-5`.  |
 
 \* *Required in the strict sense that omitting it works, but every restart invalidates every session — not what you want in production.*
 
