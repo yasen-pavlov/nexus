@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -335,15 +336,35 @@ func (h *handler) PostChatMessage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	flusher, _ := w.(http.Flusher)
-	if flusher != nil {
-		flusher.Flush()
-	}
+	streamRagEvents(w, events, sseHeartbeatInterval)
+}
 
-	for ev := range events {
-		writeRagEvent(w, ev)
+// streamRagEvents writes each event as an SSE frame until the channel closes.
+// A model can stay silent for longer than a reverse proxy's idle timeout
+// while it reasons or waits on a tool, and the proxy then cuts the turn, so
+// a comment frame goes out on every heartbeat. Clients ignore comments.
+func streamRagEvents(w http.ResponseWriter, events <-chan rag.Event, heartbeat time.Duration) {
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
 		if flusher != nil {
 			flusher.Flush()
+		}
+	}
+	flush()
+
+	ticker := time.NewTicker(heartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case ev, open := <-events:
+			if !open {
+				return
+			}
+			writeRagEvent(w, ev)
+			flush()
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flush()
 		}
 	}
 }
