@@ -40,12 +40,12 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// truncate caps s at max runes (rune-safe, so multibyte content isn't split),
+// truncate caps s at limit runes (rune-safe, so multibyte content isn't split),
 // appending an ellipsis when shortened.
-func truncate(s string, max int) string {
+func truncate(s string, limit int) string {
 	r := []rune(s)
-	if len(r) > max {
-		return string(r[:max]) + "…"
+	if len(r) > limit {
+		return string(r[:limit]) + "…"
 	}
 	return s
 }

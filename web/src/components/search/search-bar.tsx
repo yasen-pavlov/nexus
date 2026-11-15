@@ -38,6 +38,11 @@ export function SearchBar({ params }: Readonly<Props>) {
     setValue(externalQ);
   }
 
+  // The search page is its input: start with the caret in it.
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
   // Listen for the global "/" shortcut. The handler dispatches a custom
   // event so we don't have to thread a ref through the route tree.
   useEffect(() => {
@@ -81,7 +86,6 @@ export function SearchBar({ params }: Readonly<Props>) {
         )}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        autoFocus
       />
     </div>
   );

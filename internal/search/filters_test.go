@@ -57,7 +57,7 @@ func TestBuildFilterClauses_OwnerID(t *testing.T) {
 	if len(should) != 2 {
 		t.Errorf("expected 2 should clauses (owner_id match, shared), got %d", len(should))
 	}
-	if min, _ := bool1["minimum_should_match"].(int); min != 1 {
+	if msm, _ := bool1["minimum_should_match"].(int); msm != 1 {
 		t.Errorf("expected minimum_should_match=1, got %v", bool1["minimum_should_match"])
 	}
 

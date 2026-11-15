@@ -1186,9 +1186,9 @@ func (o *Orchestrator) packHistory(ctx context.Context, chatID uuid.UUID, turns 
 		}
 		filtered = append(filtered, m)
 	}
-	max := 2 * turns
-	if len(filtered) > max {
-		filtered = filtered[len(filtered)-max:]
+	keep := 2 * turns
+	if len(filtered) > keep {
+		filtered = filtered[len(filtered)-keep:]
 	}
 	out := make([]llm.Message, 0, len(filtered))
 	for _, m := range filtered {
@@ -1201,24 +1201,23 @@ func (o *Orchestrator) packHistory(ctx context.Context, chatID uuid.UUID, turns 
 	return out, nil
 }
 
-// buildLLMDocs maps DocumentHits → llm.Documents, capped by max.
 // capPerConversation limits how many chunks may come from a single
 // conversation/source group, preserving rank order and dropping the
 // overflow. It defends the initial evidence set against a high-volume
 // "hub" group — e.g. a Telegram bot-notification channel whose every
 // window mentions document filenames — saturating retrieval and becoming
-// citation bait. A genuine single-conversation query still gets `max`
+// citation bait. A genuine single-conversation query still gets `limit`
 // windows here and can pull the rest via the model's nexus_search tool.
-// max <= 0 disables the cap.
-func capPerConversation(hits []model.DocumentHit, max int) []model.DocumentHit {
-	if max <= 0 || len(hits) <= max {
+// limit <= 0 disables the cap.
+func capPerConversation(hits []model.DocumentHit, limit int) []model.DocumentHit {
+	if limit <= 0 || len(hits) <= limit {
 		return hits
 	}
 	counts := make(map[string]int, len(hits))
 	out := make([]model.DocumentHit, 0, len(hits))
 	for _, h := range hits {
 		k := conversationKey(h.Document)
-		if counts[k] >= max {
+		if counts[k] >= limit {
 			continue
 		}
 		counts[k]++
@@ -1244,9 +1243,10 @@ func conversationKey(d model.Document) string {
 	return d.SourceType + "|doc|" + d.SourceID
 }
 
-func buildLLMDocs(hits []model.DocumentHit, max int) []llm.Document {
-	if len(hits) > max {
-		hits = hits[:max]
+// buildLLMDocs maps DocumentHits → llm.Documents, capped by limit.
+func buildLLMDocs(hits []model.DocumentHit, limit int) []llm.Document {
+	if len(hits) > limit {
+		hits = hits[:limit]
 	}
 	out := make([]llm.Document, 0, len(hits))
 	for _, h := range hits {
@@ -1271,9 +1271,9 @@ func buildLLMDocs(hits []model.DocumentHit, max int) []llm.Document {
 
 // buildPreviews maps DocumentHits → ChunkPreview for the EvEvidence
 // event the SSE layer streams to the UI.
-func buildPreviews(hits []model.DocumentHit, max int) []ChunkPreview {
-	if len(hits) > max {
-		hits = hits[:max]
+func buildPreviews(hits []model.DocumentHit, limit int) []ChunkPreview {
+	if len(hits) > limit {
+		hits = hits[:limit]
 	}
 	out := make([]ChunkPreview, 0, len(hits))
 	for _, h := range hits {

@@ -245,15 +245,20 @@ type replay struct {
 	blocks []sdk.ContentBlockParamUnion
 }
 
+// streamState is what run carries from one stream event to the next.
+type streamState struct {
+	tools      map[int64]toolState
+	stopReason llm.StopReason
+	usage      *llm.Usage
+}
+
 // run drains the SDK stream and forwards events.
 func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.GenerateRequest, out chan<- llm.Event) {
 	defer close(out)
 
 	stream := c.api.Messages.NewStreaming(ctx, params)
 
-	tools := make(map[int64]toolState)
-	stopReason := llm.StopEnd
-	var usage *llm.Usage
+	state := streamState{tools: make(map[int64]toolState), stopReason: llm.StopEnd}
 	// The accumulated message is what a tool round has to send back. Thinking
 	// blocks arrive as a signature with no text, so they can't be rebuilt
 	// from the events forwarded to the caller.
@@ -265,27 +270,8 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 			out <- llm.Event{Kind: llm.EventError, Err: fmt.Errorf("anthropic: stream: %w", err)}
 			return
 		}
-		switch v := event.AsAny().(type) {
-		case sdk.ContentBlockStartEvent:
-			if !handleBlockStart(ctx, v, tools, out) {
-				return
-			}
-		case sdk.ContentBlockDeltaEvent:
-			if !handleBlockDelta(ctx, v, tools, req.Documents, out) {
-				return
-			}
-		case sdk.ContentBlockStopEvent:
-			if !handleBlockStop(ctx, v, tools, out) {
-				return
-			}
-		case sdk.MessageDeltaEvent:
-			stopReason = mapStopReason(v.Delta.StopReason)
-			usage = &llm.Usage{
-				InputTokens:      int(v.Usage.InputTokens),
-				OutputTokens:     int(v.Usage.OutputTokens),
-				CacheReadTokens:  int(v.Usage.CacheReadInputTokens),
-				CacheWriteTokens: int(v.Usage.CacheCreationInputTokens),
-			}
+		if !state.handle(ctx, event.AsAny(), req.Documents, out) {
+			return
 		}
 	}
 
@@ -294,11 +280,34 @@ func (c *Client) run(ctx context.Context, params sdk.MessageNewParams, req llm.G
 		return
 	}
 
-	done := llm.Event{Kind: llm.EventDone, StopReason: stopReason, Usage: usage}
-	if stopReason == llm.StopToolUse {
+	done := llm.Event{Kind: llm.EventDone, StopReason: state.stopReason, Usage: state.usage}
+	if state.stopReason == llm.StopToolUse {
 		done.Replay = replay{blocks: turn.ToParam().Content}
 	}
 	out <- done
+}
+
+// handle applies one stream event: block events are forwarded to the caller,
+// the message delta sets the stop reason and usage. Returns false if a send
+// was cancelled.
+func (s *streamState) handle(ctx context.Context, event any, docs []llm.Document, out chan<- llm.Event) bool {
+	switch v := event.(type) {
+	case sdk.ContentBlockStartEvent:
+		return handleBlockStart(ctx, v, s.tools, out)
+	case sdk.ContentBlockDeltaEvent:
+		return handleBlockDelta(ctx, v, s.tools, docs, out)
+	case sdk.ContentBlockStopEvent:
+		return handleBlockStop(ctx, v, s.tools, out)
+	case sdk.MessageDeltaEvent:
+		s.stopReason = mapStopReason(v.Delta.StopReason)
+		s.usage = &llm.Usage{
+			InputTokens:      int(v.Usage.InputTokens),
+			OutputTokens:     int(v.Usage.OutputTokens),
+			CacheReadTokens:  int(v.Usage.CacheReadInputTokens),
+			CacheWriteTokens: int(v.Usage.CacheCreationInputTokens),
+		}
+	}
+	return true
 }
 
 // streamErrEvent maps a stream error to the terminal event: a cancelled Done
