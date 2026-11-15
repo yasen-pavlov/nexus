@@ -288,6 +288,18 @@ func buildTools(in []llm.Tool) []responses.ToolUnionParam {
 	return tools
 }
 
+// doneItem is a completed output item and its position in the response.
+type doneItem struct {
+	index int64
+	raw   json.RawMessage
+}
+
+// streamState is what run carries from one stream event to the next.
+type streamState struct {
+	items       []doneItem
+	sawToolCall bool
+}
+
 // run drains the SDK stream into the unified event channel.
 func (c *Client) run(ctx context.Context, params responses.ResponseNewParams, out chan<- llm.Event) {
 	defer close(out)
@@ -295,77 +307,88 @@ func (c *Client) run(ctx context.Context, params responses.ResponseNewParams, ou
 	stream := c.api.Responses.NewStreaming(ctx, params)
 	defer func() { _ = stream.Close() }()
 
-	type doneItem struct {
-		index int64
-		raw   json.RawMessage
-	}
-	var items []doneItem
-	sawToolCall := false
-
+	var state streamState
 	for stream.Next() {
 		ev := stream.Current()
-		switch ev.Type {
-		case "response.output_text.delta":
-			if ev.Delta == "" {
-				continue
-			}
-			if !llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ev.Delta}) {
-				return
-			}
-
-		case "response.output_item.done":
-			// Completed items are the unit both for replay (the reasoning
-			// item's encrypted content is only final here) and for tool
-			// calls: argument deltas are deliberately not forwarded, since
-			// the orchestrator buffers calls by id and a fragment without
-			// one would become a phantom call. Each call is emitted once,
-			// whole.
-			items = append(items, doneItem{index: ev.OutputIndex, raw: json.RawMessage(ev.Item.RawJSON())})
-			if ev.Item.Type != "function_call" || ev.Item.Status == "incomplete" {
-				continue
-			}
-			call := ev.Item.AsFunctionCall()
-			sawToolCall = true
-			if !llm.SendOrCancel(ctx, out, llm.Event{
-				Kind: llm.EventToolCall,
-				ToolCall: &llm.ToolCallDelta{
-					ID:       call.CallID,
-					Name:     call.Name,
-					ArgsJSON: call.Arguments,
-					Final:    true,
-				},
-			}) {
-				return
-			}
-
-		case "response.completed", "response.incomplete":
-			done := llm.Event{
-				Kind:       llm.EventDone,
-				StopReason: stopReason(ev.Response, sawToolCall),
-				Usage:      usageOf(ev.Response),
-			}
-			if done.StopReason == llm.StopToolUse {
-				sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
-				replay := make(replayItems, len(items))
-				for i, it := range items {
-					replay[i] = it.raw
-				}
-				done.Replay = replay
-			}
-			llm.SendOrCancel(ctx, out, done)
-			return
-
-		case "response.failed":
-			llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventError, Err: responseError(ev.Response.Error)})
-			return
-
-		case "error":
-			llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventError, Err: fmt.Errorf("openai: stream: %s: %s", ev.Code, ev.Message)})
+		if state.handle(ctx, &ev, out) {
 			return
 		}
 	}
 
 	llm.SendOrCancel(ctx, out, streamEndEvent(ctx, stream.Err()))
+}
+
+// handle applies one stream event. It reports whether the stream is over:
+// a terminal event was sent, or a send was cancelled.
+func (s *streamState) handle(ctx context.Context, ev *responses.ResponseStreamEventUnion, out chan<- llm.Event) bool {
+	switch ev.Type {
+	case "response.output_text.delta":
+		if ev.Delta == "" {
+			return false
+		}
+		return !llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventText, TextDelta: ev.Delta})
+
+	case "response.output_item.done":
+		return s.itemDone(ctx, ev, out)
+
+	case "response.completed", "response.incomplete":
+		llm.SendOrCancel(ctx, out, s.doneEvent(ev.Response))
+		return true
+
+	case "response.failed":
+		llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventError, Err: responseError(ev.Response.Error)})
+		return true
+
+	case "error":
+		llm.SendOrCancel(ctx, out, llm.Event{Kind: llm.EventError, Err: fmt.Errorf("openai: stream: %s: %s", ev.Code, ev.Message)})
+		return true
+	}
+	return false
+}
+
+// itemDone records a completed output item and, when it is a tool call,
+// emits it. Returns true if the send was cancelled.
+//
+// Completed items are the unit both for replay (the reasoning item's
+// encrypted content is only final here) and for tool calls: argument deltas
+// are deliberately not forwarded, since the orchestrator buffers calls by id
+// and a fragment without one would become a phantom call. Each call is
+// emitted once, whole.
+func (s *streamState) itemDone(ctx context.Context, ev *responses.ResponseStreamEventUnion, out chan<- llm.Event) bool {
+	s.items = append(s.items, doneItem{index: ev.OutputIndex, raw: json.RawMessage(ev.Item.RawJSON())})
+	if ev.Item.Type != "function_call" || ev.Item.Status == "incomplete" {
+		return false
+	}
+	call := ev.Item.AsFunctionCall()
+	s.sawToolCall = true
+	return !llm.SendOrCancel(ctx, out, llm.Event{
+		Kind: llm.EventToolCall,
+		ToolCall: &llm.ToolCallDelta{
+			ID:       call.CallID,
+			Name:     call.Name,
+			ArgsJSON: call.Arguments,
+			Final:    true,
+		},
+	})
+}
+
+// doneEvent builds the terminal event for a finished response. A tool round
+// carries the output items, in response order, for replay.
+func (s *streamState) doneEvent(resp responses.Response) llm.Event {
+	done := llm.Event{
+		Kind:       llm.EventDone,
+		StopReason: stopReason(resp, s.sawToolCall),
+		Usage:      usageOf(resp),
+	}
+	if done.StopReason == llm.StopToolUse {
+		sort.SliceStable(s.items, func(i, j int) bool { return s.items[i].index < s.items[j].index })
+		replay := make(replayItems, len(s.items))
+		for i, it := range s.items {
+			replay[i] = it.raw
+		}
+		done.Replay = replay
+	}
+	return done
 }
 
 // streamEndEvent is the terminal event for a stream that stopped without a

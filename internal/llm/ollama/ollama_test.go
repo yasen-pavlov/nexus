@@ -323,6 +323,7 @@ func TestGenerate_ForcedAnswerRoundDropsToolsAndKeepsToolDocuments(t *testing.T)
 		t.Fatalf("generate: %v", err)
 	}
 	for range ch {
+		// Drain: the assertions are on the request body the server saw.
 	}
 
 	if strings.Contains(body, `"tools"`) {

@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Check, Pencil, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ChatListEntry } from "@/lib/api-types";
 import { formatRelative } from "@/lib/format";
@@ -36,6 +36,13 @@ export function RecentChatItem({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // Rename is something the user just asked for, so the caret goes
+  // straight into the field that appeared.
+  useEffect(() => {
+    if (editing) titleInputRef.current?.focus();
+  }, [editing]);
 
   const title =
     chat.title?.trim() ||
@@ -198,8 +205,8 @@ export function RecentChatItem({
       {editing ? (
         <div className="flex min-h-[40px] flex-1 items-start">
           <input
+            ref={titleInputRef}
             type="text"
-            autoFocus
             value={draft}
             maxLength={MAX_TITLE_LEN}
             disabled={saving}
